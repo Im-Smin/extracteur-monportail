@@ -131,20 +131,32 @@ class Archiveur:
                 self._recuperer(cours, fichier, dossier)
 
             cible = base / "Pages" / _segment(f"{libelle}.pdf")
-            if not cible.exists():
-                cible.parent.mkdir(parents=True, exist_ok=True)
-                self._capturer_page_courante(cible)
+            self._capturer_page_courante(cours, cible)
 
         self.ena.parcourir_menu(cours, traiter)
 
-    def _capturer_page_courante(self, destination: Path) -> None:
+    def _capturer_page_courante(self, cours, destination: Path) -> None:
         """Imprime la page telle qu'elle est deja affichee, sans renaviguer.
 
         Le repli par le menu n'a pas d'identifiant de module ou d'evaluation
         vers lequel renaviguer : la seule capture possible est celle de l'etat
         courant du navigateur, deja porte par ena.session.page.
+
+        Isolee comme _capturer : ena.parcourir_menu n'intercepte que le clic,
+        pas l'appel a cette fonction de traitement. Sans cette isolation, une
+        impression ratee pour une section fait echouer tout le cours en un
+        seul Echec generique, et perd en silence le contenu recuperable des
+        sections suivantes.
         """
-        self.ena.session.page.pdf(path=str(destination), format="A4", print_background=True)
+        if destination.exists():
+            return
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            self.ena.session.page.pdf(path=str(destination), format="A4", print_background=True)
+        except (ErreurPlaywright, OSError) as erreur:
+            self.resultat.echecs.append(
+                Echec(cours=cours.dossier(), element=destination.name, cause=f"PDF : {erreur}")
+            )
 
     def _capturer(self, cours, module, destination: Path) -> None:
         if destination.exists():
@@ -169,26 +181,27 @@ class Archiveur:
 
     def _telecharger(self, cours, nom: str, url: str, dossier: Path, desambiguer: bool = True) -> None:
         dossier.mkdir(parents=True, exist_ok=True)
+
+        # Reprise. La cle est l'url, stable d'une execution a l'autre : le nom
+        # sur disque, lui, peut changer a chaque execution des qu'il y a une
+        # collision, a cause de la desambiguisation. Interroger le manifeste
+        # par le chemin AVANT desambiguisation faisait echouer la comparaison
+        # d'url des le deuxieme fichier en collision, provoquant un nouveau
+        # suffixe a chaque relance.
+        entree = self.manifeste.par_url(url)
+        if entree is not None:
+            destination_connue = self.racine / entree["chemin"]
+            if deja_present(destination_connue, int(entree["taille"])):
+                self.resultat.fichiers_sautes += 1
+                self._emettre("saute", nom)
+                return
+
         destination = dossier / nom
-        relatif = self._relatif(destination)
-
-        # Reprise. Le nom n'est surtout PAS desambiguise avant ce test : sinon
-        # chaque relance retelechargerait tout sous « (2) », « (3) »... et
-        # l'archive doublerait de taille a chaque coupure reseau. La comparaison
-        # d'url distingue la reprise d'une vraie collision : deux ressources
-        # differentes qui atterrissent sur le meme chemin, dans la meme
-        # execution, ne doivent jamais etre confondues avec une reprise.
-        entree = self.manifeste.charger().get(relatif)
-        if entree is not None and entree.get("url") == url and deja_present(destination, None):
-            self.resultat.fichiers_sautes += 1
-            self._emettre("saute", nom)
-            return
-
         # Collision reelle : deux ressources distinctes portent le meme nom.
         if desambiguer and destination.exists():
             nom = nom_unique(dossier, nom)
             destination = dossier / nom
-            relatif = self._relatif(destination)
+        relatif = self._relatif(destination)
 
         try:
             taille, empreinte = telecharger(self.transport, url, destination)

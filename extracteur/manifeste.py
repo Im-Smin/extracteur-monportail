@@ -18,6 +18,7 @@ class Manifeste:
         self.chemin = Path(racine) / "manifeste.csv"
         self._entrees: dict[str, dict] | None = None
         self._entete_presente: bool | None = None
+        self._index_url: dict[str, dict] | None = None
 
     def charger(self) -> dict[str, dict]:
         if self._entrees is not None:
@@ -36,6 +37,23 @@ class Manifeste:
 
     def deja_archive(self, chemin_relatif: str) -> bool:
         return chemin_relatif in self.charger()
+
+    def par_url(self, url: str) -> dict | None:
+        """Retrouve l'entree du manifeste correspondant a une url.
+
+        Cle de reprise stable, contrairement au chemin relatif sur disque :
+        celui-ci peut changer d'une execution a l'autre a cause de la
+        desambiguisation (« (2) », « (3) »...), alors qu'une url de ressource
+        ne change jamais. Interroger le manifeste par le chemin AVANT
+        desambiguisation, comme le faisait l'ancienne implementation, fait
+        echouer la comparaison d'url des le deuxieme fichier en collision : sa
+        cle tombe sur l'entree du premier, dont l'url ne correspond jamais.
+        """
+        if self._index_url is None:
+            self._index_url = {}
+            for entree in self.charger().values():
+                self._index_url.setdefault(entree.get("url"), entree)
+        return self._index_url.get(url)
 
     def ajouter(self, chemin_relatif, taille, sha256, url, statut="ok") -> None:
         entrees = self.charger()
@@ -58,6 +76,8 @@ class Manifeste:
             redacteur.writerow(ligne)
 
         entrees[chemin_relatif] = ligne
+        if self._index_url is not None:
+            self._index_url.setdefault(url, ligne)
 
 
 COLONNES_NOTE = ["Évaluation", "Pourcentage", "Pondération", "Note", "Sur", "Regroupement"]

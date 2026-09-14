@@ -1,11 +1,28 @@
+import pytest
 from playwright.sync_api import TimeoutError as ErreurDelaiPlaywright
 
 from extracteur.ena import URL, Ena
 from extracteur.modele import Cours, Evaluation, Module, Session
+from extracteur.telechargement import SessionExpiree
+
+
+class LocatorFactice:
+    """Simule un locator Playwright avec une methode count()."""
+
+    def __init__(self, nombre):
+        self._nombre = nombre
+
+    def count(self):
+        return self._nombre
 
 
 class PageFactice:
-    """Enregistre les URL visitees et rend le HTML programme."""
+    """Enregistre les URL visitees et rend le HTML programme.
+
+    Authentifiee par defaut (lien /ena/site/ present) : les tests de
+    navigation qui ne portent pas sur l'authentification n'ont pas a la
+    simuler explicitement. Voir PageNonAuthentifiee pour l'inverse.
+    """
 
     def __init__(self, pages):
         self.pages = pages
@@ -31,10 +48,85 @@ class PageFactice:
     def pdf(self, **_kwargs):
         pass
 
+    def locator(self, selecteur):
+        if selecteur == "a[href*='/ena/site/']":
+            return LocatorFactice(1)
+        return LocatorFactice(0)
+
+    def get_by_text(self, _texte):
+        return LocatorFactice(0)
+
 
 class SessionFactice:
     def __init__(self, pages):
         self.page = PageFactice(pages)
+
+
+class PageNonAuthentifiee(PageFactice):
+    """Simule la page de connexion servie quand la session Microsoft expire en
+    cours de navigation : aucun marqueur d'authentification, quel que soit le
+    contenu demande."""
+
+    def locator(self, _selecteur):
+        return LocatorFactice(0)
+
+    def get_by_text(self, _texte):
+        return LocatorFactice(0)
+
+
+COURS_QUELCONQUE = Cours(
+    id_site="1", sigle=None, titre="X", session=Session(code="202601", libelle="Hiver 2026")
+)
+
+
+def test_modules_leve_session_expiree_si_page_non_authentifiee():
+    # Sans ce garde-fou, une session expiree en cours de navigation rend une
+    # page de connexion vide, que modules_depuis_html lirait comme "aucun
+    # module" : une archive silencieusement incomplete.
+    ena = Ena(SessionFactice({}))
+    ena.session.page = PageNonAuthentifiee({})
+
+    with pytest.raises(SessionExpiree):
+        ena.modules(COURS_QUELCONQUE)
+
+
+def test_modules_page_authentifiee_laisse_passer():
+    html = '<a href="/ena/site/module?idSite=1&idModule=1&editionModule=false">M</a>'
+    ena = Ena(SessionFactice({"/ena/site/modules": html}))
+
+    assert len(ena.modules(COURS_QUELCONQUE)) == 1
+
+
+def test_evaluations_leve_session_expiree_si_page_non_authentifiee():
+    ena = Ena(SessionFactice({}))
+    ena.session.page = PageNonAuthentifiee({})
+
+    with pytest.raises(SessionExpiree):
+        ena.evaluations(COURS_QUELCONQUE)
+
+
+def test_fichiers_de_depot_leve_session_expiree_si_page_non_authentifiee():
+    ena = Ena(SessionFactice({}))
+    ena.session.page = PageNonAuthentifiee({})
+
+    with pytest.raises(SessionExpiree):
+        ena.fichiers_de_depot(Evaluation(id_site="1", id_evaluation="1", titre="T"))
+
+
+def test_resultats_leve_session_expiree_si_page_non_authentifiee():
+    ena = Ena(SessionFactice({}))
+    ena.session.page = PageNonAuthentifiee({})
+
+    with pytest.raises(SessionExpiree):
+        ena.resultats(COURS_QUELCONQUE)
+
+
+def test_parcourir_menu_leve_session_expiree_si_page_non_authentifiee():
+    ena = Ena(SessionFactice({}))
+    ena.session.page = PageNonAuthentifiee({})
+
+    with pytest.raises(SessionExpiree):
+        ena.parcourir_menu(COURS_QUELCONQUE, lambda libelle, html: None)
 
 
 def test_urls_canoniques_sont_bien_formees():
