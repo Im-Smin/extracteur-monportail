@@ -28,7 +28,8 @@ def url_reelle(href: str) -> str | None:
 
     if href.startswith(PREFIXE_TRACEUR):
         # Extraire manuellement le parametre url du query string pour eviter que
-        # parse_qs ne pre-decodifie la valeur. On besoin un seul niveau de decodage.
+        # parse_qs ne pre-decodifie la valeur via unquote_plus. On besoin un seul
+        # niveau de decodage.
         match = re.search(r"[?&]url=([^&]+)", href)
         if not match:
             return None
