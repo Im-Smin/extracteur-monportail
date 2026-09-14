@@ -564,13 +564,38 @@ class PageAvecSelecteurSessions(PageFactice):
             self.selecteur_ouvert = True
 
     def locator(self, selecteur):
-        if selecteur != Ena.SELECTEUR_OPTIONS_SESSIONS:
-            # Mauvais selecteur : aucune option trouvee, comme un vrai Locator.
-            return LocatorOptionsSessionsFactice(self, [])
-        return LocatorOptionsSessionsFactice(self, self.libelles_sessions)
+        if selecteur == "a[href*='/ena/site/']":
+            return LocatorFactice(1)
+        if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS:
+            return LocatorOptionsSessionsFactice(self, self.libelles_sessions)
+        return LocatorFactice(0)
 
     def content(self):
         return self.html_par_session.get(self.session_selectionnee, "<html></html>")
+
+
+def test_sessions_disponibles_leve_session_expiree_si_page_non_authentifiee():
+    # Si la session Microsoft expire pendant la lecture de /portail/cours,
+    # la plateforme sert une page de connexion. Sans ce garde-fou,
+    # sessions_disponibles rendrait une liste vide : une archive silencieusement
+    # incomplete. Il faut lever SessionExpiree pour mettre la file en pause.
+    ena = Ena(SessionFactice({}))
+    ena.session.page = PageNonAuthentifieeAvecSelecteurSessions(["Hiver 2026"])
+
+    with pytest.raises(SessionExpiree):
+        ena.sessions_disponibles()
+
+
+def test_sites_de_session_leve_session_expiree_si_page_non_authentifiee():
+    # Si la session Microsoft expire apres la selection d'une session,
+    # la plateforme sert une page de connexion. Sans ce garde-fou,
+    # sites_de_session rendrait une liste vide : une archive silencieusement
+    # incomplete. Il faut lever SessionExpiree pour mettre la file en pause.
+    ena = Ena(SessionFactice({}))
+    ena.session.page = PageNonAuthentifieeAvecSelecteurSessions(["Hiver 2026"])
+
+    with pytest.raises(SessionExpiree):
+        ena.sites_de_session(Session(code="202601", libelle="Hiver 2026"))
 
 
 def test_sessions_disponibles_ouvre_le_selecteur_et_liste_les_sessions():
@@ -634,6 +659,31 @@ def test_sites_de_session_sans_cours_rend_une_liste_vide():
     assert cours == []
 
 
+class PageNonAuthentifieeAvecSelecteurSessions(PageNonAuthentifiee):
+    """Simule une page non authentifiee (login) avec le selecteur des sessions,
+    pour tester que sessions_disponibles() et sites_de_session() levent
+    SessionExpiree plutot que de rendre une liste vide."""
+
+    def __init__(self, libelles_sessions, html_par_session=None):
+        super().__init__({})
+        self.libelles_sessions = libelles_sessions
+        self.html_par_session = html_par_session or {}
+        self.selecteur_ouvert = False
+        self.session_selectionnee = None
+
+    def click(self, selecteur, **_kwargs):
+        if selecteur == Ena.SELECTEUR_SESSIONS:
+            self.selecteur_ouvert = True
+
+    def locator(self, selecteur):
+        if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS:
+            return LocatorOptionsSessionsFactice(self, self.libelles_sessions)
+        return LocatorFactice(0)
+
+    def content(self):
+        return self.html_par_session.get(self.session_selectionnee, "<html></html>")
+
+
 class PageSelecteurSessionsIntrouvable(PageFactice):
     """Le clic sur le selecteur echoue (site pas encore charge, DOM change) :
     aucune option n'est donc rendue. Ne doit pas faire echouer l'extraction."""
@@ -641,7 +691,9 @@ class PageSelecteurSessionsIntrouvable(PageFactice):
     def click(self, *_args, **_kwargs):
         raise ErreurDelaiPlaywright("Timeout 5000ms exceeded.")
 
-    def locator(self, _selecteur):
+    def locator(self, selecteur):
+        if selecteur == "a[href*='/ena/site/']":
+            return LocatorFactice(1)
         return LocatorOptionsSessionsFactice(self, [])
 
 
