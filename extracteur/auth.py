@@ -83,11 +83,12 @@ class SessionNavigateur:
 
         Le menu de compte personnel (href contenant monportail.ulaval.ca/
         mon-compte) est releve en session reelle sur une page authentifiee ;
-        il n'existe sur aucune page publique ni page d'erreur du domaine. On
-        lui prefere volontairement un comptage de liens vers /portail : rien
-        ne garantit qu'une page non authentifiee (page d'erreur, redirection
-        intermediaire) ne porte pas deja un menu statique de cinq liens ou
-        plus, ce qui produirait un faux positif silencieux.
+        il n'existe sur aucune page publique ni page d'erreur du domaine. Un
+        comptage de liens vers /portail (heuristique anterieure) a ete
+        abandonne au profit de ce marqueur unique, car rien ne garantit qu'une
+        page non authentifiee (page d'erreur, redirection intermediaire) ne
+        porte pas deja un menu statique de cinq liens ou plus, ce qui
+        produirait un faux positif silencieux.
         """
         # Signaux d'une page de site de cours authentifiee
         if self.page.locator("a[href*='/ena/site/']").count() > 0:
