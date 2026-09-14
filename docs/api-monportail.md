@@ -165,16 +165,132 @@ Aucun de ces appels ne retourne d'`idSite` ENA. Ils ne remplacent donc pas
 l'énumération par l'interface, mais `/etudes/v1/inscriptions/...` reste une
 piste pour recouper la liste des cours et pour le relevé de notes officiel.
 
+## 7bis. Chaîne de parcours validée — des cours aux fichiers
+
+Contrairement au reste de l'application, certaines URL de l'ENA **sont**
+déterministes. Elles suffisent à parcourir tout le contenu, à condition d'être
+chargées dans un vrai navigateur.
+
+### Étape 1 — routeur à URL stables
+
+```
+/lieninterne/redirection/<idSite>/liste_modules  →  /ena/site/modules?idSite=<idSite>
+```
+
+Ce routeur `lieninterne/redirection` accepte un nom de section et redirige vers
+la page ADF correspondante, qui se rend correctement. C'est le point d'entrée
+fiable de chaque section, à préférer au clic dans le menu.
+
+### Étape 2 — la feuille de route donne les modules
+
+La page `modules` liste les modules du cours. Chaque ligne est un vrai lien :
+
+```
+/ena/site/module?idSite=181216&idModule=1795743&editionModule=false
+```
+
+`editionModule=false` force la vue en consultation. À conserver tel quel.
+
+### Étape 3 — l'onglet « Contenu du module »
+
+Une page de module a deux onglets : « Général » (texte de présentation) et
+« Contenu du module » (les documents). L'onglet est un lien ADF `href="#"` :
+**il faut le cliquer**, les documents ne sont pas dans le DOM avant.
+
+### Étape 4 — les liens de fichiers passent par un traceur
+
+```
+/analytique/evenement/fichier
+  ?idFichier=140274665
+  &idSite=181216
+  &url=%2Fcontenu%2Fsitescours%2F040%2F04000%2F202601%2Fsite181216
+       %2Fmodules1434431%2Fmodule1795743%2Fpage4874493%2Fbloccontenu5204221
+       %2FCours_1_-_Introduction-janvier%25202026.pptx
+       %3Fidentifiant%3D0a981dbdc4212d59737bc2e400fd0d39076480bc
+```
+
+Le paramètre `url` contient, en double encodage, l'URL réelle du fichier sous
+`/contenu/sitescours/...`. Deux stratégies possibles :
+
+1. Suivre le lien d'analytique et laisser le serveur rediriger.
+2. **Recommandé** : décoder le paramètre `url` et télécharger directement la
+   ressource `/contenu/...`. On évite d'alimenter les statistiques de
+   consultation de l'Université pour rien, et on obtient le nom de fichier
+   d'origine (`Cours_1_-_Introduction-janvier 2026.pptx`) sans dépendre des
+   en-têtes de réponse.
+
+Le texte affiché du lien est tronqué (`Cours 1 - Introduction-.pptx`) : le vrai
+nom de fichier doit être tiré du paramètre `url`, pas du texte du lien.
+
+### Étape 5 — distinguer les ressources internes des liens externes
+
+La même page contient des liens sortants vers des sites tiers (observé :
+`oiq.qc.ca`). Règle : seules les URL sous `/contenu/sitescours/` sont
+téléchargées. Les liens externes sont consignés dans le manifeste pour mémoire,
+sans être suivis.
+
+## 7ter. Évaluations, dépôts et notes — URL déterministes
+
+Relevé sur GIN-3320 (`idSite=183033`). Ce sont les URL les plus précieuses du
+projet, car elles couvrent le cœur du périmètre.
+
+```
+/ena/site/evaluations?idSite=<idSite>          liste des évaluations
+/ena/site/resultats?idSite=<idSite>            sommaire des résultats (les notes)
+/ena/site/evaluation?idSite=<idSite>&idEvaluation=<idEval>&onglet=boiteDepots
+/ena/site/evaluation?idSite=<idSite>&idEvaluation=<idEval>&onglet=resultats
+/ena/site/evaluation?idSite=<idSite>&idEvaluation=<idEval>&onglet=equipesTravail
+```
+
+Le paramètre `onglet` sélectionne l'onglet directement dans l'URL : pas besoin
+de cliquer, contrairement à l'onglet « Contenu du module ». Les `idEvaluation`
+se relèvent dans la page `evaluations` (observés : 1035434, 1035435, 1035436).
+
+Parcours des dépôts : `evaluations` → pour chaque `idEvaluation`,
+`onglet=boiteDepots` → relever les liens de fichiers, qui suivent le même
+schéma `/analytique/evenement/fichier?...&url=...` décrit plus haut.
+
+## 7quater. Chaque site de cours est structuré différemment
+
+Constat confirmé par l'utilisateur et vérifié sur trois sites. Les menus n'ont
+ni les mêmes entrées, ni les mêmes libellés pour une même fonction.
+
+| Site | Menu observé |
+|---|---|
+| PHI-3900 (181216) | Introduction, Plan de cours, Informations générales, Description du cours, **Feuille de route**, Évaluations et résultats, Matériel didactique, Bibliographie |
+| GIN-3320 (183033) | Introduction, Informations générales, Description du cours, **Contenu et activités**, Évaluations et résultats, Matériel didactique, Médiagraphie et annexes, Plan de cours |
+| Formation EDI (149047) | Introduction, Concepts de base, Six biais, Comportements inclusifs, Boite à outils, Crédits et remerciements |
+
+« Feuille de route » et « Contenu et activités » désignent la même chose. Le
+troisième site n'a ni plan de cours, ni évaluations, ni modules au sens des deux
+autres.
+
+**Conséquence de conception, non négociable :** l'outil ne doit jamais présumer
+d'une structure de menu. Il doit :
+
+1. Essayer les URL déterministes connues (`evaluations`, `resultats`,
+   `modules`) et accepter qu'elles ne donnent rien sur un site donné.
+2. Lire le menu réel du site dans le DOM et parcourir ce qu'il trouve.
+3. Récolter, sur **toute** page visitée, les liens `/contenu/sitescours/...`,
+   quelle que soit la section où ils apparaissent.
+
+Autrement dit : découverte générique par défaut, URL déterministes comme
+accélérateur, jamais l'inverse.
+
 ## 8. Ce que la reconnaissance n'a pas encore établi
 
 - L'emplacement exact des boîtes de dépôt dans l'interface d'un site, et la
   forme des liens vers les fichiers remis et les rétroactions.
 - La page « Évaluations et résultats » et la façon d'en extraire les notes.
-- Si les sites anciens (Automne 2022) ont la même structure de menu que les
-  récents.
+- Les noms de section acceptés par `/lieninterne/redirection/<idSite>/<section>`
+  au-delà de `liste_modules`, à relever dans le DOM plutôt qu'à deviner.
+- Si les sites anciens (Automne 2022) ont la même structure que les récents.
+- Si `sitescours.monportail.ulaval.ca/portail/cours` — présent dans le menu —
+  liste l'historique complet, ce qui serait plus simple que le sélecteur de
+  session.
 
-Ces trois points se règlent lors de la première exécution du mode
-`--un-seul-cours`, sur un cours ancien puis un cours récent.
+Ces points se règlent lors de la première exécution du mode `--un-seul-cours`,
+sur un cours ancien puis un cours récent.
 
 ## 9. Conséquences sur le design
 
