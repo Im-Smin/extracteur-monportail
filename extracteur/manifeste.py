@@ -58,15 +58,27 @@ class Manifeste:
         entrees[chemin_relatif] = ligne
 
 
+COLONNES_NOTE = ["Évaluation", "Pourcentage", "Pondération", "Note", "Sur", "Regroupement"]
+
+
+def _ligne_note(note) -> list:
+    return [
+        note.evaluation,
+        note.pourcentage,
+        note.ponderation,
+        note.note,
+        note.sur,
+        "Oui" if note.est_regroupement else "",
+    ]
+
+
 def ecrire_notes(destination: Path, notes) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     with open(destination, "w", encoding=ENCODAGE_CSV, newline="") as sortie:
         redacteur = csv.writer(sortie)
-        redacteur.writerow(["Évaluation", "Note", "Sur", "Pondération", "Moyenne groupe"])
+        redacteur.writerow(COLONNES_NOTE)
         for note in notes:
-            redacteur.writerow(
-                [note.evaluation, note.note, note.sur, note.ponderation, note.moyenne_groupe]
-            )
+            redacteur.writerow(_ligne_note(note))
 
 
 def ecrire_notes_consolidees(destination: Path, lignes) -> None:
@@ -77,21 +89,9 @@ def ecrire_notes_consolidees(destination: Path, lignes) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     with open(destination, "w", encoding=ENCODAGE_CSV, newline="") as sortie:
         redacteur = csv.writer(sortie)
-        redacteur.writerow(
-            ["Session", "Cours", "Évaluation", "Note", "Sur", "Pondération", "Moyenne groupe"]
-        )
+        redacteur.writerow(["Session", "Cours"] + COLONNES_NOTE)
         for session, cours, note in lignes:
-            redacteur.writerow(
-                [
-                    session,
-                    cours,
-                    note.evaluation,
-                    note.note,
-                    note.sur,
-                    note.ponderation,
-                    note.moyenne_groupe,
-                ]
-            )
+            redacteur.writerow([session, cours] + _ligne_note(note))
 
 
 def ecrire_rapport(destination: Path, echecs, resume: dict) -> None:

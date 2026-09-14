@@ -62,11 +62,21 @@ class Evaluation:
 
 @dataclass(frozen=True)
 class Note:
+    """Une ligne du Sommaire des resultats (/ena/site/resultats?idSite=<id>).
+
+    Les nombres restent des chaines, dans leur notation francaise d'origine
+    (virgule decimale) : les convertir en flottants risquerait de fausser une
+    note pour un separateur mal interprete. Il n'existe aucune moyenne de
+    groupe sur cette page ; `est_regroupement` porte la seule notion reelle
+    de regroupement (ex. "Examen final" qui somme plusieurs evaluations).
+    """
+
     evaluation: str
+    pourcentage: str = ""
+    ponderation: str = ""
     note: str = ""
     sur: str = ""
-    ponderation: str = ""
-    moyenne_groupe: str = ""
+    est_regroupement: bool = False
 
 
 @dataclass

@@ -149,32 +149,100 @@ def test_fichiers_preservent_les_plus_dans_les_noms():
     assert fichiers[0].nom == "fichier+plus.pdf"
 
 
-def test_resultats_depuis_html():
+def test_resultats_ligne_d_evaluation():
+    # Sommaire des resultats (/ena/site/resultats) : quatre colonnes remplies.
     html = """
     <table>
-      <thead><tr><th>Évaluation</th><th>Note</th><th>Pondération</th></tr></thead>
-      <tbody>
-        <tr><td>Examen 1</td><td>18 / 20</td><td>30 %</td></tr>
-        <tr><td>Travail final</td><td>45 / 50</td><td>70 %</td></tr>
-      </tbody>
+      <tr>
+        <td><a href="#">Examen de mi-session (Em)</a></td>
+        <td>70 %</td>
+        <td>15 %</td>
+        <td>10,5 / 15</td>
+      </tr>
     </table>
     """
     notes = resultats_depuis_html(html)
-    assert [n.evaluation for n in notes] == ["Examen 1", "Travail final"]
-    assert notes[0].note == "18"
-    assert notes[0].sur == "20"
-    assert notes[0].ponderation == "30 %"
+    assert len(notes) == 1
+    note = notes[0]
+    assert note.evaluation == "Examen de mi-session (Em)"
+    assert note.pourcentage == "70 %"
+    assert note.ponderation == "15 %"
+    assert note.note == "10,5"
+    assert note.sur == "15"
+    assert note.est_regroupement is False
 
 
-def test_resultats_tolere_une_note_absente():
+def test_resultats_ligne_de_regroupement_sans_pourcentage():
+    # Un regroupement porte le marqueur "(Somme des evaluations de ce
+    # regroupement)" a la suite du titre, et n'a pas de pourcentage obtenu.
     html = """
-    <table><thead><tr><th>Évaluation</th><th>Note</th></tr></thead>
-    <tbody><tr><td>Examen 2</td><td>Non disponible</td></tr></tbody></table>
+    <table>
+      <tr>
+        <td>Examen final (en classe!)<br><span>(Somme des évaluations de ce regroupement)</span></td>
+        <td></td>
+        <td>39,99 %</td>
+        <td>31,89 / 39,99</td>
+      </tr>
+      <tr>
+        <td>Questionnaires d'autoévaluation (Évaluation formative)<br>
+          <span>(Somme des évaluations de ce regroupement)</span></td>
+        <td></td>
+        <td>10 %</td>
+        <td>9,83 / 10</td>
+      </tr>
+    </table>
     """
     notes = resultats_depuis_html(html)
-    assert notes[0].evaluation == "Examen 2"
-    assert notes[0].note == "Non disponible"
-    assert notes[0].sur == ""
+    assert len(notes) == 2
+
+    assert notes[0].evaluation == "Examen final (en classe!)"
+    assert notes[0].pourcentage == ""
+    assert notes[0].ponderation == "39,99 %"
+    assert notes[0].note == "31,89"
+    assert notes[0].sur == "39,99"
+    assert notes[0].est_regroupement is True
+
+    assert notes[1].evaluation == "Questionnaires d'autoévaluation (Évaluation formative)"
+    assert notes[1].est_regroupement is True
+
+
+def test_resultats_ligne_de_total_sans_titre():
+    # La derniere ligne du tableau ne porte aucun titre, seulement le total.
+    html = """
+    <table>
+      <tr><td><a href="#">Examen de mi-session (Em)</a></td><td>70 %</td><td>15 %</td><td>10,5 / 15</td></tr>
+      <tr><td colspan="3"></td><td>78,59 / 100</td></tr>
+    </table>
+    """
+    notes = resultats_depuis_html(html)
+    total = notes[-1]
+    assert total.evaluation == ""
+    assert total.pourcentage == ""
+    assert total.ponderation == ""
+    assert total.note == "78,59"
+    assert total.sur == "100"
+    assert total.est_regroupement is False
+
+
+def test_resultats_conserve_les_nombres_en_notation_francaise():
+    # La virgule decimale ne doit jamais etre convertie : la fidelite a la
+    # source prime, une conversion ratee fausserait des notes.
+    html = "<table><tr><td>Participation</td><td>0 %</td><td>1 %</td><td>0,83 / 1</td></tr></table>"
+    notes = resultats_depuis_html(html)
+    assert notes[0].note == "0,83"
+    assert notes[0].sur == "1"
+
+
+def test_resultats_ignore_les_lignes_sans_points():
+    # La page commence par des ancres vers des textes de politique : pas de
+    # colonne de points, donc pas une ligne de resultat exploitable.
+    html = """
+    <table>
+      <tr><th>Évaluation</th><th>%</th><th>Pondération</th><th>Points</th></tr>
+      <tr><td>Barème de conversion</td></tr>
+    </table>
+    """
+    assert resultats_depuis_html(html) == []
 
 
 def test_resultats_sur_page_sans_tableau():

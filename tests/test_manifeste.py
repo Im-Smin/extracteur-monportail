@@ -36,11 +36,26 @@ def test_entete_ecrit_une_seule_fois(tmp_path):
 
 def test_ecrire_notes(tmp_path):
     destination = tmp_path / "notes.csv"
-    ecrire_notes(destination, [Note(evaluation="Examen 1", note="18", sur="20")])
+    ecrire_notes(
+        destination,
+        [Note(evaluation="Examen 1", pourcentage="70 %", ponderation="15 %", note="10,5", sur="15")],
+    )
 
     contenu = destination.read_text(encoding="utf-8-sig")
     assert "Examen 1" in contenu
-    assert "18" in contenu
+    assert "70 %" in contenu
+    assert "10,5" in contenu
+
+
+def test_ecrire_notes_marque_les_regroupements(tmp_path):
+    destination = tmp_path / "notes.csv"
+    ecrire_notes(
+        destination,
+        [Note(evaluation="Examen final", ponderation="39,99 %", note="31,89", sur="39,99", est_regroupement=True)],
+    )
+
+    contenu = destination.read_text(encoding="utf-8-sig")
+    assert "Oui" in contenu
 
 
 def test_ecrire_notes_avec_accents(tmp_path):

@@ -226,22 +226,54 @@ def cours_depuis_html(html: str, session: Session) -> list[Cours]:
     return list(trouves.values())
 
 
+# Marqueur textuel accolle au titre d'une ligne de regroupement, jamais suivi
+# d'un pourcentage obtenu (colonne 2 vide) contrairement a une evaluation.
+MARQUEUR_REGROUPEMENT = "(Somme des évaluations de ce regroupement)"
+
+
 def resultats_depuis_html(html: str) -> list[Note]:
+    """Notes du Sommaire des resultats (/ena/site/resultats?idSite=<id>).
+
+    Quatre colonnes : titre en lien, pourcentage obtenu, ponderation, points
+    obtenus sur points possibles. Trois formes de lignes cohabitent dans le
+    meme tableau :
+    - evaluation : les quatre colonnes sont remplies ;
+    - regroupement : titre marque par MARQUEUR_REGROUPEMENT, pas de
+      pourcentage en colonne 2 ;
+    - total final, en fin de tableau, sans titre.
+    La derniere colonne (points/possibles) est le seul repere fiable : les
+    autres varient en nombre de cellules selon la forme de la ligne (colspan
+    sur la ligne de total).
+    """
     notes: list[Note] = []
 
     for tableau in _soupe(html).find_all("table"):
         for ligne in tableau.find_all("tr"):
-            cellules = [c.get_text(strip=True) for c in ligne.find_all("td")]
-            if len(cellules) < 2:
-                continue
+            cellules = [c.get_text(" ", strip=True) for c in ligne.find_all("td")]
+            if not cellules:
+                continue  # ligne d'entete, cellules th uniquement
 
-            note, sur = _scinder_note(cellules[1])
+            texte_points = cellules[-1]
+            if "/" not in texte_points:
+                continue  # pas une ligne de resultat (texte de politique, etc.)
+
+            note, sur = _scinder_note(texte_points)
+            titre = cellules[0] if len(cellules) >= 4 else ""
+            pourcentage = cellules[1] if len(cellules) >= 4 else ""
+            ponderation = cellules[2] if len(cellules) >= 4 else ""
+
+            est_regroupement = MARQUEUR_REGROUPEMENT in titre
+            if est_regroupement:
+                titre = titre.split(MARQUEUR_REGROUPEMENT, 1)[0].strip()
+
             notes.append(
                 Note(
-                    evaluation=cellules[0],
+                    evaluation=titre,
+                    pourcentage=pourcentage,
+                    ponderation=ponderation,
                     note=note,
                     sur=sur,
-                    ponderation=cellules[2] if len(cellules) > 2 else "",
+                    est_regroupement=est_regroupement,
                 )
             )
 
