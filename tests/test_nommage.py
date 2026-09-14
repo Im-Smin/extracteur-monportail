@@ -60,6 +60,16 @@ def test_troncature_extension_demesuree():
     assert len(resultat) == 80
 
 
+def test_troncature_longueur_max_zero_leve():
+    with pytest.raises(ValueError):
+        tronquer("rapport.pdf", 0)
+
+
+def test_troncature_longueur_max_negative_leve():
+    with pytest.raises(ValueError):
+        tronquer("abcdef.txt", -1)
+
+
 def test_nom_unique_suffixe_les_collisions(tmp_path):
     (tmp_path / "note.pdf").write_text("x")
     assert nom_unique(tmp_path, "note.pdf") == "note (2).pdf"

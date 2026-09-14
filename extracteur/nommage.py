@@ -42,6 +42,9 @@ def nom_sur(nom: str) -> str:
 
 def tronquer(nom: str, longueur_max: int = LONGUEUR_MAX_SEGMENT) -> str:
     """Tronque un nom en preservant son extension."""
+    if longueur_max <= 0:
+        raise ValueError(f"longueur_max doit etre > 0, recu {longueur_max}")
+
     if len(nom) <= longueur_max:
         return nom
 
