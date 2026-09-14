@@ -6,7 +6,12 @@ restent valides partout. On navigue donc par URL, et on lit le menu seulement
 pour attraper ce qui sort du schema.
 """
 
+import unicodedata
 from pathlib import Path
+from urllib.parse import urlsplit
+
+from playwright.sync_api import Error as ErreurPlaywright
+from playwright.sync_api import TimeoutError as ErreurDelaiPlaywright
 
 from extracteur.extraction import (
     est_commande_adf,
@@ -19,6 +24,11 @@ from extracteur.modele import Evaluation
 
 BASE = "https://sitescours.monportail.ulaval.ca"
 ONGLET_CONTENU = "text=Contenu du module"
+
+# Marqueur textuel confirmant qu'une page est bien un plan de cours, et non
+# une redirection tombee sur l'accueil. Compare sans accents ni casse : voir
+# _contient_marqueur_plan_de_cours.
+MARQUEUR_PLAN_DE_COURS = "plan de cours"
 
 
 class URL:
@@ -83,7 +93,7 @@ class Ena:
         try:
             self.session.page.click(ONGLET_CONTENU, timeout=5000)
             self.session.page.wait_for_timeout(1500)
-        except Exception:
+        except (ErreurDelaiPlaywright, ErreurPlaywright):
             pass
 
         return fichiers_depuis_html(self.session.page.content())
@@ -121,7 +131,7 @@ class Ena:
                     continue
                 cible.click(timeout=5000)
                 self.session.page.wait_for_timeout(1500)
-            except Exception:
+            except (ErreurDelaiPlaywright, ErreurPlaywright):
                 continue
 
             action(libelle, self.session.page.content())
@@ -134,23 +144,56 @@ class Ena:
         destination.parent.mkdir(parents=True, exist_ok=True)
         self.session.page.pdf(path=str(destination), format="A4", print_background=True)
 
-    def capturer_plan_de_cours(self, cours, destination: Path) -> bool:
-        """Imprime le plan de cours en PDF. Retourne False s'il n'y en a pas.
+    def capturer_plan_de_cours(self, cours, destination: Path) -> "str | bool":
+        """Imprime le plan de cours en PDF. Retourne le nom de la section qui a
+        fonctionne, ou False s'il n'y en a pas.
 
         Le menu contient un lien a icone PDF qui ressemble a un telechargement :
         c'est `cmdObtenirPlanCours`, une commande ADF qui PUBLIE une nouvelle
         version du plan. On ne la touche jamais. On imprime la page a la place.
+
+        Seul `liste_modules` a ete confirme en phase 0 ; les autres noms de
+        section sont des candidats non verifies. Une redirection invalide peut
+        retomber, sans erreur HTTP, sur l'accueil du site : le simple fait que
+        l'URL ne contienne pas `page_erreur` ne prouve donc rien. Trois
+        conditions doivent etre reunies pour accepter une page :
+        - l'URL finale est bien sous /ena/site/ ;
+        - elle ne correspond pas a l'accueil du site (la redirection a menee
+          reellement ailleurs) ;
+        - le contenu porte le marqueur textuel du plan de cours.
         """
+        chemin_accueil = urlsplit(URL.accueil(cours.id_site)).path
+
         for section in SECTIONS_PLAN_DE_COURS:
-            self._visiter(URL.redirection(cours.id_site, section))
-            if "page_erreur" in self.session.page.url:
+            html = self._visiter(URL.redirection(cours.id_site, section))
+            chemin = urlsplit(self.session.page.url).path
+
+            if not chemin.startswith("/ena/site/"):
+                continue
+            if chemin == chemin_accueil:
+                continue
+            if not _contient_marqueur_plan_de_cours(html):
                 continue
 
             destination.parent.mkdir(parents=True, exist_ok=True)
             self.session.page.pdf(path=str(destination), format="A4", print_background=True)
-            return True
+            return section
 
         return False
+
+
+def _sans_accents(texte: str) -> str:
+    """Retire les accents pour une comparaison de texte fiable."""
+    forme = unicodedata.normalize("NFKD", texte)
+    return "".join(caractere for caractere in forme if not unicodedata.combining(caractere))
+
+
+def _contient_marqueur_plan_de_cours(html: str) -> bool:
+    """Vrai si la page porte reellement un plan de cours, pas juste l'accueil."""
+    from bs4 import BeautifulSoup
+
+    texte = BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
+    return MARQUEUR_PLAN_DE_COURS in _sans_accents(texte).lower()
 
 
 def _evaluations_depuis_html(html: str, id_site: str) -> list[Evaluation]:
