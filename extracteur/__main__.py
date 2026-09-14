@@ -3,10 +3,15 @@
   python -m extracteur                          -> fenetre graphique
   python -m extracteur --lister                 -> enumeration en console
   python -m extracteur --un-seul-cours 181216   -> archivage d'un seul cours, en console
+  python -m extracteur --diagnostic             -> etat des lieux du DOM du selecteur de sessions
 
---lister et --un-seul-cours sont mutuellement exclusifs : les deux ensemble
-sont rejetes par argparse plutot que de laisser --lister l'emporter en
+--lister, --un-seul-cours et --diagnostic sont mutuellement exclusifs : les
+combiner est rejete par argparse plutot que de laisser l'un l'emporter en
 silence.
+
+--diagnostic ne telecharge rien et n'ecrit rien : il sert uniquement, quand
+--lister ne trouve aucune session, a voir sur des faits ce que le DOM reel
+contient plutot que de deviner une nouvelle correction.
 
 Aucun de ces modes ne fabrique de Cours a la main : url_plan_de_cours et
 url_resultats ne sont renseignes que par l'enumeration (Ena.sites_de_session),
@@ -17,8 +22,9 @@ de secours (impression de page) au lieu du PDF officiel de l'Universite.
 Codes de sortie (contrat pour un appelant qui ne lirait que le code, pas la
 console) :
   0    succes complet : rien a signaler.
-  1    echec sans rien ecrire (connexion non detectee, erreur inattendue, ou
-       --lister/--un-seul-cours n'a rien produit et a consigne des echecs).
+  1    echec sans rien ecrire (connexion non detectee, selecteur de sessions
+       illisible, erreur inattendue, ou --lister/--un-seul-cours n'a rien
+       produit et a consigne des echecs).
   2    --un-seul-cours : aucun cours ne correspond a l'idSite demande.
   3    session expiree en cours de route ; relancer la meme commande, la
        reprise est idempotente.
@@ -36,7 +42,7 @@ from pathlib import Path
 
 from extracteur.archiveur import Archiveur
 from extracteur.auth import SessionNavigateur
-from extracteur.ena import Ena
+from extracteur.ena import Ena, SelecteurSessionsIllisible
 from extracteur.manifeste import ecrire_rapport
 from extracteur.modele import Resultat
 from extracteur.telechargement import SessionExpiree
@@ -183,12 +189,46 @@ def _lister(session=None, fabrique_ena=Ena) -> int:
     except ConnexionEchouee as erreur:
         print(f"ECHEC : {erreur}", file=sys.stderr)
         return 1
+    except SelecteurSessionsIllisible as erreur:
+        print(f"ECHEC : {erreur}", file=sys.stderr)
+        return 1
     except SessionExpiree:
         print(
             "\nSession expiree pendant l'enumeration. Reconnectez-vous puis "
             "relancez --lister.",
             file=sys.stderr,
         )
+        return 3
+    finally:
+        if session_ouverte is not None:
+            session_ouverte.fermer()
+
+
+def _diagnostic(session=None, fabrique_ena=Ena, imprimer=print) -> int:
+    """Etat des lieux du DOM du selecteur de sessions, en console.
+
+    Ne telecharge rien, n'ecrit rien sur disque : sert uniquement, quand
+    --lister ne trouve aucune session, a trancher sur des faits plutot que de
+    deviner une nouvelle correction. `session` et `fabrique_ena` sont
+    injectables pour les tests, comme _lister.
+    """
+    session_ouverte = None
+    try:
+        session_ouverte = _connecter(session=session)
+        rapport = fabrique_ena(session_ouverte).diagnostiquer_sessions()
+
+        for selecteur, nombre, echantillon in rapport["candidats"]:
+            imprimer(f"{selecteur} : {nombre} element(s)")
+            for texte in echantillon:
+                imprimer(f"    - {texte!r}")
+
+        imprimer(f"liens portant idSite= dans la page : {rapport['liens_id_site']}")
+        return 0
+    except ConnexionEchouee as erreur:
+        print(f"ECHEC : {erreur}", file=sys.stderr)
+        return 1
+    except SessionExpiree:
+        print("\nSession expiree pendant le diagnostic.", file=sys.stderr)
         return 3
     finally:
         if session_ouverte is not None:
@@ -236,6 +276,11 @@ def _un_seul_cours(id_site: str, destination: Path, session=None, fabrique_ena=E
             contexte["resultat"] = archiveur.archiver([cours])
         except SessionExpiree as erreur:
             contexte["erreur"] = erreur
+        except SelecteurSessionsIllisible as erreur:
+            # Deja un message explicite en soi : jamais de trace brute pour
+            # cette exception dediee, contrairement au repli generique
+            # ci-dessous.
+            contexte["erreur"] = erreur
         # Isolation stricte : une exception dans ce fil ne doit jamais mourir
         # en silence sans que l'appelant le sache. Elle est tracee ici, puis
         # traduite en code de sortie une fois le fil rejoint.
@@ -279,6 +324,12 @@ def _un_seul_cours(id_site: str, destination: Path, session=None, fabrique_ena=E
         print(f"ECHEC : aucun cours ne correspond a idSite={id_site}.", file=sys.stderr)
         return 2
 
+    if isinstance(erreur, SelecteurSessionsIllisible):
+        print(f"ECHEC : {erreur}", file=sys.stderr)
+        if archiveur is not None:
+            _ecrire_rapport_final(destination, archiveur.resultat)
+        return 1
+
     if isinstance(erreur, SessionExpiree):
         print(
             "\nSession expiree pendant l'archivage. Reconnectez-vous puis "
@@ -305,8 +356,8 @@ def _un_seul_cours(id_site: str, destination: Path, session=None, fabrique_ena=E
 
 def _construire_analyseur() -> argparse.ArgumentParser:
     analyseur = argparse.ArgumentParser(prog="extracteur")
-    # Mutuellement exclusifs : si les deux etaient acceptes ensemble,
-    # --lister l'emporterait en silence (voir _un_seul_cours plus bas, jamais
+    # Mutuellement exclusifs : si plusieurs etaient acceptes ensemble, l'un
+    # l'emporterait en silence (voir _un_seul_cours plus bas, jamais
     # atteint). L'utilisateur doit voir une erreur explicite plutot qu'un
     # mode different de celui demande.
     groupe_mode = analyseur.add_mutually_exclusive_group()
@@ -315,6 +366,14 @@ def _construire_analyseur() -> argparse.ArgumentParser:
     )
     groupe_mode.add_argument(
         "--un-seul-cours", dest="id_site", help="idSite a archiver, en console"
+    )
+    groupe_mode.add_argument(
+        "--diagnostic",
+        action="store_true",
+        help=(
+            "ouvre le selecteur de sessions et affiche un etat des lieux du "
+            "DOM, sans rien telecharger ni rien ecrire"
+        ),
     )
     analyseur.add_argument(
         "--destination", type=Path, default=Path("Archive monPortail"), help="dossier de sortie"
@@ -344,6 +403,9 @@ def main() -> int:
 
         if arguments.id_site:
             return _un_seul_cours(arguments.id_site, arguments.destination)
+
+        if arguments.diagnostic:
+            return _diagnostic()
     except KeyboardInterrupt:
         print("\nInterrompu par l'utilisateur.", file=sys.stderr)
         return 130

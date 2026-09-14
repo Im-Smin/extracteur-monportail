@@ -9,11 +9,13 @@ from extracteur.__main__ import (
     _code_de_sortie,
     _connecter,
     _construire_analyseur,
+    _diagnostic,
     _drainer,
     _ecrire_rapport_final,
     _lister,
     _un_seul_cours,
 )
+from extracteur.ena import SelecteurSessionsIllisible
 from extracteur.modele import Cours, Echec, Resultat, Session
 from extracteur.telechargement import SessionExpiree
 
@@ -441,3 +443,119 @@ def test_un_seul_cours_seul_est_accepte():
 
     assert arguments.id_site == "181216"
     assert arguments.lister is False
+
+
+# --- argparse : --diagnostic mutuellement exclusif avec les deux autres ---
+
+
+def test_lister_et_diagnostic_ensemble_sont_rejetes():
+    analyseur = _construire_analyseur()
+
+    with pytest.raises(SystemExit):
+        analyseur.parse_args(["--lister", "--diagnostic"])
+
+
+def test_un_seul_cours_et_diagnostic_ensemble_sont_rejetes():
+    analyseur = _construire_analyseur()
+
+    with pytest.raises(SystemExit):
+        analyseur.parse_args(["--un-seul-cours", "181216", "--diagnostic"])
+
+
+def test_diagnostic_seul_est_accepte():
+    analyseur = _construire_analyseur()
+
+    arguments = analyseur.parse_args(["--diagnostic"])
+
+    assert arguments.diagnostic is True
+    assert arguments.lister is False
+    assert arguments.id_site is None
+
+
+# --- _diagnostic : etat des lieux du DOM, sans rien telecharger ---
+
+
+class EnaDiagnosticDeTest:
+    """Doublure d'Ena : sert uniquement diagnostiquer_sessions()."""
+
+    def __init__(self, rapport):
+        self._rapport = rapport
+
+    def diagnostiquer_sessions(self):
+        return self._rapport
+
+
+RAPPORT_DIAGNOSTIC = {
+    "candidats": [
+        ("[role=option]", 0, []),
+        (".mpo-deroulant-element", 0, []),
+        ("li", 12, ["Hiver 2027", "Automne 2026"]),
+        ("a", 3, ["Hiver 2026", "Automne 2025", "Profil"]),
+        ("forme du libelle (saison + annee)", 2, ["Hiver 2026", "Automne 2025"]),
+    ],
+    "liens_id_site": 9,
+}
+
+
+def test_diagnostic_affiche_le_compte_et_l_echantillon_par_candidat():
+    session = SessionFactice(connectee=True)
+    lignes = []
+
+    code = _diagnostic(
+        session=session,
+        fabrique_ena=lambda _session: EnaDiagnosticDeTest(RAPPORT_DIAGNOSTIC),
+        imprimer=lignes.append,
+    )
+
+    assert code == 0
+    assert session.fermee is True
+    texte = "\n".join(lignes)
+    assert "[role=option] : 0 element(s)" in texte
+    assert "a : 3 element(s)" in texte
+    assert "Hiver 2026" in texte
+    assert "liens portant idSite= dans la page : 9" in texte
+
+
+def test_diagnostic_connexion_non_detectee_rend_code_non_nul():
+    session = SessionFactice(connectee=False)
+
+    code = _diagnostic(
+        session=session, fabrique_ena=lambda _session: EnaDiagnosticDeTest(RAPPORT_DIAGNOSTIC)
+    )
+
+    assert code == 1
+    assert session.fermee is True
+
+
+# --- SelecteurSessionsIllisible : jamais de trace brute, code non nul ---
+
+
+def test_lister_selecteur_sessions_illisible_rend_code_non_nul_sans_lever():
+    class EnaCassee(EnaDeTest):
+        def sessions_disponibles(self):
+            raise SelecteurSessionsIllisible("panneau illisible")
+
+    session = SessionFactice(connectee=True)
+
+    code = _lister(session=session, fabrique_ena=lambda _session: EnaCassee({}))
+
+    assert code == 1
+    assert session.fermee is True
+
+
+def test_un_seul_cours_selecteur_sessions_illisible_sans_trace_brute(tmp_path, capsys):
+    class EnaCassee(EnaDeTest):
+        def sessions_disponibles(self):
+            raise SelecteurSessionsIllisible("panneau illisible")
+
+    session = SessionFactice()
+
+    code = _un_seul_cours(
+        "181216", tmp_path, session=session, fabrique_ena=lambda _session: EnaCassee({})
+    )
+
+    assert code == 1
+    assert session.fermee is True
+    erreur = capsys.readouterr().err
+    assert "panneau illisible" in erreur
+    assert "Traceback" not in erreur

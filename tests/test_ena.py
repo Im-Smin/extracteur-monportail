@@ -1,7 +1,7 @@
 import pytest
 from playwright.sync_api import TimeoutError as ErreurDelaiPlaywright
 
-from extracteur.ena import URL, Ena
+from extracteur.ena import URL, Ena, SelecteurSessionsIllisible
 from extracteur.modele import Cours, Evaluation, Module, Session
 from extracteur.telechargement import SessionExpiree
 
@@ -511,13 +511,15 @@ class LienNonCliquable(LienFactice):
 
 
 class LocatorOptionsSessionsFactice:
-    """Simule un Locator Playwright scope au selecteur CSS des options.
+    """Simule le Locator Playwright rendu par page.locator("a") (toute la
+    page, pas seulement le bouton) puis filtre par la forme du libelle.
 
-    Durcie a dessein : le filtre texte n'est applique qu'aux libelles reellement
-    rendus par le selecteur passe a .locator(...). Un code qui reperait les
-    options par un mecanisme different (par ex. un role ARIA sans rapport avec
-    ce CSS) ne verrait donc plus rien ici, contrairement a l'ancienne doublure
-    qui acceptait n'importe quel role et rendait le clic toujours gagnant.
+    Durcie a dessein : .filter(has_text=...) n'accepte qu'un motif regex
+    compile, applique par .search() aux libelles reellement exposes par
+    .locator("a"). Un code qui reperait les options par un mecanisme
+    different (position DOM, role ARIA sans rapport) ne verrait donc rien
+    ici, contrairement a l'ancienne doublure qui acceptait n'importe quoi et
+    rendait le clic toujours gagnant.
     """
 
     def __init__(self, page, libelles):
@@ -548,9 +550,14 @@ class LocatorOptionsSessionsFactice:
 
 
 class PageAvecSelecteurSessions(PageFactice):
-    """Simule /portail/cours : le selecteur est un div ARIA dont les options
-    ne sont rendues qu'apres un clic ; cliquer une option (un lien) recharge
-    la liste des cours de la session choisie."""
+    """Simule /portail/cours : le menu deroulant ouvre un panneau ; cliquer
+    une option (un lien) recharge la liste des cours de la session choisie.
+
+    Le panneau n'est PAS un descendant du bouton SELECTEUR_SESSIONS : c'est
+    la structure reelle constatee en session (menu deroulant AngularJS). Les
+    options ne sont donc exposees que par page.locator("a") -- toute la page
+    -- jamais par un selecteur imbrique dans le bouton.
+    """
 
     def __init__(self, libelles_sessions, html_par_session=None):
         super().__init__({})
@@ -566,7 +573,7 @@ class PageAvecSelecteurSessions(PageFactice):
     def locator(self, selecteur):
         if selecteur == "a[href*='/ena/site/']":
             return LocatorFactice(1)
-        if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS:
+        if selecteur == "a":
             return LocatorOptionsSessionsFactice(self, self.libelles_sessions)
         return LocatorFactice(0)
 
@@ -676,12 +683,83 @@ class PageNonAuthentifieeAvecSelecteurSessions(PageNonAuthentifiee):
             self.selecteur_ouvert = True
 
     def locator(self, selecteur):
-        if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS:
+        if selecteur == "a":
             return LocatorOptionsSessionsFactice(self, self.libelles_sessions)
         return LocatorFactice(0)
 
     def content(self):
         return self.html_par_session.get(self.session_selectionnee, "<html></html>")
+
+
+class PageAvecPanneauFrere(PageFactice):
+    """Reproduit fidelement le bug observe en session reelle : le clic sur le
+    bouton ouvre bien le panneau, mais celui-ci n'est jamais un descendant du
+    bouton -- c'est un conteneur frere, ailleurs dans le DOM. L'ancien
+    selecteur imbrique (SELECTEUR_SESSIONS + " a") ne trouve donc jamais rien
+    ici ; seule une recherche page entiere par la forme du libelle le peut.
+    """
+
+    def __init__(self, libelles_sessions):
+        super().__init__({})
+        self.libelles_sessions = libelles_sessions
+        self.selecteur_ouvert = False
+
+    def click(self, selecteur, **_kwargs):
+        if selecteur == Ena.SELECTEUR_SESSIONS:
+            self.selecteur_ouvert = True
+
+    def locator(self, selecteur):
+        if selecteur == "a[href*='/ena/site/']":
+            return LocatorFactice(1)
+        # L'ancien mecanisme, imbrique dans le bouton : ne doit plus jamais
+        # etre interroge, et ne trouverait de toute facon rien ici.
+        if selecteur == f"{Ena.SELECTEUR_SESSIONS} a":
+            return LocatorOptionsSessionsFactice(self, [])
+        if selecteur == "a":
+            return LocatorOptionsSessionsFactice(self, self.libelles_sessions)
+        return LocatorFactice(0)
+
+
+def test_sessions_disponibles_lit_les_options_d_un_panneau_frere_du_bouton():
+    # Symptome reel : "Aucune session trouvee" alors que la connexion
+    # fonctionne. Cause reelle : le panneau ouvert par le clic est un
+    # conteneur frere du bouton, pas un descendant -- l'ancien selecteur
+    # imbrique ne pouvait donc jamais rien y trouver.
+    page = PageAvecPanneauFrere(["Hiver 2026", "Automne 2025"])
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+
+    sessions = ena.sessions_disponibles()
+
+    assert page.selecteur_ouvert is True
+    assert [s.libelle for s in sessions] == ["Hiver 2026", "Automne 2025"]
+
+
+class PageSelecteurOuvertSansOptions(PageFactice):
+    """Le clic sur le selecteur reussit (le panneau s'ouvre bel et bien),
+    mais aucune option ne correspond a la forme attendue d'un libelle de
+    session : DOM change, texte non reconnu, etc. Ne doit jamais rendre une
+    liste vide en silence."""
+
+    def click(self, *_args, **_kwargs):
+        pass
+
+    def locator(self, selecteur):
+        if selecteur == "a[href*='/ena/site/']":
+            return LocatorFactice(1)
+        return LocatorOptionsSessionsFactice(self, [])
+
+
+def test_sessions_disponibles_leve_si_le_panneau_ouvert_ne_rend_aucune_option():
+    # Le pire mode de defaillance du projet : une liste de sessions vide
+    # signifie que l'outil n'archive plus rien du tout, en silence. Si le
+    # panneau s'ouvre mais qu'aucune option n'y est trouvee, il faut le dire
+    # bruyamment plutot que de rendre [].
+    ena = Ena(SessionFactice({}))
+    ena.session.page = PageSelecteurOuvertSansOptions({})
+
+    with pytest.raises(SelecteurSessionsIllisible):
+        ena.sessions_disponibles()
 
 
 class PageSelecteurSessionsIntrouvable(PageFactice):
@@ -702,6 +780,71 @@ def test_sessions_disponibles_tolere_un_selecteur_qui_ne_s_ouvre_pas():
     ena.session.page = PageSelecteurSessionsIntrouvable({})
 
     assert ena.sessions_disponibles() == []
+
+
+class LocatorTextesFactice(LocatorFactice):
+    """Simule un Locator Playwright expose par un selecteur candidat de
+    diagnostic : compte, texte, et filtrage par motif (comme _options_sessions)."""
+
+    def __init__(self, textes):
+        super().__init__(len(textes))
+        self._textes = textes
+
+    def all_text_contents(self):
+        return list(self._textes)
+
+    def filter(self, has_text=None):
+        textes = self._textes
+        if has_text is not None:
+            textes = [texte for texte in textes if has_text.search(texte)]
+        return LocatorTextesFactice(textes)
+
+
+class PageDiagnostic(PageFactice):
+    """Simule le DOM une fois le panneau ouvert, avec des reponses
+    differentes selon le selecteur candidat interroge."""
+
+    def __init__(self, textes_par_selecteur, nombre_liens_id_site):
+        super().__init__({})
+        self.textes_par_selecteur = textes_par_selecteur
+        self.nombre_liens_id_site = nombre_liens_id_site
+        self.selecteur_ouvert = False
+
+    def click(self, selecteur, **_kwargs):
+        if selecteur == Ena.SELECTEUR_SESSIONS:
+            self.selecteur_ouvert = True
+
+    def locator(self, selecteur):
+        if selecteur == "a[href*='/ena/site/']":
+            return LocatorFactice(1)
+        if selecteur == "a[href*='idSite=']":
+            return LocatorFactice(self.nombre_liens_id_site)
+        return LocatorTextesFactice(self.textes_par_selecteur.get(selecteur, []))
+
+
+def test_diagnostiquer_sessions_rend_le_compte_et_l_echantillon_par_candidat():
+    page = PageDiagnostic(
+        {
+            "[role=option]": [],
+            ".mpo-deroulant-element": [],
+            "li": ["Hiver 2026", "Automne 2025"],
+            "a": ["Hiver 2026", "Automne 2025", "Profil"],
+        },
+        nombre_liens_id_site=9,
+    )
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+
+    rapport = ena.diagnostiquer_sessions()
+
+    assert page.selecteur_ouvert is True
+    candidats = dict((selecteur, (nombre, echantillon)) for selecteur, nombre, echantillon in rapport["candidats"])
+    assert candidats["[role=option]"] == (0, [])
+    assert candidats["li"] == (2, ["Hiver 2026", "Automne 2025"])
+    assert candidats["a"] == (3, ["Hiver 2026", "Automne 2025", "Profil"])
+    # La forme du libelle, mecanisme reellement utilise, exclut "Profil".
+    assert candidats["forme du libelle (saison + annee)"] == (2, ["Hiver 2026", "Automne 2025"])
+    assert rapport["liens_id_site"] == 9
 
 
 def test_parcourir_menu_tolere_un_lien_non_cliquable():
