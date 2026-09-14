@@ -277,6 +277,22 @@ d'une structure de menu. Il doit :
 Autrement dit : découverte générique par défaut, URL déterministes comme
 accélérateur, jamais l'inverse.
 
+### Le principe qui rend le projet faisable : les libellés varient, les URL non
+
+Vérifié : `/ena/site/modules?idSite=183033` répond correctement sur GIN-3320 —
+7 modules, même schéma `/ena/site/module?...&idModule=...` — **alors que ce site
+nomme la section « Contenu et activités »** et non « Feuille de route ».
+
+Les sections que le professeur renomme, réordonne ou supprime restent
+accessibles par leur URL canonique. L'outil doit donc s'appuyer sur les URL
+(`modules`, `evaluations`, `resultats`, `evaluation?...&onglet=...`) et traiter
+les libellés du menu uniquement comme une source secondaire de découverte, pour
+attraper les sections hors schéma.
+
+Confirmé par l'utilisateur : la section « Contenu et activités » contient aussi
+les documents fournis par le professeur, au même titre que « Feuille de route ».
+Les deux se parcourent par `/ena/site/modules?idSite=<idSite>`.
+
 ## 8. Ce que la reconnaissance n'a pas encore établi
 
 - L'emplacement exact des boîtes de dépôt dans l'interface d'un site, et la
