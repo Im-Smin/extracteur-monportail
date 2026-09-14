@@ -1,0 +1,6 @@
+.session/
+__pycache__/
+*.pyc
+.venv/
+Archive monPortail/
+archive.log
