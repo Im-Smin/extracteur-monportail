@@ -242,6 +242,41 @@ def test_fichiers_de_depot_visitent_l_onglet_boite_depots():
     assert "onglet=boiteDepots" in ena.session.page.visitees[0]
 
 
+LIEN_DOCUMENT_DEPOSE = (
+    "/contenu/sitescours/040/04000/202601/site181216/depots"
+    "/Z1-PHI3900-H2026-TP2.docx?identifiant=abc"
+)
+
+
+def test_fichiers_de_depot_rend_des_depots_complets():
+    # Cable sur depots_depuis_html, et non fichiers_depuis_html : seule la
+    # premiere porte "Depose par" et la date de remise, la seule trace de qui
+    # a remis quoi sur un travail d'equipe.
+    html = f"""
+    <table>
+      <tr><th>Nom du document</th><th>Taille</th><th>Déposé par</th><th>Date de remise</th></tr>
+      <tr>
+        <td><a href="{LIEN_DOCUMENT_DEPOSE}">Z1-PHI3900-H2026-TP2 - Éthique.docx</a></td>
+        <td>3,25 Mo</td>
+        <td>Buteau, Laurent</td>
+        <td>12 avr. 2026 18h43</td>
+      </tr>
+    </table>
+    """
+    ena = Ena(SessionFactice({"onglet=boiteDepots": html}))
+
+    depots = ena.fichiers_de_depot(
+        Evaluation(id_site="181216", id_evaluation="1035434", titre="TP2")
+    )
+
+    assert len(depots) == 1
+    assert depots[0].nom == "Z1-PHI3900-H2026-TP2 - Éthique.docx"
+    assert depots[0].url == LIEN_DOCUMENT_DEPOSE
+    assert depots[0].taille == "3,25 Mo"
+    assert depots[0].depose_par == "Buteau, Laurent"
+    assert depots[0].date_remise == "12 avr. 2026 18h43"
+
+
 def test_fichiers_du_module_visitent_l_url_du_module():
     ena = Ena(SessionFactice({}))
     ena.fichiers_du_module(Module(id_site="181216", id_module="1795743", titre="M"))
@@ -359,6 +394,43 @@ class LienNonCliquable(LienFactice):
         raise ErreurDelaiPlaywright("Timeout 5000ms exceeded.")
 
 
+class LocatorOptionsSessionsFactice:
+    """Simule un Locator Playwright scope au selecteur CSS des options.
+
+    Durcie a dessein : le filtre texte n'est applique qu'aux libelles reellement
+    rendus par le selecteur passe a .locator(...). Un code qui reperait les
+    options par un mecanisme different (par ex. un role ARIA sans rapport avec
+    ce CSS) ne verrait donc plus rien ici, contrairement a l'ancienne doublure
+    qui acceptait n'importe quel role et rendait le clic toujours gagnant.
+    """
+
+    def __init__(self, page, libelles):
+        self.page = page
+        self.libelles = libelles
+
+    def all_text_contents(self):
+        return list(self.libelles)
+
+    def filter(self, has_text=None):
+        correspondants = self.libelles
+        if has_text is not None:
+            correspondants = [libelle for libelle in self.libelles if has_text.search(libelle)]
+        return LocatorOptionsSessionsFactice(self.page, correspondants)
+
+    @property
+    def first(self):
+        page = self.page
+        libelles = self.libelles
+
+        class Lien:
+            def click(self, **_kwargs):
+                if not libelles:
+                    raise ErreurDelaiPlaywright("Timeout 5000ms exceeded.")
+                page.session_selectionnee = libelles[0]
+
+        return Lien()
+
+
 class PageAvecSelecteurSessions(PageFactice):
     """Simule /portail/cours : le selecteur est un div ARIA dont les options
     ne sont rendues qu'apres un clic ; cliquer une option (un lien) recharge
@@ -375,20 +447,11 @@ class PageAvecSelecteurSessions(PageFactice):
         if selecteur == Ena.SELECTEUR_SESSIONS:
             self.selecteur_ouvert = True
 
-    def eval_on_selector_all(self, _selecteur, _script):
-        return self.libelles_sessions
-
-    def get_by_role(self, _role, name=None, exact=False):
-        page = self
-
-        class Lien:
-            def click(self, **_kwargs):
-                page.session_selectionnee = name
-
-        class Localisateur:
-            first = Lien()
-
-        return Localisateur()
+    def locator(self, selecteur):
+        if selecteur != Ena.SELECTEUR_OPTIONS_SESSIONS:
+            # Mauvais selecteur : aucune option trouvee, comme un vrai Locator.
+            return LocatorOptionsSessionsFactice(self, [])
+        return LocatorOptionsSessionsFactice(self, self.libelles_sessions)
 
     def content(self):
         return self.html_par_session.get(self.session_selectionnee, "<html></html>")
@@ -410,7 +473,7 @@ def test_sessions_disponibles_ouvre_le_selecteur_et_liste_les_sessions():
 
 def test_sites_de_session_selectionne_la_session_puis_extrait_les_cours():
     html_hiver_2026 = '<a href="/ena/site/accueil?idSite=181216">Éthique</a>'
-    page = PageAvecSelecteurSessions([], {"Hiver 2026": html_hiver_2026})
+    page = PageAvecSelecteurSessions(["Hiver 2026"], {"Hiver 2026": html_hiver_2026})
     ena = Ena(SessionFactice({}))
     ena.session.page = page
     session = Session(code="202601", libelle="Hiver 2026")
@@ -422,10 +485,29 @@ def test_sites_de_session_selectionne_la_session_puis_extrait_les_cours():
     assert cours[0].session == session
 
 
+def test_sites_de_session_selectionne_exactement_le_bon_libelle():
+    # Deux options partagent un prefixe : le libelle le plus court ne doit
+    # jamais capturer par erreur le plus long (equivalent de exact=True).
+    html_automne_2025 = '<a href="/ena/site/accueil?idSite=1">A</a>'
+    page = PageAvecSelecteurSessions(
+        ["Automne 2025", "Automne 2025 supplémentaire"],
+        {"Automne 2025": html_automne_2025},
+    )
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+    session = Session(code="202509", libelle="Automne 2025")
+
+    cours = ena.sites_de_session(session)
+
+    assert page.session_selectionnee == "Automne 2025"
+    assert [c.id_site for c in cours] == ["1"]
+
+
 def test_sites_de_session_sans_cours_rend_une_liste_vide():
     # La session courante de l'utilisateur est un exemple reel de session vide :
-    # ce n'est pas une erreur, juste une liste vide.
-    page = PageAvecSelecteurSessions([])
+    # ce n'est pas une erreur, juste une liste vide. L'option existe dans le
+    # selecteur (elle est bien selectionnable) mais ne rend aucun cours.
+    page = PageAvecSelecteurSessions(["Hiver 2026"])
     ena = Ena(SessionFactice({}))
     ena.session.page = page
     session = Session(code="202601", libelle="Hiver 2026")
@@ -443,8 +525,8 @@ class PageSelecteurSessionsIntrouvable(PageFactice):
     def click(self, *_args, **_kwargs):
         raise ErreurDelaiPlaywright("Timeout 5000ms exceeded.")
 
-    def eval_on_selector_all(self, _selecteur, _script):
-        return []
+    def locator(self, _selecteur):
+        return LocatorOptionsSessionsFactice(self, [])
 
 
 def test_sessions_disponibles_tolere_un_selecteur_qui_ne_s_ouvre_pas():

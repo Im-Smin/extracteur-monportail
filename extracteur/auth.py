@@ -79,7 +79,15 @@ class SessionNavigateur:
 
         Detecte soit une page de site de cours (lien /ena/site/ ou texte
         "Liste des cours"), soit la page /portail/cours apres connexion
-        (texte "Cours suivis" ou plusieurs liens vers le menu authentifie).
+        (texte "Cours suivis" ou le lien du menu de compte personnel).
+
+        Le menu de compte personnel (href contenant monportail.ulaval.ca/
+        mon-compte) est releve en session reelle sur une page authentifiee ;
+        il n'existe sur aucune page publique ni page d'erreur du domaine. On
+        lui prefere volontairement un comptage de liens vers /portail : rien
+        ne garantit qu'une page non authentifiee (page d'erreur, redirection
+        intermediaire) ne porte pas deja un menu statique de cinq liens ou
+        plus, ce qui produirait un faux positif silencieux.
         """
         # Signaux d'une page de site de cours authentifiee
         if self.page.locator("a[href*='/ena/site/']").count() > 0:
@@ -91,8 +99,8 @@ class SessionNavigateur:
         if self.page.get_by_text("Cours suivis").count() > 0:
             return True
 
-        # Menu authentifie apparait avec plusieurs liens vers /portail
-        if self.page.locator("a[href*='monportail.ulaval.ca/portail']").count() >= 5:
+        # Menu de compte personnel : n'existe que pour un utilisateur connecte.
+        if self.page.locator("a[href*='monportail.ulaval.ca/mon-compte']").count() > 0:
             return True
 
         return False
