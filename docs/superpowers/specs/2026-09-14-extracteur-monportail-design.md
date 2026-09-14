@@ -1,7 +1,15 @@
 # Extracteur monPortail — design
 
 Date : 2026-09-14
-Statut : design approuvé, en attente du plan d'implémentation
+Statut : design approuvé, **révisé après la phase 0**, en attente du plan
+d'implémentation
+
+> Révision du 2026-09-14, après reconnaissance sur session réelle. L'hypothèse
+> d'origine — une API JSON à consommer — s'est révélée fausse : les sites de
+> cours sont une application Oracle ADF sans API REST. Le pilotage d'interface
+> devient obligatoire et non un repli. Les sections 2, 4, 6, 7, 10 et 11 ont été
+> mises à jour en conséquence. Constats détaillés dans
+> `docs/api-monportail.md`.
 
 ## 1. Problème
 
@@ -25,13 +33,18 @@ Dans le périmètre :
 - Plan de cours de chaque cours.
 - Notes et résultats d'évaluation, exportés en CSV.
 - Tous les cours de l'historique, toutes sessions confondues.
+- **Capture PDF de chaque page visitée** (modules, sections, évaluations).
+  Ajouté après la phase 0 : la reconnaissance a montré que le texte rédigé par
+  les professeurs vit dans les pages elles-mêmes, pas seulement dans les pièces
+  jointes. S'en tenir aux fichiers perdrait l'essentiel du contenu de certains
+  cours.
 
 Hors périmètre, par décision explicite :
 
 - Annonces, nouvelles, forums de discussion.
-- Pages de contenu rédigées dans le site de cours.
 - Capsules vidéo et enregistrements intégrés.
 - Index HTML navigable de l'archive.
+- Sites de cours hébergés sur Brio : la plateforme est conservée.
 
 ## 3. Contraintes techniques établies
 
@@ -68,11 +81,15 @@ Livrables de la phase 0, versionnés dans le dépôt :
 - `docs/api-monportail.md` : pour chaque besoin — liste des cours, documents,
   dépôts, plan de cours, notes — la méthode, l'URL, les paramètres, la forme de
   la réponse et le mécanisme d'authentification observé.
-- `tests/fixtures/*.json` : réponses réelles capturées, anonymisées — noms de
-  personnes et identifiants remplacés — avant d'entrer dans le dépôt.
+- `tests/fixtures/*.html` : pages réelles capturées, anonymisées — noms de
+  personnes et identifiants remplacés — avant d'entrer dans le dépôt. Ce sont
+  des pages HTML et non des réponses JSON, l'API REST espérée n'existant pas.
 
-Critère de sortie : chaque appel listé à la section 6 est documenté et couvert
-par au moins une fixture.
+**Statut : phase 0 terminée le 2026-09-14.** `docs/api-monportail.md` est écrit
+et commité. La chaîne complète — sessions, sites, modules, fichiers,
+évaluations, boîtes de dépôt, résultats — est validée sur session réelle. Les
+captures HTML de fixtures restent à produire lors de la première exécution du
+mode `--un-seul-cours`, sur un cours ancien puis un cours récent.
 
 ## 5. Déroulé utilisateur
 
@@ -108,21 +125,55 @@ tester tout l'archiveur sans ouvrir de fenêtre.
 | Module | Rôle | Dépend de |
 |---|---|---|
 | `auth.py` | Ouvre le navigateur, attend la connexion, expose une session — jeton et cookies — et sait la renouveler | Playwright |
-| `api.py` | Client de l'API monPortail. Ne touche jamais au disque | `auth`, `modele` |
+| `ena.py` | Pilotage du site de cours et extraction. Navigue par URL canoniques, lit le DOM, rend les objets du modèle. Ne touche jamais au disque | `auth`, `modele` |
+| `extraction.py` | Fonctions pures HTML → objets : liste de modules, liens de fichiers, tableau de résultats. Aucune dépendance navigateur, donc entièrement testable | `modele` |
 | `modele.py` | Objets `Cours`, `Fichier`, `Depot`, `Note` : contrat entre l'API et l'archiveur | — |
 | `stockage.py` | Écriture disque : noms sûrs, collisions, `.part`, reprise, SHA-256 | — |
 | `archiveur.py` | Orchestration, arborescence, manifeste, événements de progression | tous |
 | `manifeste.py` | Lecture et écriture du manifeste et du rapport | — |
 | `ui.py` | Fenêtre Tkinter. Aucun appel réseau | `archiveur` |
 
-Interface publique de `api.py`. Les signatures exactes sont figées à la fin de
-la phase 0, mais les points d'entrée sont ceux-ci :
+Interface publique de `ena.py` :
 
-- `lister_cours() -> list[Cours]`
-- `lister_documents(cours) -> list[Fichier]`
-- `lister_depots(cours) -> list[Depot]`
-- `plan_de_cours(cours) -> Fichier | None`
-- `notes(cours) -> list[Note]`
+- `lister_sessions() -> list[Session]`
+- `lister_sites(session) -> list[Cours]`
+- `lister_modules(cours) -> list[Module]`
+- `fichiers_du_module(module) -> list[Fichier]`
+- `lister_evaluations(cours) -> list[Evaluation]`
+- `boite_depot(evaluation) -> list[Fichier]`
+- `resultats(cours) -> list[Note]`
+- `capturer_page_pdf(url, destination) -> Fichier`
+
+Le parcours est **hybride, URL d'abord**. La phase 0 a établi que les libellés
+de menu varient d'un site à l'autre — « Feuille de route » ici, « Contenu et
+activités » là — alors que les URL canoniques restent valides partout :
+
+```
+/ena/site/modules?idSite=<id>
+/ena/site/module?idSite=<id>&idModule=<id>&editionModule=false
+/ena/site/evaluations?idSite=<id>
+/ena/site/evaluation?idSite=<id>&idEvaluation=<id>&onglet=boiteDepots
+/ena/site/resultats?idSite=<id>
+```
+
+L'outil tente donc ces URL en premier, accepte qu'elles ne répondent pas sur un
+site donné, puis complète en lisant le menu réel du DOM. Sur **toute** page
+visitée, il récolte les liens `/contenu/sitescours/...` sans présumer de la
+section d'où ils viennent. Détails complets dans `docs/api-monportail.md`.
+
+**Règle de sécurité inscrite dans le code.** L'outil ne suit que des liens de
+navigation et de téléchargement. Toute commande ADF dont l'identifiant commence
+par `cmd` est ignorée par défaut : la phase 0 a trouvé `cmdObtenirPlanCours`,
+qui ressemble à un lien de téléchargement PDF mais déclenche en réalité « Vous
+vous apprêtez à publier une nouvelle version du plan de cours ». Un archiveur
+n'écrit jamais sur la plateforme qu'il archive.
+
+**Téléchargement des fichiers.** Les liens de fichiers passent par un traceur
+`/analytique/evenement/fichier?...&url=<URL réelle encodée>`. L'outil décode le
+paramètre `url` et télécharge directement la ressource `/contenu/sitescours/...`
+avec les cookies de la session. Cela évite d'alimenter les statistiques de
+consultation de l'Université et donne le nom de fichier d'origine, que le texte
+du lien tronque.
 
 ## 7. Arborescence de sortie
 
@@ -139,6 +190,9 @@ Archive monPortail/
 │       │   └── TP1 - Calculatrice/
 │       │       ├── Remis/
 │       │       └── Rétroaction/
+│       ├── Pages/
+│       │   ├── 01 - Introduction.pdf
+│       │   └── 02 - Notions principales et vocabulaire.pdf
 │       └── notes.csv
 ├── 2020-1 Hiver/
 ├── notes-tous-cours.csv
@@ -221,9 +275,12 @@ par un essai manuel ciblé.
    caractères interdits, `CON.txt`, espaces et points de fin, accents,
    troncature à 80 caractères sans manger l'extension, collisions successives,
    chemin total au-delà de 260 caractères.
-2. **Client API, contre fixtures.** Tests sur les réponses JSON capturées en
-   phase 0, incluant un cours ancien et un cours récent, pour couvrir les
-   divergences de forme entre générations de cours.
+2. **Extraction, contre pages HTML capturées.** `extraction.py` ne dépend pas du
+   navigateur : on lui donne le HTML d'une page réelle et on vérifie les objets
+   produits. Les captures couvrent au moins trois structures différentes — un
+   cours à « Feuille de route », un cours à « Contenu et activités », et un site
+   sans plan de cours ni évaluations — puisque la phase 0 a montré qu'aucun site
+   n'est monté pareil.
 3. **Reprise, avec faux client et dossier temporaire.** Fichier absent :
    téléchargé. Présent à la bonne taille : sauté. `.part` orphelin :
    retéléchargé. Manifeste existant : rejoué.
@@ -243,8 +300,9 @@ l'archivage complet.
 
 | Risque | Traitement |
 |---|---|
-| L'API diffère entre cours anciens et récents | Fixtures des deux générations en phase 0 ; isolation par cours |
-| Une section du site résiste à l'approche API | Repli ciblé sur le pilotage d'interface Playwright, pour cette section seulement |
+| Chaque site de cours a une structure différente | Parcours par URL canoniques d'abord, lecture du menu réel ensuite, récolte des liens `/contenu/` sur toute page ; isolation par cours |
+| Une section échappe aux URL canoniques | Découverte par le menu du DOM ; ce qui reste introuvable est consigné dans `_rapport.html` |
+| Un clic déclenche une écriture sur la plateforme | Aucune commande ADF `cmd*` n'est suivie ; liste blanche explicite exigée |
 | Session Entra ID expirée en cours d'archivage | Renouvellement de jeton, puis mise en pause et invitation à se reconnecter |
 | Limitation de débit côté Université | Trois téléchargements simultanés au maximum, pauses entre les appels |
 | Rétroactions de professeurs inaccessibles par l'API | Consignées dans `_rapport.html` pour récupération manuelle |
