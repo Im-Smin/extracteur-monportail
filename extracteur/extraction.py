@@ -89,14 +89,21 @@ def modules_depuis_html(html: str, id_site: str) -> list[Module]:
 
 
 def fichiers_depuis_html(html: str) -> list[Fichier]:
+    soupe = _soupe(html)
     fichiers: dict[str, Fichier] = {}
 
-    for lien in _soupe(html).find_all("a", href=True):
+    # Premiere passe : collecter les URLs des commandes ADF
+    urls_adf: set[str] = set()
+    for lien in soupe.find_all("a", href=True):
         if est_commande_adf(lien.get("id")):
-            continue
+            url = url_reelle(lien["href"])
+            if url:
+                urls_adf.add(url)
 
+    # Deuxieme passe : collecter les fichiers, en ignorant les URLs ADF
+    for lien in soupe.find_all("a", href=True):
         url = url_reelle(lien["href"])
-        if url is None:
+        if url is None or url in urls_adf:
             continue
 
         if url not in fichiers:
@@ -154,8 +161,6 @@ LIBELLES_HORS_SITE = frozenset(
         "Nouveautés", "Contactez-nous",
     }
 )
-
-LONGUEUR_MAX_LIBELLE = 60
 
 LONGUEUR_MAX_LIBELLE = 60
 

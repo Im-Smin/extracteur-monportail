@@ -90,6 +90,28 @@ def test_fichiers_dedoublonne_les_liens_identiques():
     assert len(fichiers_depuis_html(html)) == 1
 
 
+def test_fichiers_ecarte_les_commandes_adf_meme_sans_id():
+    # Une commande ADF apparait souvent deux fois : icone avec id, puis titre sans id.
+    # Le filtre doit ecarter l'URL entiere, pas juste le lien avec id.
+    html = """
+    <a id="m:j_id_1:cmdObtenirPlanCours" href="/analytique/evenement/fichier?idFichier=1&url=%2Fplandecours.pdf"></a>
+    <a href="/analytique/evenement/fichier?idFichier=1&url=%2Fplandecours.pdf">Plan de cours</a>
+    """
+    assert fichiers_depuis_html(html) == []
+
+
+def test_fichiers_preservent_les_plus_dans_les_noms():
+    # parse_qs convertit les + littéraux en espaces, d'où extraction manuelle par regex.
+    # Verifier que les + ne sont pas convertis en espaces.
+    lien_avec_plus = (
+        "/analytique/evenement/fichier?idFichier=123&url=%2Fcontenu%2Fmodule%2Ffichier%2Bplus.pdf"
+    )
+    html = f'<a href="{lien_avec_plus}">Fichier</a>'
+    fichiers = fichiers_depuis_html(html)
+    assert len(fichiers) == 1
+    assert fichiers[0].nom == "fichier+plus.pdf"
+
+
 def test_resultats_depuis_html():
     html = """
     <table>
