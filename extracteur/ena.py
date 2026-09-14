@@ -178,6 +178,7 @@ class Ena:
 
     def fichiers_du_module(self, module) -> list:
         self._visiter(URL.module(module.id_site, module.id_module))
+        self._assurer_authentifie()
 
         # L'onglet « Contenu du module » est un lien ADF : les documents ne
         # sont pas dans le DOM avant le clic. Son absence n'est pas une erreur.
@@ -244,6 +245,7 @@ class Ena:
 
     def capturer_pdf(self, chemin: str, destination: Path) -> None:
         self._visiter(chemin)
+        self._assurer_authentifie()
         destination.parent.mkdir(parents=True, exist_ok=True)
         self.session.page.pdf(path=str(destination), format="A4", print_background=True)
 

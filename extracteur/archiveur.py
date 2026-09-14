@@ -22,6 +22,21 @@ def _segment(texte: str) -> str:
     return tronquer(nom_sur(texte))
 
 
+def _taille_manifeste(entree: dict) -> int | None:
+    """Parse la colonne taille d'une entree de manifeste, ou None si illisible.
+
+    Le manifeste est toujours ecrit par Manifeste.ajouter en usage normal,
+    mais reste un fichier CSV ouvrable et modifiable a la main. Une colonne
+    vide ou non numerique ne doit pas faire planter la reprise : elle est
+    traitee comme une taille inconnue, au meme titre qu'une absence de
+    verification de taille (voir stockage.deja_present).
+    """
+    try:
+        return int(entree["taille"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 class Archiveur:
     def __init__(self, ena, transport, racine: Path, evenements):
         self.ena = ena
@@ -191,7 +206,7 @@ class Archiveur:
         entree = self.manifeste.par_url(url)
         if entree is not None:
             destination_connue = self.racine / entree["chemin"]
-            if deja_present(destination_connue, int(entree["taille"])):
+            if deja_present(destination_connue, _taille_manifeste(entree)):
                 self.resultat.fichiers_sautes += 1
                 self._emettre("saute", nom)
                 return
