@@ -27,6 +27,9 @@ class Cours:
     sigle: str | None
     titre: str
     session: Session
+    # Releves directement sur /portail/cours ; absents si la page ne les porte pas.
+    url_plan_de_cours: str | None = None
+    url_resultats: str | None = None
 
     def dossier(self) -> str:
         return f"{self.sigle} {self.titre}".strip() if self.sigle else self.titre.strip()
