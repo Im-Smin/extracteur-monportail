@@ -359,6 +359,69 @@ class LienNonCliquable(LienFactice):
         raise ErreurDelaiPlaywright("Timeout 5000ms exceeded.")
 
 
+class PageAvecSelecteurSessions(PageFactice):
+    """Simule /portail/cours : le selecteur est un div ARIA dont les options
+    ne sont rendues qu'apres un clic ; cliquer une option (un lien) recharge
+    la liste des cours de la session choisie."""
+
+    def __init__(self, libelles_sessions, html_par_session=None):
+        super().__init__({})
+        self.libelles_sessions = libelles_sessions
+        self.html_par_session = html_par_session or {}
+        self.selecteur_ouvert = False
+        self.session_selectionnee = None
+
+    def click(self, selecteur, **_kwargs):
+        if selecteur == Ena.SELECTEUR_SESSIONS:
+            self.selecteur_ouvert = True
+
+    def eval_on_selector_all(self, _selecteur, _script):
+        return self.libelles_sessions
+
+    def get_by_role(self, _role, name=None, exact=False):
+        page = self
+
+        class Lien:
+            def click(self, **_kwargs):
+                page.session_selectionnee = name
+
+        class Localisateur:
+            first = Lien()
+
+        return Localisateur()
+
+    def content(self):
+        return self.html_par_session.get(self.session_selectionnee, "<html></html>")
+
+
+def test_sessions_disponibles_ouvre_le_selecteur_et_liste_les_sessions():
+    # Aucun identifiant de site d'amorcage : la page est a une URL stable.
+    page = PageAvecSelecteurSessions(["Hiver 2026", "Automne 2025"])
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+
+    sessions = ena.sessions_disponibles()
+
+    assert any("/portail/cours" in u for u in page.visitees)
+    assert page.selecteur_ouvert is True
+    assert [s.libelle for s in sessions] == ["Hiver 2026", "Automne 2025"]
+    assert [s.code for s in sessions] == ["202601", "202509"]
+
+
+def test_sites_de_session_selectionne_la_session_puis_extrait_les_cours():
+    html_hiver_2026 = '<a href="/ena/site/accueil?idSite=181216">Éthique</a>'
+    page = PageAvecSelecteurSessions([], {"Hiver 2026": html_hiver_2026})
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+    session = Session(code="202601", libelle="Hiver 2026")
+
+    cours = ena.sites_de_session(session)
+
+    assert page.session_selectionnee == "Hiver 2026"
+    assert [c.id_site for c in cours] == ["181216"]
+    assert cours[0].session == session
+
+
 def test_parcourir_menu_tolere_un_lien_non_cliquable():
     # Une section du menu peut echouer au clic sans que ce soit une erreur du
     # site : on passe a la suivante au lieu d'interrompre tout le parcours.

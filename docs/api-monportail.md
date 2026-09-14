@@ -293,6 +293,80 @@ Confirmé par l'utilisateur : la section « Contenu et activités » contient au
 les documents fournis par le professeur, au même titre que « Feuille de route ».
 Les deux se parcourent par `/ena/site/modules?idSite=<idSite>`.
 
+## 7quinquies. Structure réelle des dépôts et des évaluations
+
+Relevé sur PHI-3900 (`idSite=181216`), à partir de captures fournies par
+l'utilisateur.
+
+### Onglets d'une évaluation
+
+Une évaluation présente cinq onglets : **Description**, **Équipe de travail**,
+**Boîte de dépôt**, **Évaluation des pairs**, **Résultats**. Ils correspondent
+au paramètre `onglet` de `/ena/site/evaluation?idSite=<id>&idEvaluation=<id>`.
+
+### Boîte de dépôt
+
+Tableau « Liste des documents déposés », colonnes : **Nom du document** (lien de
+téléchargement), **Taille**, **Déposé par**, **Date de remise**.
+
+Exemple observé : `Z1-PHI3900-H2026-TP2 - Éthique et professionnalisme.docx`,
+3,25 Mo, déposé par « Buteau, Laurent », le 12 avr. 2026 à 18h43.
+
+Deux enseignements :
+
+1. **« Déposé par » n'est pas nécessairement l'utilisateur.** Sur un travail
+   d'équipe, c'est un coéquipier qui dépose pour tout le monde. Cette colonne
+   doit être conservée dans l'archive : elle est la seule trace de qui a remis
+   quoi.
+2. Un fichier remis reste accessible même quand le site est passé en
+   consultation seulement.
+
+### DANGER : bouton « Supprimer » dans la boîte de dépôt
+
+La page porte une case à cocher devant chaque document et un bouton
+**« Supprimer »**. Un clic malencontreux détruirait un travail remis.
+
+C'est le second piège destructeur du site, après `cmdObtenirPlanCours`. La règle
+en découle, et elle est absolue : **l'outil ne clique que des liens de
+navigation et de téléchargement identifiés comme tels.** Jamais un bouton,
+jamais une case à cocher, jamais une soumission de formulaire. Sur cette page en
+particulier, seuls les liens du tableau des documents sont suivis.
+
+### Page « Évaluations et résultats »
+
+Elle ne contient **pas** les notes. Sa « Liste des évaluations » porte les
+colonnes **Titre**, **Date**, **Pondération**, organisées en regroupements :
+
+```
+Sommatives
+  Travaux pratiques : Création et résolution d'études de cas      30 %
+    (Somme des évaluations de ce regroupement)
+    Étude de cas - Travail pratique 1 (TP1)   dû le 1 févr. 2026    5 %
+    Étude de cas - travail pratique 2 (TP2)   dû le 12 avr. 2026   25 %
+```
+
+Chaque ligne d'évaluation porte trois icônes à droite, qui mènent aux onglets
+boîte de dépôt, équipe de travail et résultats.
+
+La page commence par une série d'ancres vers des textes de politique — barème de
+conversion, plagiat, politique du français, usage de ChatGPT, etc. Ce sont des
+sections de texte, pas des fichiers.
+
+**Les notes se trouvent derrière « Sommaire des résultats »**, en haut à droite,
+c'est-à-dire `/ena/site/resultats?idSite=<id>`. Toute extraction de notes doit
+viser cette page, et non la liste des évaluations.
+
+## 7sexies. Périmètre arrêté avec l'utilisateur
+
+- **Seuls les cours sont archivés.** Les « Autres activités » du tableau de bord
+  — formations institutionnelles type EDI, prévention, santé et sécurité — sont
+  hors périmètre par décision explicite. L'énumération par `/portail/cours`
+  convient donc parfaitement.
+- Les sections « Matériel didactique », « Médiagraphie et annexes » et
+  « Bibliographie » ne sont pas parcourues.
+- Les sites anciens de structure atypique seront traités à l'usage, à la
+  première exécution réelle, plutôt que par anticipation.
+
 ## 8. Ce que la reconnaissance n'a pas encore établi
 
 - L'emplacement exact des boîtes de dépôt dans l'interface d'un site, et la

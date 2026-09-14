@@ -1,0 +1,5 @@
+playwright>=1.47
+beautifulsoup4>=4.12
+
+[dev]
+pytest>=8.0

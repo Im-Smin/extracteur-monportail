@@ -1,0 +1,10 @@
+pyproject.toml
+extracteur/__init__.py
+extracteur/nommage.py
+extracteur_monportail.egg-info/PKG-INFO
+extracteur_monportail.egg-info/SOURCES.txt
+extracteur_monportail.egg-info/dependency_links.txt
+extracteur_monportail.egg-info/requires.txt
+extracteur_monportail.egg-info/top_level.txt
+tests/test_modele.py
+tests/test_nommage.py

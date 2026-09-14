@@ -11,9 +11,12 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from bs4 import BeautifulSoup
 
-from extracteur.modele import Fichier, Module, Note
+from extracteur.modele import Cours, Fichier, Module, Note, Session
 
-PREFIXE_TRACEUR = "/analytique/evenement/fichier"
+# Deux traceurs d'analytique observes : les fichiers de module, et le plan de
+# cours (releve sur /portail/cours). Les deux encodent l'URL reelle dans le
+# meme parametre `url`, decodee identiquement plus bas.
+PREFIXES_TRACEUR = ("/analytique/evenement/fichier", "/analytique/evenement/plancours")
 PREFIXE_CONTENU = "/contenu/sitescours/"
 
 
@@ -26,10 +29,12 @@ def url_reelle(href: str) -> str | None:
     if not href or href.startswith("#"):
         return None
 
-    if href.startswith(PREFIXE_TRACEUR):
+    if href.startswith(PREFIXES_TRACEUR):
         # Extraire manuellement le parametre url du query string pour eviter que
         # parse_qs ne pre-decodifie la valeur via unquote_plus. On besoin un seul
-        # niveau de decodage.
+        # niveau de decodage. Le parametre porte parfois un chemin relatif
+        # (fichiers de module), parfois une URL absolue (plan de cours) : les
+        # deux se decodent de la meme facon.
         match = re.search(r"[?&]url=([^&]+)", href)
         if not match:
             return None
@@ -119,6 +124,82 @@ def _scinder_note(texte: str) -> tuple[str, str]:
         gauche, droite = texte.split("/", 1)
         return gauche.strip(), droite.strip()
     return texte.strip(), ""
+
+
+MOTIF_SIGLE = re.compile(r"^([A-Z]{3}-\d{4})\s*:\s*(.+)$")
+
+# Correspondance saison -> mois pour construire le code AAAASS attendu par
+# Session, a partir du libelle textuel affiche par le selecteur de sessions.
+MOIS_SAISON = {"Hiver": "01", "Été": "05", "Automne": "09"}
+
+
+def session_depuis_libelle(libelle: str) -> Session:
+    """Convertit un libelle du selecteur ('Automne 2022') en Session.
+
+    Fonction pure, testable sans navigateur : le selecteur de sessions ne
+    rend que du texte, jamais de code machine.
+    """
+    saison, annee = libelle.split()
+    return Session(code=f"{annee}{MOIS_SAISON[saison]}", libelle=libelle)
+
+
+def _id_site_depuis_href(href: str, marqueur: str) -> str | None:
+    """Id de site porte par un href contenant `marqueur` (ex. /ena/site/accueil)."""
+    if marqueur not in href or "idSite=" not in href:
+        return None
+    id_site = parse_qs(urlsplit(href).query).get("idSite", [""])[0]
+    return id_site or None
+
+
+def cours_depuis_html(html: str, session: Session) -> list[Cours]:
+    """Cours listes sur /portail/cours pour une session, avec les liens
+    directs vers le plan de cours et le sommaire des resultats quand la page
+    les porte. Ces liens peuvent apparaitre avant ou apres le lien du site
+    dans le DOM : on les collecte d'abord, independamment de l'ordre.
+    """
+    soupe = _soupe(html)
+    liens = soupe.find_all("a", href=True)
+
+    plans: dict[str, str] = {}
+    resultats: dict[str, str] = {}
+    for lien in liens:
+        href = lien["href"]
+
+        id_resultats = _id_site_depuis_href(href, "/ena/site/resultats")
+        if id_resultats:
+            resultats[id_resultats] = href
+            continue
+
+        if href.startswith(PREFIXES_TRACEUR):
+            id_plan = parse_qs(urlsplit(href).query).get("idSite", [""])[0]
+            url = url_reelle(href)
+            if id_plan and url:
+                plans[id_plan] = url
+
+    trouves: dict[str, Cours] = {}
+    for lien in liens:
+        href = lien["href"]
+        id_site = _id_site_depuis_href(href, "/ena/site/accueil")
+        if not id_site:
+            continue
+
+        texte = lien.get_text(strip=True)
+        correspondance = MOTIF_SIGLE.match(texte)
+        sigle = correspondance.group(1) if correspondance else None
+        titre = correspondance.group(2) if correspondance else texte
+
+        existant = trouves.get(id_site)
+        if existant is None or (titre and not existant.titre):
+            trouves[id_site] = Cours(
+                id_site=id_site,
+                sigle=sigle,
+                titre=titre,
+                session=session,
+                url_plan_de_cours=plans.get(id_site),
+                url_resultats=resultats.get(id_site),
+            )
+
+    return list(trouves.values())
 
 
 def resultats_depuis_html(html: str) -> list[Note]:

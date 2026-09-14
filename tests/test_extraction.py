@@ -1,12 +1,15 @@
 from extracteur.extraction import (
+    cours_depuis_html,
     est_commande_adf,
     fichiers_depuis_html,
     modules_depuis_html,
     nom_depuis_url,
     resultats_depuis_html,
     sections_du_menu,
+    session_depuis_libelle,
     url_reelle,
 )
+from extracteur.modele import Session
 
 LIEN_TRACEUR = (
     "/analytique/evenement/fichier?idFichier=140274665&idSite=181216"
@@ -14,6 +17,16 @@ LIEN_TRACEUR = (
     "%2Fmodules1434431%2Fmodule1795743%2Fpage4874493%2Fbloccontenu5204221"
     "%2FCours_1_-_Introduction-janvier%25202026.pptx"
     "%3Fidentifiant%3D0a981dbdc4212d59737bc2e400fd0d39076480bc"
+)
+
+# Lien releve sur https://sitescours.monportail.ulaval.ca/portail/cours : le
+# plan de cours passe par un traceur different de celui des fichiers, et son
+# parametre url porte une URL absolue (et non un chemin relatif).
+LIEN_PLANCOURS = (
+    "/analytique/evenement/plancours?idFichier=141542389&idSite=181216"
+    "&url=https%3A%2F%2Fsitescours.monportail.ulaval.ca%2Fcontenu%2Fsitescours"
+    "%2F040%2F04000%2F202601%2Fsite181216%2Fplancours%2FPHI-3900_H26_17541.pdf"
+    "%3Fidentifiant%3D6b6947ef288d16d135b3342db86127f2ee7afcbc"
 )
 
 
@@ -39,9 +52,26 @@ def test_url_reelle_ignore_une_ancre():
     assert url_reelle("#") is None
 
 
+def test_url_reelle_reconnait_le_traceur_du_plan_de_cours():
+    # Le plan de cours passe par /analytique/evenement/plancours, pas
+    # /analytique/evenement/fichier : sans elargir le filtre, il est ignore.
+    assert url_reelle(LIEN_PLANCOURS) == (
+        "https://sitescours.monportail.ulaval.ca/contenu/sitescours/040/04000"
+        "/202601/site181216/plancours/PHI-3900_H26_17541.pdf"
+        "?identifiant=6b6947ef288d16d135b3342db86127f2ee7afcbc"
+    )
+
+
 def test_nom_depuis_url_desencode_et_retire_la_requete():
     url = "/contenu/sitescours/x/Cours_1_-_Introduction-janvier%202026.pptx?identifiant=ab"
     assert nom_depuis_url(url) == "Cours_1_-_Introduction-janvier 2026.pptx"
+
+
+def test_nom_depuis_url_gere_une_url_absolue():
+    # Le parametre url du traceur plancours porte une URL absolue, alors que
+    # les fichiers de module portent un chemin relatif : les deux doivent marcher.
+    url = url_reelle(LIEN_PLANCOURS)
+    assert nom_depuis_url(url) == "PHI-3900_H26_17541.pdf"
 
 
 def test_modules_depuis_html():
@@ -83,6 +113,13 @@ def test_fichiers_depuis_html_retient_les_ressources_internes():
     assert len(fichiers) == 1
     # Le nom vient de l'URL, pas du texte du lien qui est tronque.
     assert fichiers[0].nom == "Cours_1_-_Introduction-janvier 2026.pptx"
+
+
+def test_fichiers_depuis_html_retient_aussi_le_traceur_plancours():
+    html = f'<a href="{LIEN_PLANCOURS}">Plan de cours</a>'
+    fichiers = fichiers_depuis_html(html)
+    assert len(fichiers) == 1
+    assert fichiers[0].nom == "PHI-3900_H26_17541.pdf"
 
 
 def test_fichiers_dedoublonne_les_liens_identiques():
@@ -173,3 +210,93 @@ def test_commandes_adf_reconnues():
     assert est_commande_adf("m:j_id_1:cmdObtenirPlanCours") is True
     assert est_commande_adf("r1:0:ligneMod:voirMod") is False
     assert est_commande_adf(None) is False
+
+
+def test_cours_depuis_html():
+    html = """
+    <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=181216">
+      Éthique et professionnalisme</a>
+    <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=183033">
+      Projet de fin d'études II</a>
+    """
+    session = Session(code="202601", libelle="Hiver 2026")
+    cours = cours_depuis_html(html, session)
+
+    assert [c.id_site for c in cours] == ["181216", "183033"]
+    assert cours[0].titre == "Éthique et professionnalisme"
+
+
+def test_cours_extrait_le_sigle_quand_il_est_present():
+    html = (
+        '<a href="/ena/site/accueil?idSite=1">PHI-3900 : Éthique et professionnalisme</a>'
+    )
+    cours = cours_depuis_html(html, Session(code="202601", libelle="Hiver 2026"))
+    assert cours[0].sigle == "PHI-3900"
+    assert cours[0].titre == "Éthique et professionnalisme"
+
+
+def test_cours_sans_sigle():
+    html = '<a href="/ena/site/accueil?idSite=149047">Nos biais inconscients</a>'
+    cours = cours_depuis_html(html, Session(code="202209", libelle="Automne 2022"))
+    assert cours[0].sigle is None
+    assert cours[0].titre == "Nos biais inconscients"
+
+
+def test_cours_dedoublonne():
+    html = (
+        '<a href="/ena/site/accueil?idSite=1"></a>'
+        '<a href="/ena/site/accueil?idSite=1">Titre</a>'
+    )
+    cours = cours_depuis_html(html, Session(code="202601", libelle="Hiver 2026"))
+    assert len(cours) == 1
+    assert cours[0].titre == "Titre"
+
+
+def test_cours_capte_le_lien_du_plan_de_cours_et_des_resultats():
+    # Trois liens releves tels quels sur la page /portail/cours pour un meme cours.
+    html = (
+        '<a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=181216">'
+        "PHI-3900 : Éthique et professionnalisme</a>"
+        '<a href="https://sitescours.monportail.ulaval.ca/ena/site/resultats?idSite=181216">'
+        "Résultats</a>"
+        f'<a href="https://sitescours.monportail.ulaval.ca{LIEN_PLANCOURS}">Plan de cours</a>'
+    )
+    cours = cours_depuis_html(html, Session(code="202601", libelle="Hiver 2026"))
+
+    assert cours[0].url_resultats == (
+        "https://sitescours.monportail.ulaval.ca/ena/site/resultats?idSite=181216"
+    )
+    assert cours[0].url_plan_de_cours == (
+        "https://sitescours.monportail.ulaval.ca/contenu/sitescours/040/04000"
+        "/202601/site181216/plancours/PHI-3900_H26_17541.pdf"
+        "?identifiant=6b6947ef288d16d135b3342db86127f2ee7afcbc"
+    )
+
+
+def test_cours_sans_plan_ni_resultats_a_des_liens_absents():
+    html = '<a href="/ena/site/accueil?idSite=149047">Nos biais inconscients</a>'
+    cours = cours_depuis_html(html, Session(code="202209", libelle="Automne 2022"))
+    assert cours[0].url_plan_de_cours is None
+    assert cours[0].url_resultats is None
+
+
+def test_session_depuis_libelle_toutes_les_sessions_relevees():
+    # Les douze sessions relevees dans le selecteur reel de /portail/cours.
+    codes_attendus = {
+        "Hiver 2027": "202701",
+        "Automne 2026": "202609",
+        "Hiver 2026": "202601",
+        "Automne 2025": "202509",
+        "Été 2025": "202505",
+        "Hiver 2025": "202501",
+        "Automne 2024": "202409",
+        "Hiver 2024": "202401",
+        "Automne 2023": "202309",
+        "Été 2023": "202305",
+        "Hiver 2023": "202301",
+        "Automne 2022": "202209",
+    }
+    for libelle, code in codes_attendus.items():
+        session = session_depuis_libelle(libelle)
+        assert session.code == code
+        assert session.libelle == libelle
