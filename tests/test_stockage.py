@@ -67,3 +67,42 @@ def test_les_dossiers_parents_sont_crees(tmp_path):
     destination = tmp_path / "x" / "y" / "a.bin"
     ecrire_flux(destination, [b"abc"])
     assert destination.exists()
+
+
+def test_chemin_long_plus_de_260_caracteres(tmp_path):
+    import os
+    from extracteur.nommage import chemin_long
+
+    # Construire un chemin depassant 260 caracteres (sans prefixe \\?\)
+    profond = tmp_path
+    for i in range(15):
+        profond = profond / ("d" * 50)
+
+    destination = profond / "file.bin"
+
+    # ecrire_flux doit fonctionner sur chemin long
+    taille, empreinte = ecrire_flux(destination, [b"x"])
+
+    assert taille == 1
+    assert empreinte == hashlib.sha256(b"x").hexdigest()
+
+    # deja_present doit reconnaitre le fichier cree
+    assert deja_present(destination, 1) is True
+
+    # Pas de .part subsiste
+    parts = [n for n in os.listdir(chemin_long(profond)) if n.endswith(".part")]
+    assert parts == []
+
+    # Test avec erreur
+    destination2 = profond / "file2.bin"
+
+    def flux_qui_casse():
+        yield b"x"
+        raise ValueError("coupure")
+
+    with pytest.raises(ValueError):
+        ecrire_flux(destination2, flux_qui_casse())
+
+    assert not deja_present(destination2, 1)
+    parts2 = [n for n in os.listdir(chemin_long(profond)) if n.endswith(".part")]
+    assert parts2 == []

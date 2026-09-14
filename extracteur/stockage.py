@@ -1,6 +1,7 @@
 """Ecriture disque : flux, empreinte, et reprise par simple presence du fichier."""
 
 import hashlib
+import os
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -13,10 +14,11 @@ def deja_present(destination: Path, taille_attendue: int | None) -> bool:
     Un fichier portant son nom final est forcement complet : l'ecriture passe
     par un .part renomme seulement a la fin.
     """
-    if not destination.exists():
+    destination_str = chemin_long(destination)
+    if not os.path.exists(destination_str):
         return False
 
-    taille_reelle = destination.stat().st_size
+    taille_reelle = os.stat(destination_str).st_size
     if taille_attendue is None:
         return taille_reelle > 0
     return taille_reelle == taille_attendue
@@ -28,22 +30,27 @@ def ecrire_flux(destination: Path, morceaux: Iterable[bytes]) -> tuple[int, str]
     Rien n'est charge en memoire : une capsule video de 800 Mo ne doit pas faire
     gonfler le processus.
     """
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    os.makedirs(chemin_long(destination.parent), exist_ok=True)
     partiel = destination.with_suffix(destination.suffix + ".part")
+    partiel_str = chemin_long(partiel)
+    destination_str = chemin_long(destination)
 
     empreinte = hashlib.sha256()
     taille = 0
 
     try:
-        with open(chemin_long(partiel), "wb") as sortie:
+        with open(partiel_str, "wb") as sortie:
             for morceau in morceaux:
                 sortie.write(morceau)
                 empreinte.update(morceau)
                 taille += len(morceau)
     except BaseException:
-        partiel.unlink(missing_ok=True)
+        try:
+            os.unlink(partiel_str)
+        except FileNotFoundError:
+            pass
         raise
 
     # Renommage atomique : c'est ce qui rend la reprise fiable.
-    partiel.replace(destination)
+    os.replace(partiel_str, destination_str)
     return taille, empreinte.hexdigest()
