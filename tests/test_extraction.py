@@ -300,3 +300,15 @@ def test_session_depuis_libelle_toutes_les_sessions_relevees():
         session = session_depuis_libelle(libelle)
         assert session.code == code
         assert session.libelle == libelle
+
+
+def test_session_depuis_libelle_inattendu_ne_plante_pas():
+    # Un libelle qui ne correspond a aucune saison connue ne doit pas lever
+    # d'exception : mieux vaut un code explicitement marque comme inconnu
+    # qu'une valeur numerique inventee.
+    assert session_depuis_libelle("Trimestre").code == "INCONNU"
+    assert session_depuis_libelle("Printemps 2025").code == "INCONNU"
+    assert session_depuis_libelle("Automne 2022 supplementaire").code == "INCONNU"
+    assert session_depuis_libelle("").code == "INCONNU"
+    # Le libelle original est toujours conserve, meme quand le code echoue.
+    assert session_depuis_libelle("Printemps 2025").libelle == "Printemps 2025"

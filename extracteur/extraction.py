@@ -24,12 +24,23 @@ def _soupe(html: str) -> BeautifulSoup:
     return BeautifulSoup(html, "html.parser")
 
 
+def _est_traceur(href: str) -> bool:
+    """Vrai si le chemin (domaine ignore) commence par un des traceurs connus.
+
+    Le lien du plan de cours sur /portail/cours porte le domaine complet
+    (https://sitescours.monportail.ulaval.ca/analytique/...), alors que les
+    liens de fichiers de module sont relatifs. Un simple `str.startswith` sur
+    le href entier rate donc systematiquement la forme absolue.
+    """
+    return urlsplit(href).path.startswith(PREFIXES_TRACEUR)
+
+
 def url_reelle(href: str) -> str | None:
     """Extrait l'URL de contenu d'un href, ou None si ce n'est pas une ressource interne."""
     if not href or href.startswith("#"):
         return None
 
-    if href.startswith(PREFIXES_TRACEUR):
+    if _est_traceur(href):
         # Extraire manuellement le parametre url du query string pour eviter que
         # parse_qs ne pre-decodifie la valeur via unquote_plus. On besoin un seul
         # niveau de decodage. Le parametre porte parfois un chemin relatif
@@ -132,15 +143,28 @@ MOTIF_SIGLE = re.compile(r"^([A-Z]{3}-\d{4})\s*:\s*(.+)$")
 # Session, a partir du libelle textuel affiche par le selecteur de sessions.
 MOIS_SAISON = {"Hiver": "01", "Été": "05", "Automne": "09"}
 
+# Code rendu quand le libelle ne correspond a aucune saison connue. Explicite
+# plutot que silencieux : un code invente (ex. tronque a "0000") passerait
+# inapercu et fausserait le tri chronologique de l'archive.
+CODE_SESSION_INCONNUE = "INCONNU"
+
 
 def session_depuis_libelle(libelle: str) -> Session:
     """Convertit un libelle du selecteur ('Automne 2022') en Session.
 
     Fonction pure, testable sans navigateur : le selecteur de sessions ne
-    rend que du texte, jamais de code machine.
+    rend que du texte, jamais de code machine. Un libelle inattendu (nouvelle
+    saison, format different) ne doit jamais faire planter l'extraction : on
+    rend un code explicitement marque comme inconnu plutot que de deviner.
     """
-    saison, annee = libelle.split()
-    return Session(code=f"{annee}{MOIS_SAISON[saison]}", libelle=libelle)
+    mots = libelle.split()
+    if len(mots) == 2:
+        saison, annee = mots
+        mois = MOIS_SAISON.get(saison)
+        if mois and annee.isdigit():
+            return Session(code=f"{annee}{mois}", libelle=libelle)
+
+    return Session(code=CODE_SESSION_INCONNUE, libelle=libelle)
 
 
 def _id_site_depuis_href(href: str, marqueur: str) -> str | None:
@@ -170,7 +194,7 @@ def cours_depuis_html(html: str, session: Session) -> list[Cours]:
             resultats[id_resultats] = href
             continue
 
-        if href.startswith(PREFIXES_TRACEUR):
+        if _est_traceur(href):
             id_plan = parse_qs(urlsplit(href).query).get("idSite", [""])[0]
             url = url_reelle(href)
             if id_plan and url:
