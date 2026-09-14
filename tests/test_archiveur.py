@@ -1,3 +1,4 @@
+import csv
 import queue
 from pathlib import Path
 
@@ -5,6 +6,7 @@ import pytest
 from playwright.sync_api import Error as ErreurPlaywright
 
 from extracteur.archiveur import Archiveur
+from extracteur.manifeste import COLONNES
 from extracteur.modele import Cours, Depot, Evaluation, Fichier, Module, Note, Session
 from extracteur.telechargement import ErreurPermanente, SessionExpiree
 
@@ -221,6 +223,39 @@ def test_collision_reelle_stable_a_travers_les_relances(tmp_path):
     assert sorted(p.name for p in dossier.iterdir()) == ["notes (2).pdf", "notes.pdf"]
 
 
+def test_taille_illisible_dans_le_manifeste_ne_fait_pas_planter_la_reprise(tmp_path):
+    # Un manifeste.csv est un fichier que l'utilisateur peut ouvrir et editer
+    # a la main : une colonne "taille" vide ou non numerique ne doit jamais
+    # lever de ValueError, mais etre traitee comme une taille inconnue.
+    fichier = Fichier(nom="notes.pdf", url="/contenu/sitescours/x/notes.pdf?identifiant=a")
+    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Documents" / "Module 1"
+    dossier.mkdir(parents=True)
+    (dossier / "notes.pdf").write_bytes(b"contenu")
+
+    chemin_relatif = "2026-1 Hiver/PHI-3900 Éthique/Documents/Module 1/notes.pdf"
+    with open(tmp_path / "manifeste.csv", "w", encoding="utf-8-sig", newline="") as sortie:
+        redacteur = csv.DictWriter(sortie, fieldnames=COLONNES)
+        redacteur.writeheader()
+        redacteur.writerow(
+            {
+                "chemin": chemin_relatif,
+                "taille": "",
+                "sha256": "abc",
+                "url": fichier.url,
+                "horodatage": "2026-01-01T00:00:00",
+                "statut": "ok",
+            }
+        )
+
+    archiveur = Archiveur(EnaFactice([fichier]), transport_ok, tmp_path, queue.Queue())
+    resultat = archiveur.archiver([COURS])
+
+    # Taille inconnue : deja_present verifie seulement que le fichier existe
+    # et n'est pas vide, pas de nouveau telechargement.
+    assert resultat.fichiers_sautes == 1
+    assert resultat.fichiers_ecrits == 0
+
+
 def test_plan_de_cours_repli_capture_quand_url_absente(tmp_path):
     # COURS ne porte pas d'url_plan_de_cours : le filet de secours (impression
     # de page) doit etre sollicite.
@@ -379,6 +414,30 @@ def test_session_expiree_depuis_navigation_ne_devient_pas_un_echec_ordinaire(tmp
 
     evenements = queue.Queue()
     archiveur = Archiveur(EnaSessionExpireeSurModules(), transport_ok, tmp_path, evenements)
+
+    with pytest.raises(SessionExpiree):
+        archiveur.archiver([COURS])
+
+    assert archiveur.resultat.echecs == []
+    types = []
+    while not evenements.empty():
+        types.append(evenements.get()[0])
+    assert "pause" in types
+    assert "echec" not in types
+
+
+def test_session_expiree_pendant_la_boucle_des_modules_ne_devient_pas_un_echec_ordinaire(tmp_path):
+    # Meme garde-fou que pour modules() : une session expiree pendant la
+    # boucle des modules (fichiers_du_module ou capturer_pdf) doit remonter
+    # intacte, jamais avalee par l'isolation par cours.
+    class EnaSessionExpireeSurFichiersDuModule(EnaFactice):
+        def fichiers_du_module(self, module):
+            raise SessionExpiree("page de connexion")
+
+    evenements = queue.Queue()
+    archiveur = Archiveur(
+        EnaSessionExpireeSurFichiersDuModule(), transport_ok, tmp_path, evenements
+    )
 
     with pytest.raises(SessionExpiree):
         archiveur.archiver([COURS])

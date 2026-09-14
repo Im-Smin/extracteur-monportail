@@ -129,6 +129,30 @@ def test_parcourir_menu_leve_session_expiree_si_page_non_authentifiee():
         ena.parcourir_menu(COURS_QUELCONQUE, lambda libelle, html: None)
 
 
+def test_fichiers_du_module_leve_session_expiree_si_page_non_authentifiee():
+    # Sans ce garde-fou, une session expiree pendant la boucle des modules
+    # rend une page de connexion vide, que fichiers_depuis_html lirait comme
+    # "aucun fichier" : une archive silencieusement incomplete.
+    ena = Ena(SessionFactice({}))
+    ena.session.page = PageNonAuthentifiee({})
+
+    with pytest.raises(SessionExpiree):
+        ena.fichiers_du_module(Module(id_site="1", id_module="1", titre="M"))
+
+
+def test_capturer_pdf_leve_session_expiree_si_page_non_authentifiee(tmp_path):
+    # Le plus grave : sans ce garde-fou, capturer_pdf imprime la page de
+    # connexion et la range sous le nom du module, comme une reussite. Un
+    # faux contenu presente comme authentique est pire qu'un contenu manquant.
+    ena = Ena(SessionFactice({}))
+    ena.session.page = PageNonAuthentifiee({})
+
+    with pytest.raises(SessionExpiree):
+        ena.capturer_pdf("/ena/site/module?idSite=1&idModule=1", tmp_path / "m.pdf")
+
+    assert not (tmp_path / "m.pdf").exists()
+
+
 def test_urls_canoniques_sont_bien_formees():
     assert URL.modules("181216") == "/ena/site/modules?idSite=181216"
     assert URL.evaluations("181216") == "/ena/site/evaluations?idSite=181216"
