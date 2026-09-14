@@ -104,7 +104,7 @@ def test_fichiers_preservent_les_plus_dans_les_noms():
     # parse_qs convertit les + littéraux en espaces, d'où extraction manuelle par regex.
     # Verifier que les + ne sont pas convertis en espaces.
     lien_avec_plus = (
-        "/analytique/evenement/fichier?idFichier=123&url=%2Fcontenu%2Fmodule%2Ffichier%2Bplus.pdf"
+        "/analytique/evenement/fichier?idFichier=123&url=%2Fcontenu%2Fmodule%2Ffichier+plus.pdf"
     )
     html = f'<a href="{lien_avec_plus}">Fichier</a>'
     fichiers = fichiers_depuis_html(html)
