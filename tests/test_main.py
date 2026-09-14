@@ -1,11 +1,17 @@
 import queue
 
+import pytest
+
 from extracteur.__main__ import (
+    ConnexionEchouee,
     _afficher_sessions,
     _chercher_cours,
     _code_de_sortie,
+    _connecter,
+    _construire_analyseur,
     _drainer,
     _ecrire_rapport_final,
+    _lister,
     _un_seul_cours,
 )
 from extracteur.modele import Cours, Echec, Resultat, Session
@@ -65,16 +71,19 @@ class EnaDeTest:
 class SessionFactice:
     """Doublure de SessionNavigateur : ne touche jamais a Playwright."""
 
-    def __init__(self, connectee=True, transport=None):
+    def __init__(self, connectee=True, transport=None, leve_a_l_attente=None):
         self.connectee = connectee
         self.ouverte = False
         self.fermee = False
         self.transport = transport or (lambda url: _ReponseOk())
+        self._leve_a_l_attente = leve_a_l_attente
 
     def ouvrir(self):
         self.ouverte = True
 
     def attendre_connexion(self, delai=300):
+        if self._leve_a_l_attente is not None:
+            raise self._leve_a_l_attente
         return self.connectee
 
     def fermer(self):
@@ -188,10 +197,6 @@ def test_ecrire_rapport_final_sans_echec(tmp_path):
 
 
 # --- _code_de_sortie ---
-
-
-def test_code_de_sortie_zero_si_des_fichiers_ont_ete_ecrits():
-    assert _code_de_sortie(Resultat(fichiers_ecrits=2, echecs=[Echec("C", "a", "x")])) == 0
 
 
 def test_code_de_sortie_zero_si_rien_ecrit_et_aucun_echec():
@@ -310,3 +315,129 @@ def test_un_seul_cours_ferme_toujours_la_session_meme_sur_erreur_inattendue(tmp_
 
     assert code == 1
     assert session.fermee is True
+
+
+# --- _connecter : fermeture garantie du navigateur (defaut 1) ---
+
+
+def test_connecter_ferme_la_session_et_relance_sur_interruption_clavier():
+    # Reproduit le scenario du relecteur : l'utilisateur interrompt au clavier
+    # pendant l'attente du MFA. La session doit etre fermee avant que
+    # l'exception ne remonte, sinon le contexte Chromium reste orphelin et son
+    # verrou de profil peut bloquer le lancement suivant.
+    session = SessionFactice(leve_a_l_attente=KeyboardInterrupt())
+
+    with pytest.raises(KeyboardInterrupt):
+        _connecter(session=session)
+
+    assert session.ouverte is True
+    assert session.fermee is True
+
+
+def test_connecter_ferme_la_session_sur_connexion_non_detectee():
+    session = SessionFactice(connectee=False)
+
+    with pytest.raises(ConnexionEchouee):
+        _connecter(session=session)
+
+    assert session.fermee is True
+
+
+def test_connecter_rend_la_session_ouverte_sur_connexion_reussie():
+    session = SessionFactice(connectee=True)
+
+    resultat = _connecter(session=session)
+
+    assert resultat is session
+    assert session.fermee is False
+
+
+# --- _lister : point d'injection et fermeture garantie (defaut 5) ---
+
+
+def test_lister_ferme_la_session_sur_interruption_clavier_pendant_l_attente():
+    # Meme defaut que ci-dessus, mais observe depuis _lister : c'est le
+    # chemin reellement emprunte par `python -m extracteur --lister`.
+    session = SessionFactice(leve_a_l_attente=KeyboardInterrupt())
+
+    with pytest.raises(KeyboardInterrupt):
+        _lister(session=session, fabrique_ena=lambda _session: EnaDeTest({}))
+
+    assert session.fermee is True
+
+
+def test_lister_enumere_avec_une_session_injectee(capsys):
+    session = SessionFactice(connectee=True)
+    ena = EnaDeTest({SESSION_HIVER: [COURS_HIVER]})
+
+    code = _lister(session=session, fabrique_ena=lambda _session: ena)
+
+    assert code == 0
+    assert session.fermee is True
+    sortie = capsys.readouterr().out
+    assert "181216" in sortie
+
+
+def test_lister_connexion_non_detectee_rend_code_non_nul():
+    session = SessionFactice(connectee=False)
+
+    code = _lister(session=session, fabrique_ena=lambda _session: EnaDeTest({}))
+
+    assert code == 1
+    assert session.fermee is True
+
+
+# --- _chercher_cours : normalisation de l'identifiant (defaut 2) ---
+
+
+def test_chercher_cours_normalise_les_espaces_et_retours_de_ligne():
+    ena = EnaDeTest({SESSION_HIVER: [COURS_HIVER]})
+
+    trouve = _chercher_cours(ena, "  181216\n")
+
+    assert trouve is COURS_HIVER
+
+
+# --- _code_de_sortie : distinction des echecs partiels (defaut 3) ---
+
+
+def test_code_de_sortie_echecs_partiels_rend_un_code_dedie():
+    # Des fichiers ecrits ET des echecs consignes ne sont pas un succes
+    # complet : un script qui ne lit que le code de sortie doit pouvoir s'en
+    # rendre compte. Scenario du projet : un cours ancien produit 9 fichiers
+    # et 3 echecs.
+    code = _code_de_sortie(Resultat(fichiers_ecrits=9, echecs=[Echec("C", "a", "x")] * 3))
+
+    assert code != 0
+
+
+def test_code_de_sortie_zero_uniquement_sans_aucun_echec():
+    assert _code_de_sortie(Resultat(fichiers_ecrits=2, echecs=[])) == 0
+
+
+# --- argparse : --lister et --un-seul-cours mutuellement exclusifs (defaut 4) ---
+
+
+def test_lister_et_un_seul_cours_ensemble_sont_rejetes():
+    analyseur = _construire_analyseur()
+
+    with pytest.raises(SystemExit):
+        analyseur.parse_args(["--lister", "--un-seul-cours", "181216"])
+
+
+def test_lister_seul_est_accepte():
+    analyseur = _construire_analyseur()
+
+    arguments = analyseur.parse_args(["--lister"])
+
+    assert arguments.lister is True
+    assert arguments.id_site is None
+
+
+def test_un_seul_cours_seul_est_accepte():
+    analyseur = _construire_analyseur()
+
+    arguments = analyseur.parse_args(["--un-seul-cours", "181216"])
+
+    assert arguments.id_site == "181216"
+    assert arguments.lister is False

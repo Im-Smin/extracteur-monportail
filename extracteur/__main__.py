@@ -4,11 +4,27 @@
   python -m extracteur --lister                 -> enumeration en console
   python -m extracteur --un-seul-cours 181216   -> archivage d'un seul cours, en console
 
+--lister et --un-seul-cours sont mutuellement exclusifs : les deux ensemble
+sont rejetes par argparse plutot que de laisser --lister l'emporter en
+silence.
+
 Aucun de ces modes ne fabrique de Cours a la main : url_plan_de_cours et
 url_resultats ne sont renseignes que par l'enumeration (Ena.sites_de_session),
 a partir de la page qui liste les cours d'une session. Un Cours construit de
 toutes pieces aurait ces champs vides, et l'archiveur retomberait sur le filet
 de secours (impression de page) au lieu du PDF officiel de l'Universite.
+
+Codes de sortie (contrat pour un appelant qui ne lirait que le code, pas la
+console) :
+  0    succes complet : rien a signaler.
+  1    echec sans rien ecrire (connexion non detectee, erreur inattendue, ou
+       --lister/--un-seul-cours n'a rien produit et a consigne des echecs).
+  2    --un-seul-cours : aucun cours ne correspond a l'idSite demande.
+  3    session expiree en cours de route ; relancer la meme commande, la
+       reprise est idempotente.
+  4    --un-seul-cours : archivage partiel, au moins un fichier ecrit mais
+       aussi des echecs consignes dans le rapport (voir _rapport.html).
+  130  interruption au clavier (Ctrl+C).
 """
 
 import argparse
@@ -41,15 +57,32 @@ class ConnexionEchouee(Exception):
     """La connexion n'a pas ete detectee dans le delai imparti."""
 
 
-def _connecter(sans_fenetre: bool = False) -> SessionNavigateur:
-    session = SessionNavigateur(DOSSIER_PROFIL, sans_fenetre=sans_fenetre)
-    session.ouvrir()
-    print("Connectez-vous dans la fenetre du navigateur...")
-    if not session.attendre_connexion():
+def _connecter(
+    sans_fenetre: bool = False, session: SessionNavigateur | None = None
+) -> SessionNavigateur:
+    """Ouvre le navigateur et attend la connexion manuelle, MFA compris.
+
+    `session` est injectable pour les tests (doublure) ; en usage normal, une
+    vraie SessionNavigateur est creee et ouverte ici.
+
+    Responsable de fermer ce qu'elle a ouvert si quoi que ce soit echoue en
+    cours de route -- interruption clavier comprise. KeyboardInterrupt n'est
+    pas une sous-classe d'Exception, d'ou l'interception large sur
+    BaseException. On ferme puis on relance : on nettoie, on n'avale jamais
+    l'exception.
+    """
+    if session is None:
+        session = SessionNavigateur(DOSSIER_PROFIL, sans_fenetre=sans_fenetre)
+    try:
+        session.ouvrir()
+        print("Connectez-vous dans la fenetre du navigateur...")
+        if not session.attendre_connexion():
+            raise ConnexionEchouee("connexion non detectee dans le delai imparti")
+        print("Connexion detectee.")
+        return session
+    except BaseException:
         session.fermer()
-        raise ConnexionEchouee("connexion non detectee dans le delai imparti")
-    print("Connexion detectee.")
-    return session
+        raise
 
 
 def _chercher_cours(ena, id_site: str) -> "Cours | None":
@@ -61,6 +94,10 @@ def _chercher_cours(ena, id_site: str) -> "Cours | None":
     retomberait sur le filet de secours (impression de page) au lieu du PDF
     officiel de l'Universite.
     """
+    # Normalisation : l'utilisateur copie-colle cette valeur depuis --lister
+    # ou depuis une URL, un espace ou un retour de ligne parasite ne doit pas
+    # faire echouer une comparaison sinon exacte.
+    id_site = id_site.strip()
     for session in ena.sessions_disponibles():
         for cours in ena.sites_de_session(session):
             if cours.id_site == id_site:
@@ -93,7 +130,12 @@ def _ecrire_rapport_final(destination: Path, resultat: Resultat) -> Path:
 
 
 def _code_de_sortie(resultat: Resultat) -> int:
-    return 0 if resultat.fichiers_ecrits or not resultat.echecs else 1
+    """0 seulement si aucun echec n'a ete consigne : un cours ancien peut
+    produire des fichiers ET des echecs partiels, ce n'est pas un succes
+    complet. Voir la docstring du module pour le contrat des codes."""
+    if not resultat.echecs:
+        return 0
+    return 4 if resultat.fichiers_ecrits else 1
 
 
 def _afficher_sessions(ena, imprimer=print) -> None:
@@ -121,11 +163,22 @@ def _afficher_sessions(ena, imprimer=print) -> None:
             )
 
 
-def _lister() -> int:
-    session = None
+def _lister(session=None, fabrique_ena=Ena) -> int:
+    """Enumere sessions et cours, en console, sans navigateur graphique.
+
+    `session` et `fabrique_ena` sont injectables pour les tests (doublure) ;
+    en usage normal, une vraie SessionNavigateur et Ena sont utilisees.
+
+    La fermeture du navigateur est garantie par _connecter elle-meme (voir sa
+    docstring) : si l'attente de connexion est interrompue au clavier avant
+    que `session_ouverte` soit affecte, ce `finally` ne referme rien, mais
+    rien ne reste ouvert non plus, puisque _connecter a deja ferme avant de
+    relancer.
+    """
+    session_ouverte = None
     try:
-        session = _connecter()
-        _afficher_sessions(Ena(session))
+        session_ouverte = _connecter(session=session)
+        _afficher_sessions(fabrique_ena(session_ouverte))
         return 0
     except ConnexionEchouee as erreur:
         print(f"ECHEC : {erreur}", file=sys.stderr)
@@ -138,11 +191,8 @@ def _lister() -> int:
         )
         return 3
     finally:
-        # Encadre par try/finally : meme si l'utilisateur ferme la fenetre ou
-        # interrompt au clavier, le navigateur doit se fermer. Un processus
-        # Playwright orphelin est une nuisance concrete sur Windows.
-        if session is not None:
-            session.fermer()
+        if session_ouverte is not None:
+            session_ouverte.fermer()
 
 
 def _un_seul_cours(id_site: str, destination: Path, session=None, fabrique_ena=Ena) -> int:
@@ -253,6 +303,25 @@ def _un_seul_cours(id_site: str, destination: Path, session=None, fabrique_ena=E
     return _code_de_sortie(resultat)
 
 
+def _construire_analyseur() -> argparse.ArgumentParser:
+    analyseur = argparse.ArgumentParser(prog="extracteur")
+    # Mutuellement exclusifs : si les deux etaient acceptes ensemble,
+    # --lister l'emporterait en silence (voir _un_seul_cours plus bas, jamais
+    # atteint). L'utilisateur doit voir une erreur explicite plutot qu'un
+    # mode different de celui demande.
+    groupe_mode = analyseur.add_mutually_exclusive_group()
+    groupe_mode.add_argument(
+        "--lister", action="store_true", help="enumere sessions et cours, sans rien telecharger"
+    )
+    groupe_mode.add_argument(
+        "--un-seul-cours", dest="id_site", help="idSite a archiver, en console"
+    )
+    analyseur.add_argument(
+        "--destination", type=Path, default=Path("Archive monPortail"), help="dossier de sortie"
+    )
+    return analyseur
+
+
 def main() -> int:
     try:
         # Garde-fou d'affichage : une console Windows dont l'encodage n'est pas
@@ -266,14 +335,7 @@ def main() -> int:
         # ce n'est qu'un garde-fou d'affichage.
         pass
 
-    analyseur = argparse.ArgumentParser(prog="extracteur")
-    analyseur.add_argument(
-        "--lister", action="store_true", help="enumere sessions et cours, sans rien telecharger"
-    )
-    analyseur.add_argument("--un-seul-cours", dest="id_site", help="idSite a archiver, en console")
-    analyseur.add_argument(
-        "--destination", type=Path, default=Path("Archive monPortail"), help="dossier de sortie"
-    )
+    analyseur = _construire_analyseur()
     arguments = analyseur.parse_args()
 
     try:
