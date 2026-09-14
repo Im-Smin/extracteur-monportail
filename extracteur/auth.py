@@ -23,7 +23,7 @@ from urllib.parse import urlparse
 from playwright.sync_api import Error as ErreurPlaywright
 from playwright.sync_api import sync_playwright
 
-URL_DEPART = "https://sitescours.monportail.ulaval.ca/ena/site/accueil"
+URL_DEPART = "https://sitescours.monportail.ulaval.ca/portail/cours"
 HOTE_SITESCOURS = "sitescours.monportail.ulaval.ca"
 TAILLE_MORCEAU = 65536
 
@@ -74,15 +74,28 @@ class SessionNavigateur:
         self.page = self.contexte.pages[0] if self.contexte.pages else self.contexte.new_page()
         self.page.goto(URL_DEPART, wait_until="domcontentloaded")
 
-    def _page_de_site_cours(self) -> bool:
-        """Marqueur de contenu propre a un site de cours reellement ouvert.
+    def _est_page_authentifiee_monportail(self) -> bool:
+        """Marqueur de contenu propre a une page authentifiee de monPortail.
 
-        Un lien vers /ena/site/ ou le bouton "Liste des cours" n'existent que
-        sur une page de site de cours affichee apres connexion.
+        Detecte soit une page de site de cours (lien /ena/site/ ou texte
+        "Liste des cours"), soit la page /portail/cours apres connexion
+        (texte "Cours suivis" ou plusieurs liens vers le menu authentifie).
         """
+        # Signaux d'une page de site de cours authentifiee
         if self.page.locator("a[href*='/ena/site/']").count() > 0:
             return True
-        return self.page.get_by_text("Liste des cours").count() > 0
+        if self.page.get_by_text("Liste des cours").count() > 0:
+            return True
+
+        # Signaux de la page /portail/cours apres connexion
+        if self.page.get_by_text("Cours suivis").count() > 0:
+            return True
+
+        # Menu authentifie apparait avec plusieurs liens vers /portail
+        if self.page.locator("a[href*='monportail.ulaval.ca/portail']").count() >= 5:
+            return True
+
+        return False
 
     def est_connecte(self) -> bool:
         if self.page is None:
@@ -96,7 +109,7 @@ class SessionNavigateur:
         # tire du contenu reel de la page.
         if urlparse(self.page.url).hostname != HOTE_SITESCOURS:
             return False
-        return self._page_de_site_cours()
+        return self._est_page_authentifiee_monportail()
 
     def attendre_connexion(self, delai: int = 300) -> bool:
         """Attend que l'utilisateur ait termine sa connexion, MFA compris."""
