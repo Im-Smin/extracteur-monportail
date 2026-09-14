@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from bs4 import BeautifulSoup
 
-from extracteur.modele import Cours, Fichier, Module, Note, Session
+from extracteur.modele import Cours, Depot, Fichier, Module, Note, Session
 
 # Deux traceurs d'analytique observes : les fichiers de module, et le plan de
 # cours (releve sur /portail/cours). Les deux encodent l'URL reelle dans le
@@ -127,6 +127,63 @@ def fichiers_depuis_html(html: str) -> list[Fichier]:
             fichiers[url] = Fichier(nom=nom_depuis_url(url), url=url)
 
     return list(fichiers.values())
+
+
+# En-tetes du tableau "Liste des documents deposes" d'une boite de depot.
+# L'ordre des colonnes n'est pas suppose fixe (une case a cocher precede
+# parfois "Nom du document") : on les localise par leur libelle.
+COLONNES_DEPOT = ("Nom du document", "Taille", "Déposé par", "Date de remise")
+
+
+def depots_depuis_html(html: str) -> list[Depot]:
+    """Documents rendus dans la boite de depot d'une evaluation.
+
+    DANGER : la page porte aussi une case a cocher par document et un bouton
+    Supprimer, dans un formulaire. On ne rend jamais ces elements : seuls les
+    liens de telechargement trouves dans la colonne "Nom du document" du
+    tableau "Liste des documents deposes" sont retenus. Un clic malencontreux
+    sur Supprimer detruirait un travail remis.
+    """
+    depots: list[Depot] = []
+
+    for tableau in _soupe(html).find_all("table"):
+        entetes = [c.get_text(strip=True) for c in tableau.find_all("th")]
+        if "Nom du document" not in entetes:
+            continue
+
+        index = {colonne: entetes.index(colonne) for colonne in COLONNES_DEPOT if colonne in entetes}
+        idx_nom = index["Nom du document"]
+
+        for ligne in tableau.find_all("tr"):
+            cellules = ligne.find_all("td")
+            if len(cellules) <= idx_nom:
+                continue
+
+            lien = cellules[idx_nom].find("a", href=True)
+            if lien is None:
+                continue
+
+            url = url_reelle(lien["href"])
+            if url is None:
+                continue
+
+            def _texte(colonne: str) -> str:
+                position = index.get(colonne)
+                if position is None or position >= len(cellules):
+                    return ""
+                return cellules[position].get_text(strip=True)
+
+            depots.append(
+                Depot(
+                    nom=lien.get_text(strip=True) or nom_depuis_url(url),
+                    url=url,
+                    taille=_texte("Taille"),
+                    depose_par=_texte("Déposé par"),
+                    date_remise=_texte("Date de remise"),
+                )
+            )
+
+    return depots
 
 
 def _scinder_note(texte: str) -> tuple[str, str]:
