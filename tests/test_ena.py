@@ -422,6 +422,38 @@ def test_sites_de_session_selectionne_la_session_puis_extrait_les_cours():
     assert cours[0].session == session
 
 
+def test_sites_de_session_sans_cours_rend_une_liste_vide():
+    # La session courante de l'utilisateur est un exemple reel de session vide :
+    # ce n'est pas une erreur, juste une liste vide.
+    page = PageAvecSelecteurSessions([])
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+    session = Session(code="202601", libelle="Hiver 2026")
+
+    cours = ena.sites_de_session(session)
+
+    assert page.session_selectionnee == "Hiver 2026"
+    assert cours == []
+
+
+class PageSelecteurSessionsIntrouvable(PageFactice):
+    """Le clic sur le selecteur echoue (site pas encore charge, DOM change) :
+    aucune option n'est donc rendue. Ne doit pas faire echouer l'extraction."""
+
+    def click(self, *_args, **_kwargs):
+        raise ErreurDelaiPlaywright("Timeout 5000ms exceeded.")
+
+    def eval_on_selector_all(self, _selecteur, _script):
+        return []
+
+
+def test_sessions_disponibles_tolere_un_selecteur_qui_ne_s_ouvre_pas():
+    ena = Ena(SessionFactice({}))
+    ena.session.page = PageSelecteurSessionsIntrouvable({})
+
+    assert ena.sessions_disponibles() == []
+
+
 def test_parcourir_menu_tolere_un_lien_non_cliquable():
     # Une section du menu peut echouer au clic sans que ce soit une erreur du
     # site : on passe a la suivante au lieu d'interrompre tout le parcours.

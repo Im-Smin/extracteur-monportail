@@ -14,13 +14,15 @@ from playwright.sync_api import Error as ErreurPlaywright
 from playwright.sync_api import TimeoutError as ErreurDelaiPlaywright
 
 from extracteur.extraction import (
+    cours_depuis_html,
     est_commande_adf,
     fichiers_depuis_html,
     modules_depuis_html,
     resultats_depuis_html,
     sections_du_menu,
+    session_depuis_libelle,
 )
-from extracteur.modele import Evaluation
+from extracteur.modele import Cours, Evaluation, Session
 
 BASE = "https://sitescours.monportail.ulaval.ca"
 ONGLET_CONTENU = "text=Contenu du module"
@@ -66,6 +68,12 @@ class URL:
         """Routeur a URL stables de l'ENA, verifie en phase 0 sur liste_modules."""
         return f"/lieninterne/redirection/{id_site}/{section}"
 
+    @staticmethod
+    def cours() -> str:
+        """Source d'enumeration des sessions et des cours. Aucun identifiant
+        de site d'amorcage n'est necessaire : l'URL est stable."""
+        return "/portail/cours"
+
 
 # Noms de section tentes pour le plan de cours. La phase 0 n'a confirme que
 # `liste_modules` ; les autres sont des candidats a valider au premier passage.
@@ -73,6 +81,13 @@ SECTIONS_PLAN_DE_COURS = ("plan_de_cours", "plancours", "plan_cours")
 
 
 class Ena:
+    # Le selecteur de sessions de /portail/cours n'est pas un <select> natif :
+    # c'est un div ARIA dont les options ne sont rendues qu'apres un clic.
+    # Exception assumee aux regles de navigation : cette ouverture ne modifie
+    # rien cote serveur, contrairement aux liens de modification qu'on evite.
+    SELECTEUR_SESSIONS = 'div[role="listbox"].mpo-deroulant-bouton'
+    SELECTEUR_OPTIONS_SESSIONS = f'{SELECTEUR_SESSIONS} a'
+
     def __init__(self, session):
         self.session = session
 
@@ -80,6 +95,54 @@ class Ena:
         url = chemin if chemin.startswith("http") else BASE + chemin
         self.session.page.goto(url, wait_until="networkidle")
         return self.session.page.content()
+
+    def _ouvrir_selecteur_sessions(self) -> None:
+        """Clique le selecteur pour faire apparaitre ses options dans le DOM.
+
+        Un echec (selecteur absent, pas encore charge) n'est pas fatal : les
+        appelants continuent avec ce qui est disponible plutot que d'echouer.
+        """
+        try:
+            self.session.page.click(self.SELECTEUR_SESSIONS, timeout=5000)
+        except (ErreurDelaiPlaywright, ErreurPlaywright):
+            pass
+
+    def sessions_disponibles(self) -> list[Session]:
+        """Liste les sessions offertes par le selecteur de /portail/cours.
+
+        Sans parametre : aucun identifiant de site d'amorcage n'est requis,
+        la page est a une URL stable.
+        """
+        self._visiter(URL.cours())
+        self._ouvrir_selecteur_sessions()
+
+        libelles = self.session.page.eval_on_selector_all(
+            self.SELECTEUR_OPTIONS_SESSIONS,
+            "elements => elements.map(element => element.textContent.trim())",
+        )
+        return [session_depuis_libelle(libelle) for libelle in libelles]
+
+    def sites_de_session(self, session: Session) -> list[Cours]:
+        """Selectionne une session puis rend ses cours.
+
+        Le clic sur l'option recharge la liste de facon asynchrone : on
+        attend avant de lire le DOM. Une session sans cours (par exemple la
+        session courante de l'utilisateur) est normale : elle rend une liste
+        vide, pas une erreur.
+        """
+        self._visiter(URL.cours())
+        self._ouvrir_selecteur_sessions()
+
+        try:
+            lien = self.session.page.get_by_role(
+                "link", name=session.libelle, exact=True
+            ).first
+            lien.click(timeout=5000)
+            self.session.page.wait_for_timeout(1500)
+        except (ErreurDelaiPlaywright, ErreurPlaywright):
+            pass
+
+        return cours_depuis_html(self.session.page.content(), session)
 
     def modules(self, cours) -> list:
         html = self._visiter(URL.modules(cours.id_site))
