@@ -356,6 +356,38 @@ sections de texte, pas des fichiers.
 c'est-à-dire `/ena/site/resultats?idSite=<id>`. Toute extraction de notes doit
 viser cette page, et non la liste des évaluations.
 
+### Structure du « Sommaire des résultats »
+
+`/ena/site/resultats?idSite=<id>`. Relevé sur PHI-3900. **Quatre** colonnes :
+
+| Colonne | Contenu | Exemples |
+|---|---|---|
+| 1 | Titre de l'évaluation, en lien | `Examen de mi-session (Em)` |
+| 2 | Pourcentage obtenu | `70 %`, `79,75 %`, `100 %`, `0 %` |
+| 3 | Pondération, affichée en gris | `15 %`, `39,99 %`, `1 %` |
+| 4 | Points obtenus sur points possibles | `10,5 / 15`, `31,89 / 39,99`, `0,83 / 1` |
+
+Trois formes de lignes cohabitent :
+
+1. **Ligne d'évaluation** — les quatre colonnes sont remplies.
+2. **Ligne de regroupement** — porte le nom du regroupement suivi de
+   « (Somme des évaluations de ce regroupement) », avec la pondération et le
+   total du groupe, mais **pas** de pourcentage en colonne 2. Exemples relevés :
+   `Examen final (en classe!)` 39,99 % → 31,89 / 39,99 ;
+   `Questionnaires d'autoévaluation (Évaluation formative)` 10 % → 9,83 / 10 ;
+   `Participation aux forums (Évaluation formative)` 5 % → 0 / 5.
+3. **Ligne de total**, en fin de tableau, sans titre : `78,59 / 100`.
+
+Points d'attention pour l'extraction :
+
+- Les nombres sont en notation française, avec la virgule comme séparateur
+  décimal : `10,5`, `0,83`, `39,99`. Ne pas les convertir en flottants à
+  l'aveugle ; les conserver tels quels dans le CSV est plus sûr et plus fidèle.
+- Le modèle `Note` de la spec d'origine — évaluation, note, sur, pondération,
+  moyenne de groupe — ne correspond pas à cette page. Il n'existe aucune moyenne
+  de groupe dans cette vue, et il manque la colonne du pourcentage obtenu ainsi
+  que la notion de regroupement.
+
 ## 7sexies. Périmètre arrêté avec l'utilisateur
 
 - **Seuls les cours sont archivés.** Les « Autres activités » du tableau de bord
