@@ -1,5 +1,6 @@
 from extracteur.extraction import (
     cours_depuis_html,
+    depots_depuis_html,
     est_commande_adf,
     fichiers_depuis_html,
     modules_depuis_html,
@@ -380,3 +381,78 @@ def test_session_depuis_libelle_inattendu_ne_plante_pas():
     assert session_depuis_libelle("").code == "INCONNU"
     # Le libelle original est toujours conserve, meme quand le code echoue.
     assert session_depuis_libelle("Printemps 2025").libelle == "Printemps 2025"
+
+
+LIEN_DOCUMENT_DEPOSE = (
+    "/contenu/sitescours/040/04000/202601/site181216/depots"
+    "/Z1-PHI3900-H2026-TP2.docx?identifiant=abc"
+)
+
+
+def test_depots_depuis_html_extrait_le_document():
+    html = f"""
+    <table>
+      <tr><th>Nom du document</th><th>Taille</th><th>Déposé par</th><th>Date de remise</th></tr>
+      <tr>
+        <td><a href="{LIEN_DOCUMENT_DEPOSE}">Z1-PHI3900-H2026-TP2 - Éthique et professionnalisme.docx</a></td>
+        <td>3,25 Mo</td>
+        <td>Buteau, Laurent</td>
+        <td>12 avr. 2026 18h43</td>
+      </tr>
+    </table>
+    """
+    depots = depots_depuis_html(html)
+    assert len(depots) == 1
+    depot = depots[0]
+    assert depot.nom == "Z1-PHI3900-H2026-TP2 - Éthique et professionnalisme.docx"
+    assert depot.url == LIEN_DOCUMENT_DEPOSE
+    assert depot.taille == "3,25 Mo"
+    # Sur un travail d'equipe, "Depose par" est un coequipier, pas forcement
+    # l'utilisateur : c'est la seule trace de qui a remis quoi.
+    assert depot.depose_par == "Buteau, Laurent"
+    assert depot.date_remise == "12 avr. 2026 18h43"
+
+
+def test_depots_depuis_html_ne_rend_jamais_la_case_a_cocher_ni_le_bouton_supprimer():
+    # DANGER : la boite de depot porte une case a cocher devant chaque
+    # document et un bouton Supprimer dans un formulaire. Un clic
+    # malencontreux detruirait un travail remis : l'extraction ne doit
+    # jamais rendre cliquable autre chose que les liens de telechargement.
+    html = f"""
+    <form action="/ena/site/evaluation" method="post">
+      <table>
+        <tr>
+          <th></th>
+          <th>Nom du document</th>
+          <th>Taille</th>
+          <th>Déposé par</th>
+          <th>Date de remise</th>
+        </tr>
+        <tr>
+          <td><input type="checkbox" name="docSelectionne" value="1"></td>
+          <td><a href="{LIEN_DOCUMENT_DEPOSE}">Z1-PHI3900-H2026-TP2 - Éthique et professionnalisme.docx</a></td>
+          <td>3,25 Mo</td>
+          <td>Buteau, Laurent</td>
+          <td>12 avr. 2026 18h43</td>
+        </tr>
+      </table>
+      <button type="submit" name="cmdSupprimer">Supprimer</button>
+    </form>
+    """
+    depots = depots_depuis_html(html)
+
+    assert len(depots) == 1
+    assert depots[0].nom == "Z1-PHI3900-H2026-TP2 - Éthique et professionnalisme.docx"
+    assert depots[0].url == LIEN_DOCUMENT_DEPOSE
+    # Rien issu de la case a cocher ou du bouton Supprimer ne doit apparaitre.
+    assert all("Supprimer" not in d.nom for d in depots)
+    assert all("docSelectionne" not in d.url for d in depots)
+
+
+def test_depots_depuis_html_ignore_les_tableaux_sans_colonne_nom_du_document():
+    html = "<table><tr><th>Module</th><th>Titre</th></tr><tr><td>1</td><td>Intro</td></tr></table>"
+    assert depots_depuis_html(html) == []
+
+
+def test_depots_depuis_html_page_sans_tableau():
+    assert depots_depuis_html("<p>Aucun document</p>") == []

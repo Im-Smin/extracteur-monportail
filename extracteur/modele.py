@@ -54,6 +54,22 @@ class Fichier:
 
 
 @dataclass(frozen=True)
+class Depot:
+    """Un document remis dans la boite de depot d'une evaluation.
+
+    Sur un travail d'equipe, `depose_par` est parfois un coequipier et non
+    l'utilisateur : c'est la seule trace de qui a remis quoi, elle doit
+    survivre a l'archivage au meme titre que le fichier lui-meme.
+    """
+
+    nom: str
+    url: str
+    taille: str = ""
+    depose_par: str = ""
+    date_remise: str = ""
+
+
+@dataclass(frozen=True)
 class Evaluation:
     id_site: str
     id_evaluation: str
