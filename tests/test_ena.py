@@ -555,8 +555,9 @@ class PageAvecSelecteurSessions(PageFactice):
 
     Le panneau n'est PAS un descendant du bouton SELECTEUR_SESSIONS : c'est
     la structure reelle constatee en session (menu deroulant AngularJS). Les
-    options ne sont donc exposees que par page.locator("a") -- toute la page
-    -- jamais par un selecteur imbrique dans le bouton.
+    options ne sont donc exposees que par SELECTEUR_OPTIONS_SESSIONS -- toute
+    la page, sauf l'interieur du bouton -- jamais par un selecteur imbrique
+    dans le bouton.
     """
 
     def __init__(self, libelles_sessions, html_par_session=None):
@@ -573,7 +574,7 @@ class PageAvecSelecteurSessions(PageFactice):
     def locator(self, selecteur):
         if selecteur == "a[href*='/ena/site/']":
             return LocatorFactice(1)
-        if selecteur == "a":
+        if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS:
             return LocatorOptionsSessionsFactice(self, self.libelles_sessions)
         return LocatorFactice(0)
 
@@ -683,7 +684,7 @@ class PageNonAuthentifieeAvecSelecteurSessions(PageNonAuthentifiee):
             self.selecteur_ouvert = True
 
     def locator(self, selecteur):
-        if selecteur == "a":
+        if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS:
             return LocatorOptionsSessionsFactice(self, self.libelles_sessions)
         return LocatorFactice(0)
 
@@ -715,7 +716,7 @@ class PageAvecPanneauFrere(PageFactice):
         # etre interroge, et ne trouverait de toute facon rien ici.
         if selecteur == f"{Ena.SELECTEUR_SESSIONS} a":
             return LocatorOptionsSessionsFactice(self, [])
-        if selecteur == "a":
+        if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS:
             return LocatorOptionsSessionsFactice(self, self.libelles_sessions)
         return LocatorFactice(0)
 
@@ -733,6 +734,59 @@ def test_sessions_disponibles_lit_les_options_d_un_panneau_frere_du_bouton():
 
     assert page.selecteur_ouvert is True
     assert [s.libelle for s in sessions] == ["Hiver 2026", "Automne 2025"]
+
+
+class PageAvecBoutonPortantLaValeurCourante(PageFactice):
+    """Reproduit le risque signale en inspection reelle : le bouton du
+    selecteur porte sa valeur courante (ex. "Automne 2025"), qui matche
+    exactement le meme motif de libelle que les douze options. Aujourd'hui
+    c'est un <span>, jamais un <a> -- mais si un futur changement de markup
+    en faisait un <a>, il vivrait a l'interieur de SELECTEUR_SESSIONS et
+    porterait le meme texte qu'une des options du conteneur frere.
+    """
+
+    def __init__(self, libelles_options, libelle_bouton):
+        super().__init__({})
+        self.libelles_options = libelles_options
+        self.libelle_bouton = libelle_bouton
+        self.selecteur_ouvert = False
+
+    def click(self, selecteur, **_kwargs):
+        if selecteur == Ena.SELECTEUR_SESSIONS:
+            self.selecteur_ouvert = True
+
+    def locator(self, selecteur):
+        if selecteur == "a[href*='/ena/site/']":
+            return LocatorFactice(1)
+        if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS:
+            return LocatorOptionsSessionsFactice(self, self.libelles_options)
+        if selecteur == "a":
+            # Sans l'exclusion, l'ancre du bouton apparaitrait aussi ici, en
+            # plus des douze options du conteneur frere.
+            return LocatorOptionsSessionsFactice(
+                self, self.libelles_options + [self.libelle_bouton]
+            )
+        return LocatorFactice(0)
+
+
+def test_sessions_disponibles_exclut_la_valeur_courante_du_bouton_sans_doublon():
+    # Le bouton porte "Automne 2025" comme valeur courante ; les options du
+    # conteneur frere l'incluent deja legitimement. Un mecanisme qui ne
+    # distinguerait pas l'interieur du bouton du reste de la page rendrait
+    # treize sessions, dont un "Automne 2025" en double.
+    douze_sessions = [
+        "Hiver 2027", "Automne 2026", "Hiver 2026", "Automne 2025", "Été 2025",
+        "Hiver 2025", "Automne 2024", "Été 2024", "Hiver 2024", "Automne 2023",
+        "Été 2023", "Hiver 2023",
+    ]
+    page = PageAvecBoutonPortantLaValeurCourante(douze_sessions, libelle_bouton="Automne 2025")
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+
+    sessions = ena.sessions_disponibles()
+
+    assert len(sessions) == 12
+    assert len({s.libelle for s in sessions}) == 12
 
 
 class PageSelecteurOuvertSansOptions(PageFactice):
@@ -829,6 +883,9 @@ def test_diagnostiquer_sessions_rend_le_compte_et_l_echantillon_par_candidat():
             ".mpo-deroulant-element": [],
             "li": ["Hiver 2026", "Automne 2025"],
             "a": ["Hiver 2026", "Automne 2025", "Profil"],
+            # Mecanisme reellement utilise par _options_sessions : les memes
+            # options que "a", mais deja privees de l'interieur du bouton.
+            Ena.SELECTEUR_OPTIONS_SESSIONS: ["Hiver 2026", "Automne 2025", "Profil"],
         },
         nombre_liens_id_site=9,
     )

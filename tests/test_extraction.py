@@ -30,6 +30,17 @@ LIEN_PLANCOURS = (
     "%3Fidentifiant%3D6b6947ef288d16d135b3342db86127f2ee7afcbc"
 )
 
+# Variante sans le parametre idSite sur le traceur lui-meme : un appariement
+# global par idSite ne peut alors associer ce plan de cours a aucun cours,
+# alors qu'une lecture carte par carte le trouve quand meme, puisqu'il est
+# physiquement dans la carte du bon cours.
+LIEN_PLANCOURS_SANS_IDSITE = (
+    "/analytique/evenement/plancours?idFichier=141542389"
+    "&url=https%3A%2F%2Fsitescours.monportail.ulaval.ca%2Fcontenu%2Fsitescours"
+    "%2F040%2F04000%2F202601%2Fsite100001%2Fplancours%2FABC-1000_H26_17541.pdf"
+    "%3Fidentifiant%3D6b6947ef288d16d135b3342db86127f2ee7afcbc"
+)
+
 
 def test_url_reelle_decode_le_parametre_url():
     assert url_reelle(LIEN_TRACEUR) == (
@@ -296,12 +307,70 @@ def test_cours_depuis_html():
 
 
 def test_cours_extrait_le_sigle_quand_il_est_present():
-    html = (
-        '<a href="/ena/site/accueil?idSite=1">ABC-1000 : Cours exemple C</a>'
-    )
+    # Structure reelle constatee sur /portail/cours (session Automne 2025) :
+    # le lien ne porte que le titre, jamais le sigle. Le sigle est un texte de
+    # la carte elle-meme, sous la forme "SIGLE-0000, NRC : xxxxx (sect. yy)".
+    html = """
+    <article class="mpo-boite mpo-boite-principale mpo-boite">
+      <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100012">Cours exemple A</a>
+      GHI-3000, NRC : 10001 (sect. H1)
+      Cours présentiel-hybride
+      Dates limites d'abandon
+      Plages horaires
+      Plan de cours
+      Suivi de ma...
+    </article>
+    """
+    cours = cours_depuis_html(html, Session(code="202509", libelle="Automne 2025"))
+    assert cours[0].sigle == "GHI-3000"
+    assert cours[0].titre == "Cours exemple A"
+
+
+def test_cours_deux_cartes_gardent_chacune_leur_propre_sigle():
+    # Deuxieme carte relevee, meme session : verifie que le sigle de chaque
+    # carte reste bien le sien, sans fuite d'une carte a l'autre.
+    html = """
+    <article class="mpo-boite mpo-boite-principale mpo-boite">
+      <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100012">Cours exemple A</a>
+      GHI-3000, NRC : 10001 (sect. H1)
+    </article>
+    <article class="mpo-boite mpo-boite-principale mpo-boite">
+      <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100013">Cours exemple B</a>
+      PQR-6000, NRC : 88184 (sect. Z3)
+    </article>
+    """
+    cours = cours_depuis_html(html, Session(code="202509", libelle="Automne 2025"))
+    par_id = {c.id_site: c for c in cours}
+
+    assert par_id["100012"].sigle == "GHI-3000"
+    assert par_id["100013"].sigle == "PQR-6000"
+
+
+def test_cours_associe_le_plan_de_cours_a_la_bonne_carte_sans_idsite_global():
+    # Le lien du plan de cours vit dans la carte de son cours (releve reel),
+    # mais son href ne porte pas toujours un idSite exploitable pour un
+    # appariement global : un balayage de page qui s'appuie uniquement sur ce
+    # parametre perdrait ce plan de cours, ou pire, l'attribuerait au mauvais
+    # cours si l'appariement se faisait par ordre d'apparition. La premiere
+    # carte n'a pas de plan de cours du tout : elle ne doit jamais recevoir
+    # celui de la seconde.
+    html = f"""
+    <article class="mpo-boite">
+      <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100012">Cours exemple A</a>
+      GHI-3000, NRC : 10001 (sect. H1)
+    </article>
+    <article class="mpo-boite">
+      <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100001">Cours exemple C</a>
+      ABC-1000, NRC : 12345 (sect. A1)
+      <a href="https://sitescours.monportail.ulaval.ca{LIEN_PLANCOURS_SANS_IDSITE}">Plan de cours</a>
+    </article>
+    """
     cours = cours_depuis_html(html, Session(code="202601", libelle="Hiver 2026"))
-    assert cours[0].sigle == "ABC-1000"
-    assert cours[0].titre == "Cours exemple C"
+    par_id = {c.id_site: c for c in cours}
+
+    assert par_id["100012"].url_plan_de_cours is None
+    assert par_id["100001"].url_plan_de_cours is not None
+    assert "ABC-1000_H26_17541.pdf" in par_id["100001"].url_plan_de_cours
 
 
 def test_cours_sans_sigle():
