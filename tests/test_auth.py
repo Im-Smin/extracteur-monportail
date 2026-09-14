@@ -75,12 +75,13 @@ def test_reconnait_page_portail_avec_cours_suivis():
     assert session.est_connecte()
 
 
-def test_reconnait_page_authentifiee_menu_global_seul():
-    """Test: une page avec menu global authentifie (liens /portail) est reconnue.
+def test_reconnait_page_authentifiee_menu_de_compte_seul():
+    """Test: une page avec le lien du menu de compte personnel est reconnue.
 
     Ce test verifie le cas de /portail/cours apres connexion, sans lien /ena/site/
-    ni texte 'Liste des cours', mais avec le menu global contenant plusieurs liens
-    vers monportail.ulaval.ca/portail.
+    ni texte 'Liste des cours' ni 'Cours suivis', mais avec le lien du menu de
+    compte personnel (monportail.ulaval.ca/mon-compte), releve en session reelle
+    et absent de toute page publique ou d'erreur.
     """
     page = PageFactice(f"https://{HOTE_SITESCOURS}/portail/cours")
     # Pas de lien /ena/site/ ni texte "Liste des cours"
@@ -88,8 +89,8 @@ def test_reconnait_page_authentifiee_menu_global_seul():
     page.ajouter_texte("Liste des cours", 0)
     # Pas de "Cours suivis"
     page.ajouter_texte("Cours suivis", 0)
-    # Mais 19 liens du menu global vers /portail (au seuil minimum de 5)
-    page.ajouter_locateur("a[href*='monportail.ulaval.ca/portail']", 19)
+    # Mais le lien du menu de compte personnel est present
+    page.ajouter_locateur("a[href*='monportail.ulaval.ca/mon-compte']", 1)
 
     session = SessionNavigateurTestable(page)
     assert session.est_connecte()
@@ -107,6 +108,25 @@ def test_rejette_page_connexion_microsoft():
     assert not session.est_connecte()
 
 
+def test_rejette_url_autorisation_microsoft_avec_redirect_uri_en_clair():
+    """Test: fige le piege documente dans auth.py au lieu d'une URL Microsoft
+    generique. L'URL d'autorisation reelle place le nom d'hote cible en clair
+    dans son parametre redirect_uri (l'encodage pour cent ne touche que ':' et
+    '/') ; un simple test par sous-chaine sur l'URL y trouverait
+    "sitescours.monportail.ulaval.ca" avant toute connexion. Bug deja introduit
+    une fois dans ce projet.
+    """
+    url = (
+        "https://login.microsoftonline.com/56778bd5-6a3f-4bd3-a265-93163e4d5bfe/"
+        "oauth2/v2.0/authorize?client_id=0925474d-a550-45a0-a749-396fbb526bdb"
+        "&redirect_uri=https%3A%2F%2Fsitescours.monportail.ulaval.ca%2Fservices%2Foauth2%2Fretour%2F"
+    )
+    page = PageFactice(url)
+
+    session = SessionNavigateurTestable(page)
+    assert not session.est_connecte()
+
+
 def test_rejette_page_sans_marqueur():
     """Test: une page sur le bon domaine sans marqueur n'est pas authentifiee."""
     page = PageFactice(f"https://{HOTE_SITESCOURS}/une/page/quelconque")
@@ -114,7 +134,26 @@ def test_rejette_page_sans_marqueur():
     page.ajouter_locateur("a[href*='/ena/site/']", 0)
     page.ajouter_texte("Liste des cours", 0)
     page.ajouter_texte("Cours suivis", 0)
-    page.ajouter_locateur("a[href*='monportail.ulaval.ca/portail']", 2)  # Pas assez
+    page.ajouter_locateur("a[href*='monportail.ulaval.ca/mon-compte']", 0)
+
+    session = SessionNavigateurTestable(page)
+    assert not session.est_connecte()
+
+
+def test_rejette_page_avec_menu_statique_mais_sans_menu_de_compte():
+    """Test: un menu statique d'au moins cinq liens /portail ne suffit pas.
+
+    Une page d'erreur ou une redirection intermediaire du domaine peut deja
+    porter un menu statique de cinq liens ou plus vers /portail sans que
+    l'utilisateur soit connecte : ce compte ne doit plus jamais suffire a lui
+    seul, contrairement a l'ancien comptage heuristique.
+    """
+    page = PageFactice(f"https://{HOTE_SITESCOURS}/portail/page_erreur")
+    page.ajouter_locateur("a[href*='/ena/site/']", 0)
+    page.ajouter_texte("Liste des cours", 0)
+    page.ajouter_texte("Cours suivis", 0)
+    page.ajouter_locateur("a[href*='monportail.ulaval.ca/portail']", 19)
+    page.ajouter_locateur("a[href*='monportail.ulaval.ca/mon-compte']", 0)
 
     session = SessionNavigateurTestable(page)
     assert not session.est_connecte()

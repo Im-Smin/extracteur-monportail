@@ -5,6 +5,8 @@ from datetime import datetime
 from html import escape
 from pathlib import Path
 
+from extracteur.extraction import COLONNES_DEPOT
+
 COLONNES = ["chemin", "taille", "sha256", "url", "horodatage", "statut"]
 ENCODAGE_CSV = "utf-8-sig"  # Excel lit mal l'UTF-8 sans BOM.
 
@@ -92,6 +94,23 @@ def ecrire_notes_consolidees(destination: Path, lignes) -> None:
         redacteur.writerow(["Session", "Cours"] + COLONNES_NOTE)
         for session, cours, note in lignes:
             redacteur.writerow([session, cours] + _ligne_note(note))
+
+
+def ecrire_depots(destination: Path, depots) -> None:
+    """CSV pose a cote des fichiers d'une boite de depot.
+
+    Conserve les quatre colonnes de "Liste des documents deposes" : "Depose
+    par" n'est pas necessairement l'utilisateur sur un travail d'equipe, et
+    c'est la seule trace de qui a remis quoi. Ne touche jamais la case a
+    cocher ni le bouton Supprimer : ce CSV ne fait que consigner ce que
+    depots_depuis_html a deja extrait des liens de telechargement.
+    """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with open(destination, "w", encoding=ENCODAGE_CSV, newline="") as sortie:
+        redacteur = csv.writer(sortie)
+        redacteur.writerow(list(COLONNES_DEPOT))
+        for depot in depots:
+            redacteur.writerow([depot.nom, depot.taille, depot.depose_par, depot.date_remise])
 
 
 def ecrire_rapport(destination: Path, echecs, resume: dict) -> None:

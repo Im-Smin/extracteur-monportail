@@ -6,6 +6,7 @@ restent valides partout. On navigue donc par URL, et on lit le menu seulement
 pour attraper ce qui sort du schema.
 """
 
+import re
 import unicodedata
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -15,6 +16,7 @@ from playwright.sync_api import TimeoutError as ErreurDelaiPlaywright
 
 from extracteur.extraction import (
     cours_depuis_html,
+    depots_depuis_html,
     est_commande_adf,
     fichiers_depuis_html,
     modules_depuis_html,
@@ -107,6 +109,20 @@ class Ena:
         except (ErreurDelaiPlaywright, ErreurPlaywright):
             pass
 
+    def _options_sessions(self):
+        """Localisateur des options du selecteur, mecanisme partage par
+        sessions_disponibles et sites_de_session.
+
+        Le selecteur de /portail/cours est un div ARIA listbox dont les
+        options ne sont pas necessairement des liens accessibles : un <a>
+        sans attribut href n'a aucun role accessible "link". Lire les options
+        par un selecteur CSS puis les cliquer par role ARIA ferait diverger
+        les deux mecanismes, avec un risque de clic silencieusement
+        inoperant si le DOM reel ne colle pas au motif suppose. On repere
+        donc les options par le meme selecteur CSS dans les deux cas.
+        """
+        return self.session.page.locator(self.SELECTEUR_OPTIONS_SESSIONS)
+
     def sessions_disponibles(self) -> list[Session]:
         """Liste les sessions offertes par le selecteur de /portail/cours.
 
@@ -116,11 +132,8 @@ class Ena:
         self._visiter(URL.cours())
         self._ouvrir_selecteur_sessions()
 
-        libelles = self.session.page.eval_on_selector_all(
-            self.SELECTEUR_OPTIONS_SESSIONS,
-            "elements => elements.map(element => element.textContent.trim())",
-        )
-        return [session_depuis_libelle(libelle) for libelle in libelles]
+        libelles = self._options_sessions().all_text_contents()
+        return [session_depuis_libelle(libelle.strip()) for libelle in libelles]
 
     def sites_de_session(self, session: Session) -> list[Cours]:
         """Selectionne une session puis rend ses cours.
@@ -134,9 +147,8 @@ class Ena:
         self._ouvrir_selecteur_sessions()
 
         try:
-            lien = self.session.page.get_by_role(
-                "link", name=session.libelle, exact=True
-            ).first
+            motif_exact = re.compile(rf"^{re.escape(session.libelle)}$")
+            lien = self._options_sessions().filter(has_text=motif_exact).first
             lien.click(timeout=5000)
             self.session.page.wait_for_timeout(1500)
         except (ErreurDelaiPlaywright, ErreurPlaywright):
@@ -166,8 +178,16 @@ class Ena:
         return _evaluations_depuis_html(html, cours.id_site)
 
     def fichiers_de_depot(self, evaluation) -> list:
+        """Documents remis dans la boite de depot d'une evaluation.
+
+        Utilise depots_depuis_html, et non fichiers_depuis_html : seule cette
+        fonction porte "Depose par" et la date de remise, la seule trace de
+        qui a remis quoi sur un travail d'equipe. Elle ne suit par ailleurs
+        que les liens de la colonne "Nom du document" du tableau, jamais la
+        case a cocher ni le bouton Supprimer voisins.
+        """
         html = self._visiter(URL.boite_depot(evaluation.id_site, evaluation.id_evaluation))
-        return fichiers_depuis_html(html)
+        return depots_depuis_html(html)
 
     def resultats(self, cours) -> list:
         html = self._visiter(URL.resultats(cours.id_site))
