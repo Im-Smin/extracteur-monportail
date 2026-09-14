@@ -36,3 +36,21 @@ def test_fichier_est_interne_selon_son_url():
     externe = Fichier(nom="b.pdf", url="https://www.oiq.qc.ca/b.pdf")
     assert interne.est_interne() is True
     assert externe.est_interne() is False
+
+
+def test_dossier_de_cours_sans_sigle_nettoie_espaces_parasites():
+    cours = Cours(
+        id_site="149047",
+        sigle=None,
+        titre="Nos biais inconscients ",
+        session=Session(code="202209", libelle="Automne 2022"),
+    )
+    assert cours.dossier() == "Nos biais inconscients"
+
+
+def test_dossier_de_session_avec_libelle_vide_reste_lisible():
+    assert Session(code="202601", libelle=" ").dossier() == "2026-1"
+
+
+def test_dossier_de_session_avec_code_court_reste_lisible():
+    assert Session(code="2026", libelle="Test").dossier() == "2026"

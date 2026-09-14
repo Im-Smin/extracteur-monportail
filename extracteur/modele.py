@@ -13,8 +13,11 @@ class Session:
 
     def dossier(self) -> str:
         annee, suffixe = self.code[:4], self.code[4:]
+        if not suffixe:
+            return annee
         rang, _ = RANG_SESSION.get(suffixe, (suffixe[-1], ""))
-        nom = self.libelle.split()[0] if self.libelle else ""
+        mots = self.libelle.split() if self.libelle else []
+        nom = mots[0] if mots else ""
         return f"{annee}-{rang} {nom}".strip()
 
 
@@ -26,7 +29,7 @@ class Cours:
     session: Session
 
     def dossier(self) -> str:
-        return f"{self.sigle} {self.titre}".strip() if self.sigle else self.titre
+        return f"{self.sigle} {self.titre}".strip() if self.sigle else self.titre.strip()
 
 
 @dataclass(frozen=True)
