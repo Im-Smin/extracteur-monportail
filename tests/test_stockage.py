@@ -106,3 +106,89 @@ def test_chemin_long_plus_de_260_caracteres(tmp_path):
     assert not deja_present(destination2, 1)
     parts2 = [n for n in os.listdir(chemin_long(profond)) if n.endswith(".part")]
     assert parts2 == []
+
+
+def test_chemin_long_force_usage_sur_toutes_operations(monkeypatch, tmp_path):
+    r"""Force l'usage de chemin_long sur toutes les 5 operations disque.
+
+    Simule un Windows sans LongPathsEnabled en monkeypatchant os.* pour lever
+    sur des chemins longs sans prefixe \\?\. Le test doit rouger si chemin_long
+    est retire d'une quelconque operation.
+    """
+    import os
+
+    PREFIXE = "\\\\?\\"
+    LIMITE = 260
+
+    def check_chemin_long(chemin):
+        """Leve si chemin est long et non prefixe."""
+        chemin_str = str(chemin)  # Convertir Path en str si necessaire
+        if len(chemin_str) > LIMITE and not chemin_str.startswith(PREFIXE):
+            raise OSError(
+                f"Chemin long sans prefixe : {len(chemin_str)} car, attendu \\\\?\\ "
+                f"pour un chemin sans LongPathsEnabled"
+            )
+
+    # Capturer les originals
+    original_makedirs = os.makedirs
+    original_exists = os.path.exists
+    original_stat = os.stat
+    original_unlink = os.unlink
+    original_replace = os.replace
+
+    # Creer les versions verifiantes
+    def patched_makedirs(chemin, **kwargs):
+        check_chemin_long(chemin)
+        return original_makedirs(chemin, **kwargs)
+
+    def patched_exists(chemin):
+        check_chemin_long(chemin)
+        return original_exists(chemin)
+
+    def patched_stat(chemin, **kwargs):
+        check_chemin_long(chemin)
+        return original_stat(chemin, **kwargs)
+
+    def patched_unlink(chemin, **kwargs):
+        check_chemin_long(chemin)
+        return original_unlink(chemin, **kwargs)
+
+    def patched_replace(src, dst, **kwargs):
+        check_chemin_long(src)
+        check_chemin_long(dst)
+        return original_replace(src, dst, **kwargs)
+
+    # Monkeypatcher
+    monkeypatch.setattr(os, "makedirs", patched_makedirs)
+    monkeypatch.setattr(os.path, "exists", patched_exists)
+    monkeypatch.setattr(os, "stat", patched_stat)
+    monkeypatch.setattr(os, "unlink", patched_unlink)
+    monkeypatch.setattr(os, "replace", patched_replace)
+
+    # Construire un chemin depassant 260 caracteres
+    profond = tmp_path
+    for i in range(15):
+        profond = profond / ("d" * 50)
+
+    destination = profond / "file.bin"
+
+    # ecrire_flux DOIT utiliser chemin_long sur toutes les operations
+    taille, empreinte = ecrire_flux(destination, [b"test"])
+    assert taille == 4
+    assert empreinte == hashlib.sha256(b"test").hexdigest()
+
+    # deja_present DOIT utiliser chemin_long sur exists et stat
+    assert deja_present(destination, 4) is True
+
+    # Test du nettoyage en cas d'erreur (unlink DOIT utiliser chemin_long)
+    destination2 = profond / "file2.bin"
+
+    def flux_qui_casse():
+        yield b"abc"
+        raise RuntimeError("coupure")
+
+    with pytest.raises(RuntimeError):
+        ecrire_flux(destination2, flux_qui_casse())
+
+    # Verification que rien n'a subsiste (via deja_present qui utilise chemin_long)
+    assert not deja_present(destination2, 3)
