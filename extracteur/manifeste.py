@@ -1,0 +1,130 @@
+"""Manifeste de l'archive, export des notes et rapport d'echecs."""
+
+import csv
+from datetime import datetime
+from html import escape
+from pathlib import Path
+
+COLONNES = ["chemin", "taille", "sha256", "url", "horodatage", "statut"]
+ENCODAGE_CSV = "utf-8-sig"  # Excel lit mal l'UTF-8 sans BOM.
+
+
+class Manifeste:
+    """Une ligne par fichier archive. Sert a la verification et a la reprise."""
+
+    def __init__(self, racine: Path):
+        self.chemin = Path(racine) / "manifeste.csv"
+        self._entrees: dict[str, dict] | None = None
+
+    def charger(self) -> dict[str, dict]:
+        if self._entrees is not None:
+            return self._entrees
+
+        self._entrees = {}
+        if self.chemin.exists():
+            with open(self.chemin, encoding=ENCODAGE_CSV, newline="") as source:
+                for ligne in csv.DictReader(source):
+                    self._entrees[ligne["chemin"]] = ligne
+        return self._entrees
+
+    def deja_archive(self, chemin_relatif: str) -> bool:
+        return chemin_relatif in self.charger()
+
+    def ajouter(self, chemin_relatif, taille, sha256, url, statut="ok") -> None:
+        entrees = self.charger()
+        nouveau = not self.chemin.exists()
+
+        self.chemin.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.chemin, "a", encoding=ENCODAGE_CSV, newline="") as sortie:
+            redacteur = csv.DictWriter(sortie, fieldnames=COLONNES)
+            if nouveau:
+                redacteur.writeheader()
+            ligne = {
+                "chemin": chemin_relatif,
+                "taille": str(taille),
+                "sha256": sha256,
+                "url": url,
+                "horodatage": datetime.now().isoformat(timespec="seconds"),
+                "statut": statut,
+            }
+            redacteur.writerow(ligne)
+
+        entrees[chemin_relatif] = ligne
+
+
+def ecrire_notes(destination: Path, notes) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with open(destination, "w", encoding=ENCODAGE_CSV, newline="") as sortie:
+        redacteur = csv.writer(sortie)
+        redacteur.writerow(["Évaluation", "Note", "Sur", "Pondération", "Moyenne groupe"])
+        for note in notes:
+            redacteur.writerow(
+                [note.evaluation, note.note, note.sur, note.ponderation, note.moyenne_groupe]
+            )
+
+
+def ecrire_notes_consolidees(destination: Path, lignes) -> None:
+    """Toutes les notes de tous les cours dans un seul CSV, a la racine.
+
+    `lignes` est une suite de tuples (dossier_session, dossier_cours, Note).
+    """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with open(destination, "w", encoding=ENCODAGE_CSV, newline="") as sortie:
+        redacteur = csv.writer(sortie)
+        redacteur.writerow(
+            ["Session", "Cours", "Évaluation", "Note", "Sur", "Pondération", "Moyenne groupe"]
+        )
+        for session, cours, note in lignes:
+            redacteur.writerow(
+                [
+                    session,
+                    cours,
+                    note.evaluation,
+                    note.note,
+                    note.sur,
+                    note.ponderation,
+                    note.moyenne_groupe,
+                ]
+            )
+
+
+def ecrire_rapport(destination: Path, echecs, resume: dict) -> None:
+    """Le document qui dit ce qu'il reste a recuperer a la main."""
+    lignes = []
+    for echec in echecs:
+        lien = (
+            f'<a href="{escape(echec.url)}">{escape(echec.url)}</a>' if echec.url else ""
+        )
+        lignes.append(
+            "<tr>"
+            f"<td>{escape(echec.cours)}</td>"
+            f"<td>{escape(echec.element)}</td>"
+            f"<td>{escape(echec.cause)}</td>"
+            f"<td>{lien}</td>"
+            "</tr>"
+        )
+
+    corps = (
+        "<p><strong>Aucun échec.</strong> Tout le contenu visé a été récupéré.</p>"
+        if not echecs
+        else "<table><tr><th>Cours</th><th>Élément</th><th>Cause</th><th>URL</th></tr>"
+        + "".join(lignes)
+        + "</table>"
+    )
+
+    resume_html = "".join(f"<li>{escape(str(k))} : {escape(str(v))}</li>" for k, v in resume.items())
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        "<!doctype html><html lang='fr'><head><meta charset='utf-8'>"
+        "<title>Rapport d'archivage monPortail</title>"
+        "<style>body{font-family:system-ui;margin:2rem;max-width:60rem}"
+        "table{border-collapse:collapse;width:100%}"
+        "td,th{border:1px solid #ccc;padding:.4rem;text-align:left;font-size:.9rem}"
+        "th{background:#f0f0f0}</style></head><body>"
+        "<h1>Rapport d'archivage monPortail</h1>"
+        f"<ul>{resume_html}</ul>"
+        f"<h2>Éléments non récupérés</h2>{corps}"
+        "</body></html>",
+        encoding="utf-8",
+    )
