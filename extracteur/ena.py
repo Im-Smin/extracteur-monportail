@@ -145,6 +145,7 @@ class Ena:
         la page est a une URL stable.
         """
         self._visiter(URL.cours())
+        self._assurer_authentifie()
         self._ouvrir_selecteur_sessions()
 
         libelles = self._options_sessions().all_text_contents()
@@ -159,6 +160,7 @@ class Ena:
         vide, pas une erreur.
         """
         self._visiter(URL.cours())
+        self._assurer_authentifie()
         self._ouvrir_selecteur_sessions()
 
         try:
