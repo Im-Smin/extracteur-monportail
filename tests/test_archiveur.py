@@ -1,6 +1,8 @@
 import queue
+from pathlib import Path
 
 import pytest
+from playwright.sync_api import Error as ErreurPlaywright
 
 from extracteur.archiveur import Archiveur
 from extracteur.modele import Cours, Depot, Evaluation, Fichier, Module, Note, Session
@@ -201,6 +203,24 @@ def test_collision_reelle_entre_deux_urls_differentes(tmp_path):
     assert sorted(p.name for p in dossier.iterdir()) == ["notes (2).pdf", "notes.pdf"]
 
 
+def test_collision_reelle_stable_a_travers_les_relances(tmp_path):
+    # Le defaut de la ronde 1 : le manifeste etait interroge par le chemin
+    # APRES desambiguisation, mais celui-ci designe toujours l'entree du
+    # PREMIER fichier en collision. La comparaison d'url du second echouait
+    # donc a chaque relance, et nom_unique (qui ne consulte que le disque)
+    # ajoutait un nouveau suffixe a chaque execution. Ici, quatre appels
+    # successifs a archiver() doivent laisser exactement deux fichiers.
+    premier = Fichier(nom="notes.pdf", url="/contenu/sitescours/x/notes.pdf?identifiant=a")
+    second = Fichier(nom="notes.pdf", url="/contenu/sitescours/y/notes.pdf?identifiant=b")
+    ena = EnaFactice([premier, second])
+
+    for _ in range(4):
+        Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
+
+    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Documents" / "Module 1"
+    assert sorted(p.name for p in dossier.iterdir()) == ["notes (2).pdf", "notes.pdf"]
+
+
 def test_plan_de_cours_repli_capture_quand_url_absente(tmp_path):
     # COURS ne porte pas d'url_plan_de_cours : le filet de secours (impression
     # de page) doit etre sollicite.
@@ -283,6 +303,92 @@ def test_site_sans_modules_ni_evaluations_passe_par_le_menu(tmp_path):
         tmp_path / "2022-3 Automne" / "Nos biais inconscients" / "Documents" / "Six biais" / "biais.pdf"
     )
     assert attendu.exists()
+
+
+class PageFacticeMenu:
+    """Page factice pour _capturer_page_courante : pdf() echoue pour la
+    premiere section, reussit pour les suivantes."""
+
+    def __init__(self):
+        self.appels = 0
+
+    def pdf(self, path, **_kwargs):
+        self.appels += 1
+        if self.appels == 1:
+            raise ErreurPlaywright("impression impossible")
+        Path(path).write_bytes(b"%PDF-1.4 factice")
+
+
+class SessionFacticeMenu:
+    def __init__(self, page):
+        self.page = page
+
+
+class EnaMenuAvecEchecPartiel(EnaFactice):
+    """Site sans modules ni evaluations, repli par le menu : la premiere
+    section n'a rien a telecharger et son impression echoue, la seconde
+    porte un vrai fichier recuperable."""
+
+    def __init__(self, page):
+        super().__init__()
+        self.session = SessionFacticeMenu(page)
+
+    def modules(self, cours):
+        return []
+
+    def evaluations(self, cours):
+        return []
+
+    def parcourir_menu(self, cours, action):
+        action("Section un", "<html></html>")
+        action(
+            "Section deux",
+            '<a href="/contenu/sitescours/x/second.pdf?identifiant=b">second.pdf</a>',
+        )
+        return 2
+
+
+def test_echec_capture_menu_isole_la_section_fautive(tmp_path):
+    # Le defaut de la ronde 1 : une exception non interceptee dans
+    # _capturer_page_courante traversait le traitement de TOUTES les sections
+    # du menu, transformant tout en un seul Echec generique sur "(cours
+    # entier)" et perdant en silence le contenu recuperable des sections
+    # suivantes. Ici, la premiere section doit echouer isolement, nommee, et
+    # la seconde doit etre traitee normalement.
+    page = PageFacticeMenu()
+    ena = EnaMenuAvecEchecPartiel(page)
+    archiveur = Archiveur(ena, transport_ok, tmp_path, queue.Queue())
+
+    resultat = archiveur.archiver([COURS])
+
+    assert len(resultat.echecs) == 1
+    assert resultat.echecs[0].cours == COURS.dossier()
+    assert resultat.echecs[0].element == "Section un.pdf"
+
+    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Documents" / "Section deux"
+    assert (dossier / "second.pdf").exists()
+
+
+def test_session_expiree_depuis_navigation_ne_devient_pas_un_echec_ordinaire(tmp_path):
+    # Sans garde-fou dans ena.py, une session expiree en cours de navigation
+    # ne remonte que via SessionExpiree ; l'isolation par cours de archiver()
+    # ne doit surtout pas l'avaler comme une erreur de cours ordinaire.
+    class EnaSessionExpireeSurModules(EnaFactice):
+        def modules(self, cours):
+            raise SessionExpiree("page de connexion")
+
+    evenements = queue.Queue()
+    archiveur = Archiveur(EnaSessionExpireeSurModules(), transport_ok, tmp_path, evenements)
+
+    with pytest.raises(SessionExpiree):
+        archiveur.archiver([COURS])
+
+    assert archiveur.resultat.echecs == []
+    types = []
+    while not evenements.empty():
+        types.append(evenements.get()[0])
+    assert "pause" in types
+    assert "echec" not in types
 
 
 def test_repli_par_le_menu_non_declenche_si_des_modules_existent(tmp_path):

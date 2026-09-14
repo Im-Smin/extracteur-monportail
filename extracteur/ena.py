@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 from playwright.sync_api import Error as ErreurPlaywright
 from playwright.sync_api import TimeoutError as ErreurDelaiPlaywright
 
+from extracteur.auth import est_page_authentifiee
 from extracteur.extraction import (
     cours_depuis_html,
     depots_depuis_html,
@@ -25,6 +26,7 @@ from extracteur.extraction import (
     session_depuis_libelle,
 )
 from extracteur.modele import Cours, Evaluation, Session
+from extracteur.telechargement import SessionExpiree
 
 BASE = "https://sitescours.monportail.ulaval.ca"
 ONGLET_CONTENU = "text=Contenu du module"
@@ -98,6 +100,19 @@ class Ena:
         self.session.page.goto(url, wait_until="networkidle")
         return self.session.page.content()
 
+    def _assurer_authentifie(self) -> None:
+        """Leve SessionExpiree si la page n'est plus authentifiee.
+
+        Si la session Microsoft expire pendant la navigation, la plateforme
+        sert une page de connexion : sans ce garde-fou, les fonctions
+        d'extraction n'y trouvent rien et rendent silencieusement des listes
+        vides, au lieu de mettre la file en pause. Reutilise la meme
+        detection que SessionNavigateur.est_connecte, seul point du projet
+        qui decide de ce qu'est une page authentifiee.
+        """
+        if not est_page_authentifiee(self.session.page):
+            raise SessionExpiree(self.session.page.url)
+
     def _ouvrir_selecteur_sessions(self) -> None:
         """Clique le selecteur pour faire apparaitre ses options dans le DOM.
 
@@ -158,6 +173,7 @@ class Ena:
 
     def modules(self, cours) -> list:
         html = self._visiter(URL.modules(cours.id_site))
+        self._assurer_authentifie()
         return modules_depuis_html(html, cours.id_site)
 
     def fichiers_du_module(self, module) -> list:
@@ -175,6 +191,7 @@ class Ena:
 
     def evaluations(self, cours) -> list:
         html = self._visiter(URL.evaluations(cours.id_site))
+        self._assurer_authentifie()
         return _evaluations_depuis_html(html, cours.id_site)
 
     def fichiers_de_depot(self, evaluation) -> list:
@@ -187,10 +204,12 @@ class Ena:
         case a cocher ni le bouton Supprimer voisins.
         """
         html = self._visiter(URL.boite_depot(evaluation.id_site, evaluation.id_evaluation))
+        self._assurer_authentifie()
         return depots_depuis_html(html)
 
     def resultats(self, cours) -> list:
         html = self._visiter(URL.resultats(cours.id_site))
+        self._assurer_authentifie()
         return resultats_depuis_html(html)
 
     def parcourir_menu(self, cours, action) -> int:
@@ -205,6 +224,7 @@ class Ena:
         nouvelle version du plan de cours au lieu de le telecharger.
         """
         html = self._visiter(URL.accueil(cours.id_site))
+        self._assurer_authentifie()
         visitees = 0
 
         for libelle in sections_du_menu(html):

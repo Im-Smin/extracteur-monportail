@@ -15,6 +15,18 @@ def test_ajout_puis_relecture(tmp_path):
     assert relu["2026-1 Hiver/PHI/a.pdf"]["taille"] == "120"
 
 
+def test_par_url_retrouve_l_entree(tmp_path):
+    # Cle stable pour la reprise : contrairement au chemin, l'url ne change
+    # jamais d'une execution a l'autre a cause de la desambiguisation.
+    manifeste = Manifeste(tmp_path)
+    manifeste.ajouter("Documents/notes.pdf", 120, "abc", "/contenu/notes.pdf", "ok")
+    manifeste.ajouter("Documents/notes (2).pdf", 45, "def", "/contenu/autre.pdf", "ok")
+
+    assert Manifeste(tmp_path).par_url("/contenu/notes.pdf")["chemin"] == "Documents/notes.pdf"
+    assert Manifeste(tmp_path).par_url("/contenu/autre.pdf")["chemin"] == "Documents/notes (2).pdf"
+    assert Manifeste(tmp_path).par_url("/contenu/inconnu.pdf") is None
+
+
 def test_deja_archive(tmp_path):
     manifeste = Manifeste(tmp_path)
     manifeste.ajouter("a.pdf", 1, "x", "/contenu/a.pdf", "ok")
@@ -124,6 +136,10 @@ def test_integration_boite_de_depot_de_ena_jusqu_au_csv(tmp_path):
     from extracteur.ena import Ena
     from extracteur.modele import Evaluation
 
+    class LocatorFactice:
+        def count(self):
+            return 1
+
     class PageFactice:
         def __init__(self, html):
             self._html = html
@@ -134,6 +150,14 @@ def test_integration_boite_de_depot_de_ena_jusqu_au_csv(tmp_path):
 
         def content(self):
             return self._html
+
+        def locator(self, _selecteur):
+            # Simule une page authentifiee : Ena.fichiers_de_depot verifie
+            # desormais que la session n'a pas expire avant d'extraire.
+            return LocatorFactice()
+
+        def get_by_text(self, _texte):
+            return LocatorFactice()
 
     class SessionFactice:
         def __init__(self, html):

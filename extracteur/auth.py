@@ -28,6 +28,59 @@ HOTE_SITESCOURS = "sitescours.monportail.ulaval.ca"
 TAILLE_MORCEAU = 65536
 
 
+def _porte_marqueur_authentifie(page) -> bool:
+    """Marqueur de contenu propre a une page authentifiee de monPortail.
+
+    Detecte soit une page de site de cours (lien /ena/site/ ou texte
+    "Liste des cours"), soit la page /portail/cours apres connexion
+    (texte "Cours suivis" ou le lien du menu de compte personnel).
+
+    Le menu de compte personnel (href contenant monportail.ulaval.ca/
+    mon-compte) est releve en session reelle sur une page authentifiee ;
+    il n'existe sur aucune page publique ni page d'erreur du domaine. Un
+    comptage de liens vers /portail (heuristique anterieure) a ete
+    abandonne au profit de ce marqueur unique, car rien ne garantit qu'une
+    page non authentifiee (page d'erreur, redirection intermediaire) ne
+    porte pas deja un menu statique de cinq liens ou plus, ce qui
+    produirait un faux positif silencieux.
+    """
+    # Signaux d'une page de site de cours authentifiee
+    if page.locator("a[href*='/ena/site/']").count() > 0:
+        return True
+    if page.get_by_text("Liste des cours").count() > 0:
+        return True
+
+    # Signaux de la page /portail/cours apres connexion
+    if page.get_by_text("Cours suivis").count() > 0:
+        return True
+
+    # Menu de compte personnel : n'existe que pour un utilisateur connecte.
+    if page.locator("a[href*='monportail.ulaval.ca/mon-compte']").count() > 0:
+        return True
+
+    return False
+
+
+def est_page_authentifiee(page) -> bool:
+    """Vrai si `page` est une page authentifiee de monPortail.
+
+    Seul point du projet qui decide de ce qu'est une page authentifiee :
+    reutilise par SessionNavigateur.est_connecte et par extracteur.ena, qui
+    verifie ainsi qu'une session n'a pas expire en cours de navigation.
+
+    Un simple test par sous-chaine sur l'URL est insuffisant : l'URL
+    d'autorisation Microsoft place le redirect_uri en clair dans ses
+    parametres (l'encodage pour cent ne touche que ':' et '/'), donc
+    "sitescours.monportail.ulaval.ca" y apparait avant toute connexion. Une
+    page d'erreur sur le bon domaine n'est pas davantage une preuve de
+    connexion. On verifie donc le nom d'hote exact, puis un marqueur tire du
+    contenu reel de la page.
+    """
+    if urlparse(page.url).hostname != HOTE_SITESCOURS:
+        return False
+    return _porte_marqueur_authentifie(page)
+
+
 class Reponse:
     """Adaptateur vers l'interface attendue par telechargement.telecharger.
 
@@ -74,51 +127,10 @@ class SessionNavigateur:
         self.page = self.contexte.pages[0] if self.contexte.pages else self.contexte.new_page()
         self.page.goto(URL_DEPART, wait_until="domcontentloaded")
 
-    def _est_page_authentifiee_monportail(self) -> bool:
-        """Marqueur de contenu propre a une page authentifiee de monPortail.
-
-        Detecte soit une page de site de cours (lien /ena/site/ ou texte
-        "Liste des cours"), soit la page /portail/cours apres connexion
-        (texte "Cours suivis" ou le lien du menu de compte personnel).
-
-        Le menu de compte personnel (href contenant monportail.ulaval.ca/
-        mon-compte) est releve en session reelle sur une page authentifiee ;
-        il n'existe sur aucune page publique ni page d'erreur du domaine. Un
-        comptage de liens vers /portail (heuristique anterieure) a ete
-        abandonne au profit de ce marqueur unique, car rien ne garantit qu'une
-        page non authentifiee (page d'erreur, redirection intermediaire) ne
-        porte pas deja un menu statique de cinq liens ou plus, ce qui
-        produirait un faux positif silencieux.
-        """
-        # Signaux d'une page de site de cours authentifiee
-        if self.page.locator("a[href*='/ena/site/']").count() > 0:
-            return True
-        if self.page.get_by_text("Liste des cours").count() > 0:
-            return True
-
-        # Signaux de la page /portail/cours apres connexion
-        if self.page.get_by_text("Cours suivis").count() > 0:
-            return True
-
-        # Menu de compte personnel : n'existe que pour un utilisateur connecte.
-        if self.page.locator("a[href*='monportail.ulaval.ca/mon-compte']").count() > 0:
-            return True
-
-        return False
-
     def est_connecte(self) -> bool:
         if self.page is None:
             return False
-        # Un simple test par sous-chaine sur l'URL est insuffisant : l'URL
-        # d'autorisation Microsoft place le redirect_uri en clair dans ses
-        # parametres (l'encodage pour cent ne touche que ':' et '/'), donc
-        # "sitescours.monportail.ulaval.ca" y apparait avant toute connexion.
-        # Une page d'erreur sur le bon domaine n'est pas davantage une preuve
-        # de connexion. On verifie donc le nom d'hote exact, puis un marqueur
-        # tire du contenu reel de la page.
-        if urlparse(self.page.url).hostname != HOTE_SITESCOURS:
-            return False
-        return self._est_page_authentifiee_monportail()
+        return est_page_authentifiee(self.page)
 
     def attendre_connexion(self, delai: int = 300) -> bool:
         """Attend que l'utilisateur ait termine sa connexion, MFA compris."""
