@@ -115,3 +115,53 @@ def test_les_pauses_sont_croissantes(tmp_path):
     pauses = []
     telecharger(transport, "/a", tmp_path / "a.bin", dormir=pauses.append)
     assert pauses == [2, 8]
+
+
+def test_401_apres_erreurs_reseau_rejoue_immediatement(tmp_path):
+    """Un 401 arrivant apres echecs reseau ne consomme pas le budget."""
+    transport = TransportFactice([500, 500, 401, 200])
+    renouvellements = []
+
+    taille, _ = telecharger(
+        transport,
+        "/a",
+        tmp_path / "a.bin",
+        renouveler=lambda: renouvellements.append(1),
+        dormir=sans_pause,
+    )
+
+    assert transport.appels == 4
+    assert renouvellements == [1]
+    assert taille == 2
+
+
+def test_401_persistant_apres_erreurs_reseau_leve_session_expiree(tmp_path):
+    """Un 401 persistant apres renouvellement leve SessionExpiree."""
+    transport = TransportFactice([500, 500, 401, 401])
+
+    with pytest.raises(SessionExpiree):
+        telecharger(
+            transport,
+            "/a",
+            tmp_path / "a.bin",
+            renouveler=lambda: None,
+            dormir=sans_pause,
+        )
+
+    assert transport.appels == 4
+
+
+def test_401_puis_erreur_reseau_puis_401_leve_session_expiree(tmp_path):
+    """Le renouvellement consomme au premier 401, le second est terminal."""
+    transport = TransportFactice([401, 500, 401])
+
+    with pytest.raises(SessionExpiree):
+        telecharger(
+            transport,
+            "/a",
+            tmp_path / "a.bin",
+            renouveler=lambda: None,
+            dormir=sans_pause,
+        )
+
+    assert transport.appels == 3
