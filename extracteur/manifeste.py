@@ -15,16 +15,21 @@ class Manifeste:
     def __init__(self, racine: Path):
         self.chemin = Path(racine) / "manifeste.csv"
         self._entrees: dict[str, dict] | None = None
+        self._entete_presente: bool | None = None
 
     def charger(self) -> dict[str, dict]:
         if self._entrees is not None:
             return self._entrees
 
         self._entrees = {}
+        self._entete_presente = False
         if self.chemin.exists():
             with open(self.chemin, encoding=ENCODAGE_CSV, newline="") as source:
-                for ligne in csv.DictReader(source):
-                    self._entrees[ligne["chemin"]] = ligne
+                lecteur = csv.DictReader(source)
+                if lecteur.fieldnames and "chemin" in lecteur.fieldnames:
+                    self._entete_presente = True
+                    for ligne in lecteur:
+                        self._entrees[ligne["chemin"]] = ligne
         return self._entrees
 
     def deja_archive(self, chemin_relatif: str) -> bool:
@@ -32,13 +37,14 @@ class Manifeste:
 
     def ajouter(self, chemin_relatif, taille, sha256, url, statut="ok") -> None:
         entrees = self.charger()
-        nouveau = not self.chemin.exists()
+        nouveau = not self._entete_presente
 
         self.chemin.parent.mkdir(parents=True, exist_ok=True)
         with open(self.chemin, "a", encoding=ENCODAGE_CSV, newline="") as sortie:
             redacteur = csv.DictWriter(sortie, fieldnames=COLONNES)
             if nouveau:
                 redacteur.writeheader()
+                self._entete_presente = True
             ligne = {
                 "chemin": chemin_relatif,
                 "taille": str(taille),
@@ -92,9 +98,12 @@ def ecrire_rapport(destination: Path, echecs, resume: dict) -> None:
     """Le document qui dit ce qu'il reste a recuperer a la main."""
     lignes = []
     for echec in echecs:
-        lien = (
-            f'<a href="{escape(echec.url)}">{escape(echec.url)}</a>' if echec.url else ""
-        )
+        if echec.url and (echec.url.startswith("http://") or echec.url.startswith("https://")):
+            lien = f'<a href="{escape(echec.url)}">{escape(echec.url)}</a>'
+        elif echec.url:
+            lien = escape(echec.url)
+        else:
+            lien = ""
         lignes.append(
             "<tr>"
             f"<td>{escape(echec.cours)}</td>"

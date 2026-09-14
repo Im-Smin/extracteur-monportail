@@ -103,4 +103,36 @@ def test_rapport_echappe_le_html():
     with tempfile.TemporaryDirectory() as dossier:
         destination = Path(dossier) / "r.html"
         ecrire_rapport(destination, [Echec("C", "<script>x</script>", "erreur")], {})
-        assert "<script>" not in destination.read_text(encoding="utf-8")
+        contenu = destination.read_text(encoding="utf-8")
+        assert "<script>" not in contenu
+        assert "&lt;script&gt;" in contenu
+
+
+def test_manifeste_entete_ecrit_si_fichier_vide(tmp_path):
+    # Si le fichier existe mais est vide, l'en-tête doit être écrit quand même.
+    chemin_manifeste = tmp_path / "manifeste.csv"
+    chemin_manifeste.parent.mkdir(parents=True, exist_ok=True)
+    chemin_manifeste.write_text("", encoding="utf-8-sig")
+
+    manifeste = Manifeste(tmp_path)
+    manifeste.ajouter("a.pdf", 1, "x", "/u", "ok")
+
+    lignes = chemin_manifeste.read_text(encoding="utf-8-sig").splitlines()
+    assert len(lignes) == 2
+    assert lignes[0].startswith("chemin")
+
+
+def test_rapport_url_javascript_pas_de_lien():
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as dossier:
+        destination = Path(dossier) / "r.html"
+        ecrire_rapport(
+            destination,
+            [Echec("C", "malveillant.pdf", "erreur", "javascript:alert(1)")],
+            {},
+        )
+        contenu = destination.read_text(encoding="utf-8")
+        assert '<a href="javascript:' not in contenu
+        assert "javascript:alert(1)" in contenu
