@@ -83,14 +83,47 @@ class URL:
 # `liste_modules` ; les autres sont des candidats a valider au premier passage.
 SECTIONS_PLAN_DE_COURS = ("plan_de_cours", "plancours", "plan_cours")
 
+# Forme stable d'un libelle de session du selecteur de /portail/cours : un
+# nom de saison suivi d'une annee sur quatre chiffres ("Hiver 2026",
+# "Été 2025", "Automne 2022", ...). Releve en session reelle sur les douze
+# options du selecteur. Cette forme ne peut pas entrer en collision avec les
+# libelles du menu global du portail (voir LIBELLES_HORS_SITE dans
+# extraction.py), qui ne ressemblent a rien de tel.
+#
+# Les variantes de casse et d'accent d'« Été » sont ecrites explicitement
+# ([ée]t[ée]) plutot que confiees a re.IGNORECASE, qui ne garantit pas le
+# repliement de casse d'un caractere accentue cote moteur de recherche du
+# navigateur.
+MOTIF_LIBELLE_SESSION = re.compile(r"^(?:hiver|automne|[ée]t[ée])\s+\d{4}$", re.IGNORECASE)
+
+# Selecteurs candidats explores par --diagnostic : le but est de voir, sur
+# des faits, ce que chacun trouve reellement une fois le panneau ouvert,
+# plutot que de deviner une nouvelle fois la structure du DOM.
+CANDIDATS_DIAGNOSTIC_SESSIONS = ("[role=option]", ".mpo-deroulant-element", "li", "a")
+
+
+class SelecteurSessionsIllisible(Exception):
+    """Le panneau du selecteur de sessions s'est ouvert, mais aucune option
+    de la forme <saison> <annee> n'y a ete trouvee.
+
+    Une liste de sessions vide est le pire mode de defaillance du projet :
+    l'outil n'archive plus rien du tout, en silence, en laissant croire a une
+    enumeration reussie. On leve donc bruyamment plutot que de rendre [].
+    Lancer `python -m extracteur --diagnostic` pour un etat des lieux du DOM
+    reel avant de deviner une nouvelle correction.
+    """
+
 
 class Ena:
     # Le selecteur de sessions de /portail/cours n'est pas un <select> natif :
-    # c'est un div ARIA dont les options ne sont rendues qu'apres un clic.
+    # c'est un menu deroulant AngularJS. Le clic sur ce bouton ouvre bien un
+    # panneau (confirme en session reelle), mais ce panneau n'est PAS un
+    # descendant du bouton : c'est un conteneur frere, ailleurs dans la page.
+    # Chercher les options sous ce selecteur (ancienne approche) ne trouve
+    # donc jamais rien ; voir MOTIF_LIBELLE_SESSION et _options_sessions.
     # Exception assumee aux regles de navigation : cette ouverture ne modifie
     # rien cote serveur, contrairement aux liens de modification qu'on evite.
     SELECTEUR_SESSIONS = 'div[role="listbox"].mpo-deroulant-bouton'
-    SELECTEUR_OPTIONS_SESSIONS = f'{SELECTEUR_SESSIONS} a'
 
     def __init__(self, session):
         self.session = session
@@ -113,43 +146,91 @@ class Ena:
         if not est_page_authentifiee(self.session.page):
             raise SessionExpiree(self.session.page.url)
 
-    def _ouvrir_selecteur_sessions(self) -> None:
+    def _ouvrir_selecteur_sessions(self) -> bool:
         """Clique le selecteur pour faire apparaitre ses options dans le DOM.
 
-        Un echec (selecteur absent, pas encore charge) n'est pas fatal : les
-        appelants continuent avec ce qui est disponible plutot que d'echouer.
+        Rend Vrai si le clic a reussi, Faux sinon. Un echec (selecteur absent,
+        page pas encore chargee) n'est pas fatal en soi : c'est
+        sessions_disponibles qui decide, a partir de ce retour, si une liste
+        d'options vide est normale (le panneau n'a jamais pu s'ouvrir) ou
+        doit lever SelecteurSessionsIllisible (le panneau s'est ouvert, mais
+        son contenu ne colle a aucune forme connue).
         """
         try:
             self.session.page.click(self.SELECTEUR_SESSIONS, timeout=5000)
+            return True
         except (ErreurDelaiPlaywright, ErreurPlaywright):
-            pass
+            return False
 
     def _options_sessions(self):
         """Localisateur des options du selecteur, mecanisme partage par
         sessions_disponibles et sites_de_session.
 
-        Le selecteur de /portail/cours est un div ARIA listbox dont les
-        options ne sont pas necessairement des liens accessibles : un <a>
-        sans attribut href n'a aucun role accessible "link". Lire les options
-        par un selecteur CSS puis les cliquer par role ARIA ferait diverger
-        les deux mecanismes, avec un risque de clic silencieusement
-        inoperant si le DOM reel ne colle pas au motif suppose. On repere
-        donc les options par le meme selecteur CSS dans les deux cas.
+        Le panneau ouvert par le clic sur SELECTEUR_SESSIONS n'est pas un
+        descendant du bouton : c'est un conteneur frere, rendu ailleurs dans
+        la page (menu deroulant AngularJS). Chercher un descendant du bouton
+        ne trouve donc jamais rien. On repere plutot les options sur toute la
+        page, par la forme stable de leur libelle (MOTIF_LIBELLE_SESSION) :
+        un nom de saison suivi d'une annee sur quatre chiffres, une forme qui
+        ne peut pas entrer en collision avec le menu global du portail.
+        Ce meme mecanisme sert a lire les options et a les cliquer : aucune
+        divergence entre lecture et clic.
         """
-        return self.session.page.locator(self.SELECTEUR_OPTIONS_SESSIONS)
+        return self.session.page.locator("a").filter(has_text=MOTIF_LIBELLE_SESSION)
 
     def sessions_disponibles(self) -> list[Session]:
         """Liste les sessions offertes par le selecteur de /portail/cours.
 
         Sans parametre : aucun identifiant de site d'amorcage n'est requis,
         la page est a une URL stable.
+
+        Si le panneau s'ouvre (le clic reussit) mais qu'aucune option ne
+        correspond a la forme attendue, c'est que le mecanisme de lecture ne
+        colle plus a la structure reelle : on leve SelecteurSessionsIllisible
+        plutot que de rendre une liste vide, qui ferait croire a une
+        enumeration reussie alors que l'outil n'archiverait plus rien.
+        """
+        self._visiter(URL.cours())
+        self._assurer_authentifie()
+        ouvert = self._ouvrir_selecteur_sessions()
+
+        libelles = self._options_sessions().all_text_contents()
+        if ouvert and not libelles:
+            raise SelecteurSessionsIllisible(
+                "le panneau du selecteur de sessions s'est ouvert, mais "
+                "aucune option de la forme <saison> <annee> n'y a ete "
+                "trouvee. Lancez `python -m extracteur --diagnostic` pour "
+                "un etat des lieux du DOM."
+            )
+        return [session_depuis_libelle(libelle.strip()) for libelle in libelles]
+
+    def diagnostiquer_sessions(self) -> dict:
+        """Etat des lieux du DOM du selecteur de sessions, sans rien
+        telecharger ni rien ecrire.
+
+        Reservee a --diagnostic : quand sessions_disponibles() ne trouve
+        rien (ou leve SelecteurSessionsIllisible), ceci donne, pour une serie
+        de selecteurs candidats, le nombre d'elements trouves et leurs
+        premiers textes une fois le panneau ouvert -- de quoi trancher sur
+        des faits plutot que de deviner une nouvelle fois la structure reelle.
         """
         self._visiter(URL.cours())
         self._assurer_authentifie()
         self._ouvrir_selecteur_sessions()
 
-        libelles = self._options_sessions().all_text_contents()
-        return [session_depuis_libelle(libelle.strip()) for libelle in libelles]
+        candidats = []
+        for selecteur in CANDIDATS_DIAGNOSTIC_SESSIONS:
+            textes = self.session.page.locator(selecteur).all_text_contents()
+            candidats.append((selecteur, len(textes), textes[:5]))
+
+        textes_forme = self._options_sessions().all_text_contents()
+        candidats.append(
+            ("forme du libelle (saison + annee)", len(textes_forme), textes_forme[:12])
+        )
+
+        liens_id_site = self.session.page.locator("a[href*='idSite=']").count()
+
+        return {"candidats": candidats, "liens_id_site": liens_id_site}
 
     def sites_de_session(self, session: Session) -> list[Cours]:
         """Selectionne une session puis rend ses cours.
