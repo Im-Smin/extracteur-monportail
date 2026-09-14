@@ -125,6 +125,14 @@ class Ena:
     # rien cote serveur, contrairement aux liens de modification qu'on evite.
     SELECTEUR_SESSIONS = 'div[role="listbox"].mpo-deroulant-bouton'
 
+    # Les douze options sont des <a> dans un conteneur frere ; le bouton lui-
+    # meme ne porte qu'un <span> pour sa valeur courante (jamais un <a>,
+    # constate en session reelle). On exclut neanmoins explicitement tout <a>
+    # qui serait un jour ajoute a l'interieur du bouton : un futur changement
+    # de markup y ferait apparaitre la valeur courante en double, treize
+    # sessions au lieu de douze.
+    SELECTEUR_OPTIONS_SESSIONS = f'a:not({SELECTEUR_SESSIONS} a)'
+
     def __init__(self, session):
         self.session = session
 
@@ -175,8 +183,15 @@ class Ena:
         ne peut pas entrer en collision avec le menu global du portail.
         Ce meme mecanisme sert a lire les options et a les cliquer : aucune
         divergence entre lecture et clic.
+
+        SELECTEUR_OPTIONS_SESSIONS exclut aussi explicitement tout <a>
+        interieur au bouton lui-meme : sa valeur courante partage la meme
+        forme de libelle que les options (ex. "Automne 2025"), et un <a> qui
+        y apparaitrait un jour produirait un doublon.
         """
-        return self.session.page.locator("a").filter(has_text=MOTIF_LIBELLE_SESSION)
+        return self.session.page.locator(self.SELECTEUR_OPTIONS_SESSIONS).filter(
+            has_text=MOTIF_LIBELLE_SESSION
+        )
 
     def sessions_disponibles(self) -> list[Session]:
         """Liste les sessions offertes par le selecteur de /portail/cours.

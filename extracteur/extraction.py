@@ -194,7 +194,11 @@ def _scinder_note(texte: str) -> tuple[str, str]:
     return texte.strip(), ""
 
 
-MOTIF_SIGLE = re.compile(r"^([A-Z]{3}-\d{4})\s*:\s*(.+)$")
+# Sigle d'un cours tel qu'affiche sur la carte (jamais dans le texte du
+# lien) : "MQT-2101, NRC : 86582 (sect. H1)". Trois lettres majuscules, un
+# tiret, quatre chiffres -- une forme stable, distincte du reste du texte
+# de la carte (dates, modalites, etc.).
+MOTIF_SIGLE_CARTE = re.compile(r"[A-Z]{3}-\d{4}")
 
 # Correspondance saison -> mois pour construire le code AAAASS attendu par
 # Session, a partir du libelle textuel affiche par le selecteur de sessions.
@@ -232,42 +236,77 @@ def _id_site_depuis_href(href: str, marqueur: str) -> str | None:
     return id_site or None
 
 
+def _accueils_dans(ancetre, liens_accueil: list) -> list:
+    """Sous-ensemble de liens_accueil physiquement contenu dans ancetre.
+
+    Comparaison par identite (`is`), jamais par egalite structurelle : deux
+    liens de site distincts peuvent avoir le meme texte, et bs4 compare les
+    Tag par leur contenu, pas par identite d'objet.
+    """
+    presents = ancetre.find_all("a", href=True)
+    return [lien for lien in liens_accueil if any(lien is present for present in presents)]
+
+
+def _carte_du_lien(lien, liens_accueil: list):
+    """Remonte du lien de site vers son conteneur de carte, tolerant a la
+    classe CSS : le plus grand ancetre qui ne contient QUE ce lien de site
+    parmi tous ceux de la page. Un ancetre qui en contiendrait un second
+    fusionnerait deux cartes voisines -- on s'arrete juste avant.
+
+    Si aucun ancetre distinct n'existe (les liens de site sont freres, sans
+    balise propre a chacun), la carte se limite au lien lui-meme : mieux vaut
+    un cours sans sigle ni plan de cours qu'un lien attribue au mauvais cours.
+    """
+    candidat = lien
+    ancetre = lien.parent
+    while ancetre is not None:
+        if len(_accueils_dans(ancetre, liens_accueil)) != 1:
+            break
+        candidat = ancetre
+        ancetre = ancetre.parent
+    return candidat
+
+
 def cours_depuis_html(html: str, session: Session) -> list[Cours]:
-    """Cours listes sur /portail/cours pour une session, avec les liens
-    directs vers le plan de cours et le sommaire des resultats quand la page
-    les porte. Ces liens peuvent apparaitre avant ou apres le lien du site
-    dans le DOM : on les collecte d'abord, independamment de l'ordre.
+    """Cours listes sur /portail/cours pour une session.
+
+    Chaque cours est rendu par une carte (article, div, li selon la
+    generation de page) : le lien de site n'y porte que le titre, jamais le
+    sigle -- celui-ci est un texte de la carte, sous la forme "SIGLE-0000,
+    NRC : xxxxx (sect. yy)". Le lien du plan de cours et celui du sommaire
+    des resultats, quand ils existent, sont eux aussi dans la carte.
+
+    L'extraction se fait donc carte par carte, jamais par un balayage global
+    de la page : associer ces liens par ordre d'apparition romprait des
+    qu'un cours n'a pas de plan de cours, decalant silencieusement
+    l'attribution pour tous les cours suivants.
     """
     soupe = _soupe(html)
-    liens = soupe.find_all("a", href=True)
-
-    plans: dict[str, str] = {}
-    resultats: dict[str, str] = {}
-    for lien in liens:
-        href = lien["href"]
-
-        id_resultats = _id_site_depuis_href(href, "/ena/site/resultats")
-        if id_resultats:
-            resultats[id_resultats] = href
-            continue
-
-        if _est_traceur(href):
-            id_plan = parse_qs(urlsplit(href).query).get("idSite", [""])[0]
-            url = url_reelle(href)
-            if id_plan and url:
-                plans[id_plan] = url
+    liens_accueil = [
+        lien
+        for lien in soupe.find_all("a", href=True)
+        if _id_site_depuis_href(lien["href"], "/ena/site/accueil")
+    ]
 
     trouves: dict[str, Cours] = {}
-    for lien in liens:
-        href = lien["href"]
-        id_site = _id_site_depuis_href(href, "/ena/site/accueil")
-        if not id_site:
-            continue
+    for lien in liens_accueil:
+        id_site = _id_site_depuis_href(lien["href"], "/ena/site/accueil")
+        carte = _carte_du_lien(lien, liens_accueil)
 
-        texte = lien.get_text(strip=True)
-        correspondance = MOTIF_SIGLE.match(texte)
-        sigle = correspondance.group(1) if correspondance else None
-        titre = correspondance.group(2) if correspondance else texte
+        titre = lien.get_text(strip=True)
+        correspondance_sigle = MOTIF_SIGLE_CARTE.search(carte.get_text(" ", strip=True))
+        sigle = correspondance_sigle.group(0) if correspondance_sigle else None
+
+        url_plan_de_cours = None
+        url_resultats = None
+        for autre in carte.find_all("a", href=True):
+            if autre is lien:
+                continue
+            href = autre["href"]
+            if url_resultats is None and _id_site_depuis_href(href, "/ena/site/resultats"):
+                url_resultats = href
+            elif url_plan_de_cours is None and _est_traceur(href):
+                url_plan_de_cours = url_reelle(href)
 
         existant = trouves.get(id_site)
         if existant is None or (titre and not existant.titre):
@@ -276,8 +315,8 @@ def cours_depuis_html(html: str, session: Session) -> list[Cours]:
                 sigle=sigle,
                 titre=titre,
                 session=session,
-                url_plan_de_cours=plans.get(id_site),
-                url_resultats=resultats.get(id_site),
+                url_plan_de_cours=url_plan_de_cours,
+                url_resultats=url_resultats,
             )
 
     return list(trouves.values())

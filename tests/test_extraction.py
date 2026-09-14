@@ -30,6 +30,17 @@ LIEN_PLANCOURS = (
     "%3Fidentifiant%3D6b6947ef288d16d135b3342db86127f2ee7afcbc"
 )
 
+# Variante sans le parametre idSite sur le traceur lui-meme : un appariement
+# global par idSite ne peut alors associer ce plan de cours a aucun cours,
+# alors qu'une lecture carte par carte le trouve quand meme, puisqu'il est
+# physiquement dans la carte du bon cours.
+LIEN_PLANCOURS_SANS_IDSITE = (
+    "/analytique/evenement/plancours?idFichier=141542389"
+    "&url=https%3A%2F%2Fsitescours.monportail.ulaval.ca%2Fcontenu%2Fsitescours"
+    "%2F040%2F04000%2F202601%2Fsite181216%2Fplancours%2FPHI-3900_H26_17541.pdf"
+    "%3Fidentifiant%3D6b6947ef288d16d135b3342db86127f2ee7afcbc"
+)
+
 
 def test_url_reelle_decode_le_parametre_url():
     assert url_reelle(LIEN_TRACEUR) == (
@@ -296,12 +307,70 @@ def test_cours_depuis_html():
 
 
 def test_cours_extrait_le_sigle_quand_il_est_present():
-    html = (
-        '<a href="/ena/site/accueil?idSite=1">PHI-3900 : Éthique et professionnalisme</a>'
-    )
+    # Structure reelle constatee sur /portail/cours (session Automne 2025) :
+    # le lien ne porte que le titre, jamais le sigle. Le sigle est un texte de
+    # la carte elle-meme, sous la forme "SIGLE-0000, NRC : xxxxx (sect. yy)".
+    html = """
+    <article class="mpo-boite mpo-boite-principale mpo-boite">
+      <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=178960">Analyse et modélisation des données</a>
+      MQT-2101, NRC : 86582 (sect. H1)
+      Cours présentiel-hybride
+      Dates limites d'abandon
+      Plages horaires
+      Plan de cours
+      Suivi de ma...
+    </article>
+    """
+    cours = cours_depuis_html(html, Session(code="202509", libelle="Automne 2025"))
+    assert cours[0].sigle == "MQT-2101"
+    assert cours[0].titre == "Analyse et modélisation des données"
+
+
+def test_cours_deux_cartes_gardent_chacune_leur_propre_sigle():
+    # Deuxieme carte relevee, meme session : verifie que le sigle de chaque
+    # carte reste bien le sien, sans fuite d'une carte a l'autre.
+    html = """
+    <article class="mpo-boite mpo-boite-principale mpo-boite">
+      <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=178960">Analyse et modélisation des données</a>
+      MQT-2101, NRC : 86582 (sect. H1)
+    </article>
+    <article class="mpo-boite mpo-boite-principale mpo-boite">
+      <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=178785">Aspects administratifs et humains de la gestion</a>
+      RLT-1700, NRC : 88184 (sect. Z3)
+    </article>
+    """
+    cours = cours_depuis_html(html, Session(code="202509", libelle="Automne 2025"))
+    par_id = {c.id_site: c for c in cours}
+
+    assert par_id["178960"].sigle == "MQT-2101"
+    assert par_id["178785"].sigle == "RLT-1700"
+
+
+def test_cours_associe_le_plan_de_cours_a_la_bonne_carte_sans_idsite_global():
+    # Le lien du plan de cours vit dans la carte de son cours (releve reel),
+    # mais son href ne porte pas toujours un idSite exploitable pour un
+    # appariement global : un balayage de page qui s'appuie uniquement sur ce
+    # parametre perdrait ce plan de cours, ou pire, l'attribuerait au mauvais
+    # cours si l'appariement se faisait par ordre d'apparition. La premiere
+    # carte n'a pas de plan de cours du tout : elle ne doit jamais recevoir
+    # celui de la seconde.
+    html = f"""
+    <article class="mpo-boite">
+      <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=178960">Analyse et modélisation des données</a>
+      MQT-2101, NRC : 86582 (sect. H1)
+    </article>
+    <article class="mpo-boite">
+      <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=181216">Éthique et professionnalisme</a>
+      PHI-3900, NRC : 12345 (sect. A1)
+      <a href="https://sitescours.monportail.ulaval.ca{LIEN_PLANCOURS_SANS_IDSITE}">Plan de cours</a>
+    </article>
+    """
     cours = cours_depuis_html(html, Session(code="202601", libelle="Hiver 2026"))
-    assert cours[0].sigle == "PHI-3900"
-    assert cours[0].titre == "Éthique et professionnalisme"
+    par_id = {c.id_site: c for c in cours}
+
+    assert par_id["178960"].url_plan_de_cours is None
+    assert par_id["181216"].url_plan_de_cours is not None
+    assert "PHI-3900_H26_17541.pdf" in par_id["181216"].url_plan_de_cours
 
 
 def test_cours_sans_sigle():
