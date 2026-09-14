@@ -388,7 +388,6 @@ class Module:
 class Fichier:
     nom: str
     url: str
-    sous_dossier: str = ""
 
     def est_interne(self) -> bool:
         """Vrai si la ressource est hebergee par monPortail et doit etre telechargee."""
@@ -971,6 +970,23 @@ def test_sections_du_menu_varient_selon_les_sites():
     assert "Contenu et activités" in sections_du_menu(html_gin)
 
 
+def test_sections_du_menu_ecarte_le_chrome_du_portail():
+    # Toute page de site de cours embarque le menu global de monPortail.
+    html = """
+    <a href="#">Tableau de bord</a>
+    <a href="#">Relevé de notes</a>
+    <a href="#">Liste des cours</a>
+    <a href="#">Droits de scolarité</a>
+    <a href="#">Six biais</a>
+    """
+    assert sections_du_menu(html) == ["Six biais"]
+
+
+def test_sections_du_menu_ecarte_les_libelles_vides_ou_enormes():
+    html = '<a href="#"></a><a href="#">' + "x" * 80 + "</a><a href='#'>Concepts</a>"
+    assert sections_du_menu(html) == ["Concepts"]
+
+
 def test_commandes_adf_reconnues():
     assert est_commande_adf("m:j_id_1:cmdObtenirPlanCours") is True
     assert est_commande_adf("r1:0:ligneMod:voirMod") is False
@@ -1121,20 +1137,50 @@ def resultats_depuis_html(html: str) -> list[Note]:
     return notes
 
 
+# Le menu global de monPortail est present sur toutes les pages de site de
+# cours. Ces libelles n'appartiennent pas au site et ne doivent jamais etre
+# parcourus. Releves en phase 0 sur trois sites.
+LIBELLES_HORS_SITE = frozenset(
+    {
+        "menu", "Profil", "Tableau de bord", "Études", "Admission",
+        "Inscription aux cours", "Accommodement", "Cours", "Sites de cours Brio",
+        "Cheminement", "Appréciation de l'enseignement", "Relevé de notes",
+        "Collation des grades", "Documents officiels", "Carte d'identité",
+        "Attestation d'inscription", "Documents légaux en renouvellement",
+        "Emplois et stages", "Profil professionnel", "Grille de stages",
+        "Services", "Application monPortail", "Impression",
+        "Laissez-passer universitaire", "Séjour mobilité", "Finances",
+        "Bourses Perspective Québec", "Droits de scolarité",
+        "Passer au contenu", "Liste des cours", "Envoi de courriel",
+        "Conditions d'utilisation", "Confidentialité", "Accessibilité",
+        "Nouveautés", "Contactez-nous",
+    }
+)
+
+LONGUEUR_MAX_LIBELLE = 60
+
+
 def sections_du_menu(html: str) -> list[str]:
-    """Libelles du menu du site, pour attraper les sections hors schema canonique."""
+    """Libelles propres au site, pour parcourir les sections hors schema canonique.
+
+    Le repli par le menu est indispensable : certains sites n'ont ni modules ni
+    evaluations, et leurs sections ne sont atteignables que par leur libelle.
+    """
     libelles: list[str] = []
     for lien in _soupe(html).find_all("a"):
         texte = lien.get_text(strip=True)
-        if texte and len(texte) < 60 and texte not in libelles:
-            libelles.append(texte)
+        if not texte or len(texte) >= LONGUEUR_MAX_LIBELLE:
+            continue
+        if texte in LIBELLES_HORS_SITE or texte in libelles:
+            continue
+        libelles.append(texte)
     return libelles
 ```
 
 - [ ] **Step 4: Lancer les tests pour vérifier qu'ils passent**
 
 Run: `python -m pytest tests/test_extraction.py -v`
-Expected: PASS, 15 tests.
+Expected: PASS, 17 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1736,6 +1782,87 @@ def test_fichiers_du_module_visitent_l_url_du_module():
     ena.fichiers_du_module(Module(id_site="181216", id_module="1795743", titre="M"))
     assert "idModule=1795743" in ena.session.page.visitees[0]
     assert "editionModule=false" in ena.session.page.visitees[0]
+
+
+class LienFactice:
+    def __init__(self, identifiant=None):
+        self.identifiant = identifiant
+        self.clique = False
+
+    def get_attribute(self, _nom):
+        return self.identifiant
+
+    def click(self, **_kwargs):
+        self.clique = True
+
+
+class PageAvecMenu(PageFactice):
+    """Rend un menu de site et enregistre les libelles cliques."""
+
+    def __init__(self, html_menu, liens=None):
+        super().__init__({"/ena/site/accueil": html_menu})
+        self.liens = liens or {}
+        self.cliques = []
+
+    def get_by_role(self, _role, name=None, exact=False):
+        lien = self.liens.get(name, LienFactice())
+        self.cliques.append(name)
+
+        class Localisateur:
+            first = lien
+
+        return Localisateur()
+
+
+def test_parcourir_menu_ouvre_chaque_section_du_site():
+    page = PageAvecMenu(
+        '<a href="#">Concepts de base</a><a href="#">Six biais</a>'
+        '<a href="#">Tableau de bord</a>'
+    )
+    session = SessionFactice({})
+    session.page = page
+    ena = Ena(session)
+
+    vues = []
+    nombre = ena.parcourir_menu(
+        Cours(
+            id_site="149047",
+            sigle=None,
+            titre="EDI",
+            session=Session(code="202209", libelle="Automne 2022"),
+        ),
+        lambda libelle, html: vues.append(libelle),
+    )
+
+    # Le chrome du portail est ecarte par sections_du_menu.
+    assert vues == ["Concepts de base", "Six biais"]
+    assert nombre == 2
+
+
+def test_parcourir_menu_n_ouvre_jamais_une_commande_adf():
+    # cmdObtenirPlanCours publie une nouvelle version du plan de cours.
+    page = PageAvecMenu(
+        '<a href="#">Plan de cours</a>',
+        liens={"Plan de cours": LienFactice("m:j_id_1:cmdObtenirPlanCours")},
+    )
+    session = SessionFactice({})
+    session.page = page
+    ena = Ena(session)
+
+    vues = []
+    nombre = ena.parcourir_menu(
+        Cours(
+            id_site="1",
+            sigle=None,
+            titre="X",
+            session=Session(code="202601", libelle="Hiver 2026"),
+        ),
+        lambda libelle, html: vues.append(libelle),
+    )
+
+    assert vues == []
+    assert nombre == 0
+    assert page.liens["Plan de cours"].clique is False
 ```
 
 - [ ] **Step 2: Lancer les tests pour vérifier qu'ils échouent**
@@ -1759,6 +1886,7 @@ pour attraper ce qui sort du schema.
 from pathlib import Path
 
 from extracteur.extraction import (
+    est_commande_adf,
     fichiers_depuis_html,
     modules_depuis_html,
     resultats_depuis_html,
@@ -1849,9 +1977,34 @@ class Ena:
         html = self._visiter(URL.resultats(cours.id_site))
         return resultats_depuis_html(html)
 
-    def sections_hors_schema(self, cours) -> list[str]:
+    def parcourir_menu(self, cours, action) -> int:
+        """Repli pour les sites sans modules ni evaluations.
+
+        Les entrees de menu de l'ENA sont des liens ADF `href="#"` : elles ne
+        sont pas atteignables par URL, il faut cliquer. `action(libelle, html)`
+        est appele pour chaque section ouverte ; la navigation ne sait rien du
+        disque.
+
+        Toute commande ADF `cmd*` est ecartee : `cmdObtenirPlanCours` publie une
+        nouvelle version du plan de cours au lieu de le telecharger.
+        """
         html = self._visiter(URL.accueil(cours.id_site))
-        return sections_du_menu(html)
+        visitees = 0
+
+        for libelle in sections_du_menu(html):
+            try:
+                cible = self.session.page.get_by_role("link", name=libelle, exact=True).first
+                if est_commande_adf(cible.get_attribute("id")):
+                    continue
+                cible.click(timeout=5000)
+                self.session.page.wait_for_timeout(1500)
+            except Exception:
+                continue
+
+            action(libelle, self.session.page.content())
+            visitees += 1
+
+        return visitees
 
     def capturer_pdf(self, chemin: str, destination: Path) -> None:
         self._visiter(chemin)
@@ -1905,7 +2058,7 @@ def _evaluations_depuis_html(html: str, id_site: str) -> list[Evaluation]:
 - [ ] **Step 4: Lancer les tests pour vérifier qu'ils passent**
 
 Run: `python -m pytest tests/test_ena.py -v`
-Expected: PASS, 8 tests.
+Expected: PASS, 10 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -2024,7 +2177,7 @@ def cours_depuis_html(html: str, session) -> list[Cours]:
 - [ ] **Step 4: Lancer les tests pour vérifier qu'ils passent**
 
 Run: `python -m pytest tests/test_extraction.py -v`
-Expected: PASS, 19 tests.
+Expected: PASS, 21 tests.
 
 - [ ] **Step 5: Ajouter l'énumération des sessions à `ena.py`**
 
@@ -2294,6 +2447,56 @@ def test_plan_de_cours_archive(tmp_path):
     assert plan.exists()
 
 
+def test_site_sans_modules_ni_evaluations_passe_par_le_menu(tmp_path):
+    # Le site de formation EDI n'a ni modules ni evaluations : sans repli par le
+    # menu, son dossier serait vide.
+    class EnaSansSchema(EnaFactice):
+        def __init__(self):
+            super().__init__()
+            self.session = type("S", (), {"page": type("P", (), {"pdf": lambda *a, **k: None})()})()
+
+        def modules(self, cours):
+            return []
+
+        def evaluations(self, cours):
+            return []
+
+        def parcourir_menu(self, cours, action):
+            action(
+                "Six biais",
+                '<a href="/contenu/sitescours/x/biais.pdf?identifiant=a">biais.pdf</a>',
+            )
+            return 1
+
+    cours = Cours(
+        id_site="149047",
+        sigle=None,
+        titre="Nos biais inconscients",
+        session=Session(code="202209", libelle="Automne 2022"),
+    )
+    Archiveur(EnaSansSchema(), transport_ok, tmp_path, queue.Queue()).archiver([cours])
+
+    attendu = (
+        tmp_path / "2022-3 Automne" / "Nos biais inconscients" / "Documents" / "Six biais" / "biais.pdf"
+    )
+    assert attendu.exists()
+
+
+def test_repli_par_le_menu_non_declenche_si_des_modules_existent(tmp_path):
+    class EnaAvecSentinelle(EnaFactice):
+        def __init__(self):
+            super().__init__()
+            self.menu_parcouru = False
+
+        def parcourir_menu(self, cours, action):
+            self.menu_parcouru = True
+            return 0
+
+    ena = EnaAvecSentinelle()
+    Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
+    assert ena.menu_parcouru is False
+
+
 def test_notes_consolidees_a_la_racine(tmp_path):
     ena = EnaFactice(notes=[Note(evaluation="Examen 1", note="18", sur="20")])
     Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
@@ -2385,7 +2588,8 @@ class Archiveur:
                     Echec(cours=cours.dossier(), element="plan-de-cours.pdf", cause=str(erreur))
                 )
 
-        for module in self.ena.modules(cours):
+        modules = self.ena.modules(cours)
+        for module in modules:
             dossier = base / "Documents" / _segment(module.titre or module.id_module)
             for fichier in self.ena.fichiers_du_module(module):
                 self._recuperer(cours, fichier, dossier)
@@ -2393,7 +2597,8 @@ class Archiveur:
             cible_pdf = base / "Pages" / _segment(f"{module.titre or module.id_module}.pdf")
             self._capturer(cours, module, cible_pdf)
 
-        for evaluation in self.ena.evaluations(cours):
+        evaluations = self.ena.evaluations(cours)
+        for evaluation in evaluations:
             dossier = base / "Mes dépôts" / _segment(evaluation.titre or evaluation.id_evaluation)
             for fichier in self.ena.fichiers_de_depot(evaluation):
                 self._recuperer(cours, fichier, dossier)
@@ -2403,6 +2608,31 @@ class Archiveur:
             ecrire_notes(base / "notes.csv", notes)
             for note in notes:
                 notes_consolidees.append((cours.session.dossier(), cours.dossier(), note))
+
+        # Repli. Certains sites n'ont ni modules ni evaluations : leur contenu
+        # n'est atteignable qu'en cliquant les entrees de leur propre menu. Sans
+        # cette branche, ces cours produiraient un dossier vide.
+        if not modules and not evaluations:
+            self._parcourir_le_menu(cours, base)
+
+    def _parcourir_le_menu(self, cours, base: Path) -> None:
+        from extracteur.extraction import fichiers_depuis_html
+
+        def traiter(libelle, html):
+            dossier = base / "Documents" / _segment(libelle)
+            for fichier in fichiers_depuis_html(html):
+                self._recuperer(cours, fichier, dossier)
+
+            cible = base / "Pages" / _segment(f"{libelle}.pdf")
+            if not cible.exists():
+                cible.parent.mkdir(parents=True, exist_ok=True)
+                self.session_pdf(cible)
+
+        self.ena.parcourir_menu(cours, traiter)
+
+    def session_pdf(self, destination: Path) -> None:
+        """Imprime la page courante, sans renavigation."""
+        self.ena.session.page.pdf(path=str(destination), format="A4", print_background=True)
 
     def _capturer(self, cours, module, destination: Path) -> None:
         if destination.exists():
@@ -2462,7 +2692,7 @@ class Archiveur:
 - [ ] **Step 4: Lancer les tests pour vérifier qu'ils passent**
 
 Run: `python -m pytest tests/test_archiveur.py -v`
-Expected: PASS, 14 tests.
+Expected: PASS, 16 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -2637,7 +2867,6 @@ from extracteur.manifeste import ecrire_rapport
 from extracteur.telechargement import SessionExpiree
 
 DOSSIER_PROFIL = Path(".session")
-SITE_DEPART_PAR_DEFAUT = None  # renseigne apres la connexion
 
 
 class Fenetre:
