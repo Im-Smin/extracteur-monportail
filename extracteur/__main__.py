@@ -11,24 +11,20 @@
                                                     sans rien telecharger ni ouvrir de navigateur
   python -m extracteur --zip                    -> compresse une archive existante en un fichier .zip,
                                                     sans rien telecharger
-  python -m extracteur --lister --reinitialiser-session
-                                                 -> supprime le profil de navigateur conserve avant
-                                                    de se connecter (reconnexion complete requise)
 
 --lister, --un-seul-cours, --session, --tout, --diagnostic, --verifier et
 --zip sont mutuellement exclusifs : les combiner est rejete par argparse
 plutot que de laisser l'un l'emporter en silence.
 
---reinitialiser-session n'est pas un mode : c'est une option de preparation,
-combinable avec --lister, --diagnostic, --un-seul-cours, --session et --tout
-(les seuls modes qui ouvrent un navigateur). Elle supprime le profil de
-navigateur conserve (dossier .session) avant l'ouverture, forcant une
-authentification complete depuis un etat propre. Remede au seul incident
-constate a ce jour : un profil Chromium persistant corrompu (vraisemblablement
-par des processus tues en cours d'execution pendant le developpement)
-laissait le navigateur bloque indefiniment sur le domaine de connexion
-Microsoft, sans jamais aboutir -- meme quand une autre fenetre, elle, etait
-authentifiee. Voir reinitialiser_session dans auth.py.
+Chaque lancement de --lister, --diagnostic, --un-seul-cours, --session ou
+--tout ouvre le navigateur sur un profil neuf et demande une authentification
+complete, MFA compris : aucun profil de navigateur n'est conserve d'une
+execution a l'autre. C'est un choix de conception deliberement retenu apres
+qu'un profil persistant se soit corrompu a deux reprises en conditions
+reelles (voir la docstring d'extracteur.auth et docs/api-monportail.md,
+section "Pieges d'exploitation"), pas une regression : le cout d'une
+reconnexion par lancement est juge acceptable puisque --tout traite les 33
+cours du projet en une seule execution.
 
 --verifier et --zip ne se connectent jamais a monPortail : ils ne touchent
 qu'au disque, sur le dossier --destination d'une archive deja produite par un
@@ -100,15 +96,26 @@ import unicodedata
 from pathlib import Path
 
 from extracteur.archiveur import Archiveur
-from extracteur.auth import HOTE_SITESCOURS, SessionNavigateur, reinitialiser_session
+from extracteur.auth import HOTE_SITESCOURS, SessionNavigateur
 from extracteur.ena import Ena, SelecteurSessionsIllisible
 from extracteur.manifeste import ecrire_rapport
 from extracteur.modele import Echec, Resultat
 from extracteur.telechargement import SessionExpiree
 from extracteur.verification import creer_zip, verifier
 
-DOSSIER_PROFIL = Path(".session")
 NOM_RAPPORT = "_rapport.html"
+
+# Affiche avant l'ouverture du navigateur, sur chacun des modes qui s'y
+# connectent : sans cette explication, l'utilisateur croirait a une
+# regression la premiere fois qu'il devrait retaper son mot de passe d'un
+# lancement a l'autre, alors que c'est un choix de conception assume (voir
+# la docstring du module et celle d'extracteur.auth.SessionNavigateur).
+MESSAGE_INVITATION_CONNEXION = (
+    "Connectez-vous dans la fenetre du navigateur...\n"
+    "(authentification demandee a chaque lancement : aucun profil de "
+    "navigateur n'est conserve d'une execution a l'autre -- c'est voulu, "
+    "pas un bug ; voir docs/api-monportail.md.)"
+)
 
 
 class CoursIntrouvable(Exception):
@@ -153,18 +160,6 @@ def _normaliser_libelle_session(libelle: str) -> str:
     return sans_accents.casefold()
 
 
-# Ajoute a chaque message d'echec de connexion : c'est le dernier endroit ou
-# l'utilisateur regarde avant d'abandonner, et un profil de navigateur
-# corrompu (voir reinitialiser_session dans auth.py) est une cause plausible
-# quel que soit le domaine observe au dernier sondage.
-_SUGGESTION_REINITIALISATION = (
-    " Si le blocage se reproduit a chaque tentative, le profil de navigateur "
-    "conserve (.session) est peut-etre corrompu : relancez avec "
-    "--reinitialiser-session pour repartir d'un profil neuf (une reconnexion "
-    "complete sera alors necessaire)."
-)
-
-
 def _message_echec_connexion(session) -> str:
     """Message d'echec explicite : dit sur quel domaine la page se trouvait
     au dernier sondage d'attendre_connexion, et ce que cela suggere, plutot
@@ -172,47 +167,31 @@ def _message_echec_connexion(session) -> str:
 
     `dernier_domaine_observe` peut etre absent (doublure de test qui ne le
     pose pas) : le message se rabat alors sur le constat generique.
-
-    Mentionne toujours --reinitialiser-session en fin de message : c'est le
-    dernier endroit ou l'utilisateur regarde avant d'abandonner.
     """
     domaine = getattr(session, "dernier_domaine_observe", None)
     if domaine is None:
-        return (
-            "connexion non detectee dans le delai imparti (aucune page chargee)."
-            + _SUGGESTION_REINITIALISATION
-        )
+        return "connexion non detectee dans le delai imparti (aucune page chargee)."
     if domaine == HOTE_SITESCOURS:
         return (
             f"connexion non detectee dans le delai imparti (page restee sur {domaine} "
             "sans afficher son contenu : page qui n'a pas fini de charger, ou acces refuse)."
-            + _SUGGESTION_REINITIALISATION
         )
     return (
         f"connexion non detectee dans le delai imparti (page restee sur {domaine} : "
         "la connexion n'a jamais abouti)."
-        + _SUGGESTION_REINITIALISATION
     )
 
 
 def _connecter(
     sans_fenetre: bool = False,
     session: SessionNavigateur | None = None,
-    reinitialiser: bool = False,
-    fonction_reinitialisation=reinitialiser_session,
 ) -> SessionNavigateur:
     """Ouvre le navigateur et attend la connexion manuelle, MFA compris.
 
     `session` est injectable pour les tests (doublure) ; en usage normal, une
-    vraie SessionNavigateur est creee et ouverte ici.
-
-    `reinitialiser`, pose par --reinitialiser-session, supprime le profil de
-    navigateur conserve (DOSSIER_PROFIL) avant l'ouverture, pour forcer une
-    authentification complete depuis un etat propre -- remede au seul
-    incident constate a ce jour (profil Chromium corrompu, voir
-    reinitialiser_session dans auth.py). `fonction_reinitialisation` est
-    injectable pour les tests, qui ne doivent jamais toucher a un vrai
-    dossier de profil.
+    vraie SessionNavigateur est creee et ouverte ici, sur un profil de
+    navigateur neuf (voir SessionNavigateur.ouvrir) : chaque appel redemande
+    donc une authentification complete.
 
     Responsable de fermer ce qu'elle a ouvert si quoi que ce soit echoue en
     cours de route -- interruption clavier comprise. KeyboardInterrupt n'est
@@ -221,12 +200,10 @@ def _connecter(
     l'exception.
     """
     if session is None:
-        session = SessionNavigateur(DOSSIER_PROFIL, sans_fenetre=sans_fenetre)
+        session = SessionNavigateur(sans_fenetre=sans_fenetre)
     try:
-        if reinitialiser:
-            fonction_reinitialisation(DOSSIER_PROFIL)
         session.ouvrir()
-        print("Connectez-vous dans la fenetre du navigateur...")
+        print(MESSAGE_INVITATION_CONNEXION)
         if not session.attendre_connexion():
             raise ConnexionEchouee(_message_echec_connexion(session))
         print("Connexion detectee.")
@@ -389,12 +366,11 @@ def _afficher_sessions(ena, imprimer=print) -> None:
             )
 
 
-def _lister(session=None, fabrique_ena=Ena, reinitialiser: bool = False) -> int:
+def _lister(session=None, fabrique_ena=Ena) -> int:
     """Enumere sessions et cours, en console, sans navigateur graphique.
 
     `session` et `fabrique_ena` sont injectables pour les tests (doublure) ;
     en usage normal, une vraie SessionNavigateur et Ena sont utilisees.
-    `reinitialiser` est transmis tel quel a _connecter.
 
     La fermeture du navigateur est garantie par _connecter elle-meme (voir sa
     docstring) : si l'attente de connexion est interrompue au clavier avant
@@ -404,7 +380,7 @@ def _lister(session=None, fabrique_ena=Ena, reinitialiser: bool = False) -> int:
     """
     session_ouverte = None
     try:
-        session_ouverte = _connecter(session=session, reinitialiser=reinitialiser)
+        session_ouverte = _connecter(session=session)
         _afficher_sessions(fabrique_ena(session_ouverte))
         return 0
     except ConnexionEchouee as erreur:
@@ -425,17 +401,17 @@ def _lister(session=None, fabrique_ena=Ena, reinitialiser: bool = False) -> int:
             session_ouverte.fermer()
 
 
-def _diagnostic(session=None, fabrique_ena=Ena, imprimer=print, reinitialiser: bool = False) -> int:
+def _diagnostic(session=None, fabrique_ena=Ena, imprimer=print) -> int:
     """Etat des lieux du DOM du selecteur de sessions, en console.
 
     Ne telecharge rien, n'ecrit rien sur disque : sert uniquement, quand
     --lister ne trouve aucune session, a trancher sur des faits plutot que de
-    deviner une nouvelle correction. `session`, `fabrique_ena` et
-    `reinitialiser` sont injectables pour les tests, comme _lister.
+    deviner une nouvelle correction. `session` et `fabrique_ena` sont
+    injectables pour les tests, comme _lister.
     """
     session_ouverte = None
     try:
-        session_ouverte = _connecter(session=session, reinitialiser=reinitialiser)
+        session_ouverte = _connecter(session=session)
         rapport = fabrique_ena(session_ouverte).diagnostiquer_sessions()
 
         for selecteur, nombre, echantillon in rapport["candidats"]:
@@ -466,16 +442,12 @@ def _un_seul_cours(
     destination: Path,
     session=None,
     fabrique_ena=Ena,
-    reinitialiser: bool = False,
-    fonction_reinitialisation=reinitialiser_session,
 ) -> int:
     """Archive un seul cours, en console, sans interface graphique.
 
     `session` et `fabrique_ena` sont injectables pour les tests ; en usage
-    normal, une vraie SessionNavigateur et Ena sont utilisees. `reinitialiser`
-    et `fonction_reinitialisation` suivent le meme contrat que dans
-    _connecter : le profil conserve est supprime avant l'ouverture du
-    navigateur si demande, jamais autrement, et jamais pour de vrai en test.
+    normal, une vraie SessionNavigateur et Ena sont utilisees, sur un profil
+    de navigateur neuf (voir SessionNavigateur.ouvrir).
 
     La connexion et l'archivage tournent dans le meme fil : Playwright (API
     synchrone) exige que tous ses appels viennent du fil qui l'a demarre. Le
@@ -484,17 +456,15 @@ def _un_seul_cours(
     lieu de rester muet jusqu'a la fin.
     """
     if session is None:
-        session = SessionNavigateur(DOSSIER_PROFIL)
+        session = SessionNavigateur()
 
     evenements: "queue.Queue" = queue.Queue()
     contexte: dict = {}
 
     def travailler() -> None:
         try:
-            if reinitialiser:
-                fonction_reinitialisation(DOSSIER_PROFIL)
             session.ouvrir()
-            print("Connectez-vous dans la fenetre du navigateur...")
+            print(MESSAGE_INVITATION_CONNEXION)
             if not session.attendre_connexion():
                 contexte["connexion_echouee"] = _message_echec_connexion(session)
                 return
@@ -636,8 +606,6 @@ def _archiver_plusieurs_sessions(
     destination: Path,
     session=None,
     fabrique_ena=Ena,
-    reinitialiser: bool = False,
-    fonction_reinitialisation=reinitialiser_session,
 ) -> int:
     """Archive les cours d'une ou plusieurs sessions, en console.
 
@@ -662,21 +630,19 @@ def _archiver_plusieurs_sessions(
     meme facon ce qui ne l'a jamais ete, exactement comme pour
     --un-seul-cours.
 
-    `session`, `fabrique_ena`, `reinitialiser` et `fonction_reinitialisation`
-    sont injectables pour les tests, comme _un_seul_cours.
+    `session` et `fabrique_ena` sont injectables pour les tests, comme
+    _un_seul_cours.
     """
     if session is None:
-        session = SessionNavigateur(DOSSIER_PROFIL)
+        session = SessionNavigateur()
 
     evenements: "queue.Queue" = queue.Queue()
     contexte: dict = {}
 
     def travailler() -> None:
         try:
-            if reinitialiser:
-                fonction_reinitialisation(DOSSIER_PROFIL)
             session.ouvrir()
-            print("Connectez-vous dans la fenetre du navigateur...")
+            print(MESSAGE_INVITATION_CONNEXION)
             if not session.attendre_connexion():
                 contexte["connexion_echouee"] = _message_echec_connexion(session)
                 return
@@ -875,8 +841,6 @@ def _session(
     destination: Path,
     session=None,
     fabrique_ena=Ena,
-    reinitialiser: bool = False,
-    fonction_reinitialisation=reinitialiser_session,
 ) -> int:
     """Archive tous les cours d'une session, en console.
 
@@ -885,10 +849,6 @@ def _session(
     (voir _normaliser_libelle_session) : il sera tape a la main. Si aucune
     session ne correspond, resoudre() leve SessionIntrouvable avec la liste
     reelle des sessions disponibles, affichee par _archiver_plusieurs_sessions.
-
-    `reinitialiser` et `fonction_reinitialisation` sont transmis tels quels a
-    _archiver_plusieurs_sessions (cette derniere injectable pour les tests,
-    qui ne doivent jamais toucher a un vrai dossier de profil).
     """
 
     def resoudre(ena):
@@ -899,42 +859,25 @@ def _session(
                 return [candidate]
         raise SessionIntrouvable(libelle, disponibles)
 
-    return _archiver_plusieurs_sessions(
-        resoudre,
-        destination,
-        session,
-        fabrique_ena,
-        reinitialiser=reinitialiser,
-        fonction_reinitialisation=fonction_reinitialisation,
-    )
+    return _archiver_plusieurs_sessions(resoudre, destination, session, fabrique_ena)
 
 
 def _tout(
     destination: Path,
     session=None,
     fabrique_ena=Ena,
-    reinitialiser: bool = False,
-    fonction_reinitialisation=reinitialiser_session,
 ) -> int:
     """Archive toutes les sessions, de la plus ancienne a la plus recente.
 
     Session.code est de la forme AAAASS (annee puis mois de debut) : trier
     dessus rend directement l'ordre chronologique, sans avoir a interpreter
-    le libelle affiche. `reinitialiser` et `fonction_reinitialisation` sont
-    transmis tels quels a _archiver_plusieurs_sessions.
+    le libelle affiche.
     """
 
     def resoudre(ena):
         return sorted(ena.sessions_disponibles(), key=lambda s: s.code)
 
-    return _archiver_plusieurs_sessions(
-        resoudre,
-        destination,
-        session,
-        fabrique_ena,
-        reinitialiser=reinitialiser,
-        fonction_reinitialisation=fonction_reinitialisation,
-    )
+    return _archiver_plusieurs_sessions(resoudre, destination, session, fabrique_ena)
 
 
 def _verifier_mode(destination: Path, imprimer=print) -> int:
@@ -1034,26 +977,6 @@ def _construire_analyseur() -> argparse.ArgumentParser:
     analyseur.add_argument(
         "--destination", type=Path, default=Path("Archive monPortail"), help="dossier de sortie"
     )
-    # Option de preparation, pas un mode a part entiere : combinable avec
-    # n'importe lequel des modes qui ouvrent un navigateur (--lister,
-    # --diagnostic, --un-seul-cours, --session, --tout), jamais un choix
-    # mutuellement exclusif avec eux. Supprime le profil de navigateur
-    # conserve (DOSSIER_PROFIL) avant l'ouverture, forcant une
-    # authentification complete depuis un etat propre : remede au seul
-    # incident constate a ce jour, un profil Chromium persistant corrompu qui
-    # laissait le navigateur bloque indefiniment sur le domaine de connexion
-    # Microsoft (voir reinitialiser_session dans auth.py).
-    analyseur.add_argument(
-        "--reinitialiser-session",
-        dest="reinitialiser_session",
-        action="store_true",
-        help=(
-            "supprime le profil de navigateur conserve (.session) avant de "
-            "se connecter, pour repartir d'un etat propre (reconnexion "
-            "complete requise) ; utile si l'attente de connexion reste "
-            "bloquee sur le domaine de connexion Microsoft"
-        ),
-    )
     return analyseur
 
 
@@ -1075,27 +998,19 @@ def main() -> int:
 
     try:
         if arguments.lister:
-            return _lister(reinitialiser=arguments.reinitialiser_session)
+            return _lister()
 
         if arguments.id_site:
-            return _un_seul_cours(
-                arguments.id_site,
-                arguments.destination,
-                reinitialiser=arguments.reinitialiser_session,
-            )
+            return _un_seul_cours(arguments.id_site, arguments.destination)
 
         if arguments.session_cible:
-            return _session(
-                arguments.session_cible,
-                arguments.destination,
-                reinitialiser=arguments.reinitialiser_session,
-            )
+            return _session(arguments.session_cible, arguments.destination)
 
         if arguments.tout:
-            return _tout(arguments.destination, reinitialiser=arguments.reinitialiser_session)
+            return _tout(arguments.destination)
 
         if arguments.diagnostic:
-            return _diagnostic(reinitialiser=arguments.reinitialiser_session)
+            return _diagnostic()
 
         if arguments.verifier:
             return _verifier_mode(arguments.destination)

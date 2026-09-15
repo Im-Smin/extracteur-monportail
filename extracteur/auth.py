@@ -11,10 +11,31 @@ lire le flux par blocs. L'API synchrone de Playwright ne permet pas de lire
 un corps de reponse par morceaux : contexte.request.get(...).body() rapatrie
 tout en memoire, ce qui violerait l'invariant de stockage.ecrire_flux (jamais
 un fichier entier en memoire).
+
+Pas de profil de navigateur persistant. Une version anterieure conservait le
+profil Chromium d'un lancement a l'autre (dossier .session a la racine du
+projet), pour eviter une reconnexion a chaque execution. Ce profil s'est
+corrompu a deux reprises en conditions reelles -- vraisemblablement a la
+suite d'executions interrompues (Ctrl+C, plantage) -- avec un symptome
+trompeur : le navigateur s'ouvrait et restait indefiniment bloque sur le
+domaine de connexion Microsoft, sans jamais aboutir, meme quand une autre
+fenetre etait deja authentifiee. Le diagnostic a chaque fois coute du temps,
+car rien ne distinguait ce blocage d'un probleme de detection de connexion.
+Un drapeau de reinitialisation avait ete ajoute en remede ; il a ete retire a
+son tour, au profit d'un choix plus simple : plus aucun profil ne survit a
+l'execution qui l'a cree. Chaque lancement de SessionNavigateur.ouvrir() cree
+un dossier de profil neuf dans le dossier temporaire du systeme (jamais dans
+le depot, jamais dans un dossier synchronise -- voir sa docstring), et
+SessionNavigateur.fermer() le supprime toujours, y compris sur interruption
+ou erreur. Le cout est une authentification a chaque lancement ; le calcul
+tient parce que le mode --tout traite les 33 cours du projet en une seule
+execution. Voir docs/api-monportail.md, section "Pieges d'exploitation", pour
+le recit complet de l'incident.
 """
 
 import http.cookiejar
 import shutil
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -52,15 +73,6 @@ SEUIL_RAPPEL_SELECTEUR_COMPTE = 15
 # Temps restant, en secondes, a partir duquel la ligne d'etat annonce
 # explicitement combien de temps il reste avant l'abandon de l'attente.
 SEUIL_FIN_IMMINENTE = 30
-# Temps passe sur le domaine de connexion Microsoft au-dela duquel un profil
-# de navigateur corrompu devient une hypothese a signaler : largement plus
-# qu'une authentification a deux facteurs normale (meme lente, telephone
-# hors de portee -- voir SEUIL_RAPPEL_SELECTEUR_COMPTE), ce delai correspond
-# au seul incident constate a ce jour ou le navigateur restait indefiniment
-# bloque sur ce domaine sans jamais aboutir, a cause d'un profil Chromium
-# persistant corrompu (processus tues en cours d'execution pendant le
-# developpement). Voir reinitialiser_session.
-SEUIL_SUGGESTION_REINITIALISATION = 90
 # Sous-chaine suffisante pour reconnaitre un hote de connexion Microsoft
 # (login.microsoftonline.com, login.microsoft.com, etc.) sans faire de la
 # detection d'authentification (est_page_authentifiee) un lieu de decision
@@ -154,79 +166,47 @@ class Reponse:
             self._flux.close()
 
 
-# Nom attendu du dossier de profil de navigateur persistant. Seul nom que
-# reinitialiser_session accepte de supprimer : un garde-fou contre un appel
-# par erreur sur un chemin different (dossier courant, home, etc.), pas une
-# garantie absolue si DOSSIER_PROFIL lui-meme etait un jour mal defini -- mais
-# une supprression du mauvais dossier serait une catastrophe d'un tout autre
-# ordre que celle que ce drapeau previent.
-NOM_DOSSIER_PROFIL = ".session"
-
-
-class CheminProfilInattendu(Exception):
-    """Chemin refuse par reinitialiser_session : ne ressemble pas au dossier
-    de profil de navigateur du projet."""
-
-
-def reinitialiser_session(dossier_profil: Path, imprimer=print) -> None:
-    """Supprime le profil de navigateur persiste, pour forcer une
-    authentification complete depuis un etat propre.
-
-    Remede au seul incident constate a ce jour : un profil Chromium
-    persistant corrompu (vraisemblablement par des processus tues en cours
-    d'execution pendant le developpement) laissait le navigateur s'ouvrir et
-    rester indefiniment sur le domaine de connexion Microsoft, l'attente
-    expirant sans jamais aboutir -- meme quand une autre fenetre, elle, etait
-    authentifiee. L'utilisateur ne pouvait pas deviner que le profil conserve
-    etait en cause ; la seule solution trouvee a ete de supprimer le dossier
-    a la main.
-
-    Refuse d'agir si `dossier_profil` ne porte pas le nom attendu
-    (NOM_DOSSIER_PROFIL) ou n'est manifestement pas un dossier : ce garde-fou
-    n'empeche pas une mauvaise valeur de DOSSIER_PROFIL de faire des degats
-    ailleurs dans le code, mais il empeche au moins cet appel de supprimer
-    quoi que ce soit qui ne ressemble pas au profil du projet.
-
-    N'echoue jamais si le dossier n'existe pas encore (rien a supprimer) :
-    le drapeau qui declenche cet appel doit rester utilisable avant la toute
-    premiere connexion.
-
-    Affiche ce qu'elle supprime avant de le faire : un outil d'archivage qui
-    efface un dossier en silence serait deja inquietant, encore plus pour une
-    action destructrice comme celle-ci.
-    """
-    dossier_profil = Path(dossier_profil)
-    if dossier_profil.name != NOM_DOSSIER_PROFIL:
-        raise CheminProfilInattendu(
-            f"refus de supprimer '{dossier_profil}' : ce dossier ne porte pas le nom "
-            f"attendu du profil du projet ('{NOM_DOSSIER_PROFIL}')."
-        )
-    if not dossier_profil.exists():
-        return
-    if not dossier_profil.is_dir():
-        raise CheminProfilInattendu(
-            f"refus de supprimer '{dossier_profil}' : ce n'est pas un dossier."
-        )
-    imprimer(f"Reinitialisation de la session : suppression de {dossier_profil.resolve()}")
-    shutil.rmtree(dossier_profil)
+# Prefixe des dossiers de profil temporaires : facilite leur identification
+# a l'oeil dans le dossier temporaire du systeme (ex. lors d'un nettoyage
+# manuel apres un plantage qui aurait empeche fermer() de s'executer).
+PREFIXE_DOSSIER_PROFIL_TEMPORAIRE = "extracteur-monportail-"
 
 
 class SessionNavigateur:
-    def __init__(self, dossier_profil: Path, sans_fenetre: bool = False):
-        self.dossier_profil = Path(dossier_profil)
+    """Pilote une fenetre de navigateur avec un profil temporaire, cree par
+    ouvrir() et supprime par fermer() : voir la docstring du module pour le
+    changement de conception qui a abandonne le profil persistant.
+    """
+
+    def __init__(self, sans_fenetre: bool = False):
         self.sans_fenetre = sans_fenetre
         self._playwright = None
         self.contexte = None
         self.page = None
+        # Cree par ouvrir(), supprime par fermer() : jamais fourni par
+        # l'appelant, jamais reutilise d'un lancement a l'autre.
+        self.dossier_profil = None
         # Domaine observe au dernier sondage d'attendre_connexion (y compris
         # apres un echec) : sert a batir un message d'echec informatif.
         self.dernier_domaine_observe = None
 
     def ouvrir(self) -> None:
-        self.dossier_profil.mkdir(parents=True, exist_ok=True)
+        """Ouvre le navigateur sur un profil neuf, cree pour cette seule
+        execution.
+
+        Le dossier vit dans le dossier temporaire du systeme
+        (tempfile.mkdtemp), jamais dans le depot ni dans un dossier
+        synchronise : le projet vit sous OneDrive, et y ecrire un profil
+        Chromium (plusieurs dizaines de megaoctets) a chaque lancement
+        declencherait une synchronisation inutile en plus de remplir le
+        disque au fil des executions. fermer() est responsable de le
+        supprimer, garantie qui doit tenir meme sur interruption ou erreur --
+        voir sa docstring.
+        """
+        self.dossier_profil = Path(
+            tempfile.mkdtemp(prefix=PREFIXE_DOSSIER_PROFIL_TEMPORAIRE)
+        )
         self._playwright = sync_playwright().start()
-        # Profil persistant : les lancements suivants ne redemandent pas la
-        # connexion tant que la session vit.
         self.contexte = self._playwright.chromium.launch_persistent_context(
             user_data_dir=str(self.dossier_profil),
             headless=self.sans_fenetre,
@@ -348,12 +328,7 @@ class SessionNavigateur:
         page remplacee, popup devenue page principale). Si une page
         s'attarde sur le domaine de connexion Microsoft, un rappel invite a
         choisir le bon compte parmi ceux que propose le selecteur de comptes
-        -- un blocage que l'utilisateur ne peut pas deviner de lui-meme. Si
-        elle s'y attarde encore davantage (SEUIL_SUGGESTION_REINITIALISATION),
-        une seconde suggestion invite a relancer avec
-        --reinitialiser-session : au-dela de ce delai, un profil de
-        navigateur corrompu est une hypothese plus probable qu'une
-        authentification a deux facteurs simplement lente.
+        -- un blocage que l'utilisateur ne peut pas deviner de lui-meme.
 
         `dernier_domaine_observe` est pose a chaque sondage (y compris en cas
         d'echec final) : l'appelant s'en sert pour batir un message d'echec
@@ -370,7 +345,6 @@ class SessionNavigateur:
         prochain_statut = debut + INTERVALLE_STATUT_ATTENTE
         debut_sur_microsoft = None
         rappel_selecteur_affiche = False
-        suggestion_reinitialisation_affichee = False
 
         while True:
             maintenant = horloge()
@@ -412,7 +386,6 @@ class SessionNavigateur:
             else:
                 debut_sur_microsoft = None
                 rappel_selecteur_affiche = False
-                suggestion_reinitialisation_affichee = False
 
             if maintenant >= prochain_statut:
                 ecoule = int(maintenant - debut)
@@ -439,20 +412,6 @@ class SessionNavigateur:
                         "peuvent etre proposes : choisissez celui de l'Universite Laval."
                     )
                     rappel_selecteur_affiche = True
-
-                if (
-                    sur_microsoft
-                    and not suggestion_reinitialisation_affichee
-                    and (maintenant - debut_sur_microsoft) >= SEUIL_SUGGESTION_REINITIALISATION
-                ):
-                    imprimer(
-                        "Toujours bloque sur le domaine de connexion Microsoft apres "
-                        f"{SEUIL_SUGGESTION_REINITIALISATION}s : le profil de navigateur "
-                        "conserve est peut-etre corrompu. Relancez avec "
-                        "--reinitialiser-session pour repartir d'un profil neuf (une "
-                        "reconnexion complete sera alors necessaire)."
-                    )
-                    suggestion_reinitialisation_affichee = True
 
                 if restant <= SEUIL_FIN_IMMINENTE:
                     imprimer(f"encore environ {restant}s avant l'abandon de l'attente")
@@ -511,7 +470,33 @@ class SessionNavigateur:
             return Reponse(erreur.code, erreur)
 
     def fermer(self) -> None:
-        if self.contexte is not None:
-            self.contexte.close()
-        if self._playwright is not None:
-            self._playwright.stop()
+        """Ferme le navigateur, puis supprime le profil temporaire cree par
+        ouvrir().
+
+        Chaque etape s'execute meme si la precedente a leve une exception :
+        fermer() est deja appelee depuis un try/finally partout dans le
+        projet (voir _connecter, _lister, _un_seul_cours, etc., dans
+        __main__.py), y compris sur interruption clavier, session expiree ou
+        erreur inattendue. C'est cette meme garantie qui doit couvrir la
+        suppression du profil temporaire -- sinon un plantage en cours de
+        route laisserait un dossier de plusieurs dizaines de megaoctets
+        derriere lui, lancement apres lancement.
+
+        La suppression ignore ses propres erreurs (fichier verrouille par un
+        processus Chromium pas encore tout a fait termine, par exemple) :
+        mieux vaut un profil orphelin occasionnel qu'une exception de
+        nettoyage qui remplacerait, ou masquerait, l'erreur reelle que
+        fermer() est en train de nettoyer derriere.
+        """
+        try:
+            if self.contexte is not None:
+                self.contexte.close()
+        finally:
+            try:
+                if self._playwright is not None:
+                    self._playwright.stop()
+            finally:
+                if self.dossier_profil is not None:
+                    dossier = self.dossier_profil
+                    self.dossier_profil = None
+                    shutil.rmtree(dossier, ignore_errors=True)

@@ -430,57 +430,67 @@ sur un cours ancien puis un cours récent.
 
 ## 10. Pièges d'exploitation
 
-### Le navigateur reste bloqué sur le domaine de connexion Microsoft
+### Le navigateur restait bloqué sur le domaine de connexion Microsoft (piège résolu)
 
-**Symptôme.** `python -m extracteur` (quel que soit le mode) ouvre bien le
-navigateur, mais la page reste indéfiniment sur un domaine de connexion
-Microsoft (`login.microsoftonline.com` et apparentés). L'attente de connexion
-finit par expirer sans jamais détecter la connexion, alors que l'utilisateur a
-bel et bien terminé son authentification — parfois visible dans une **autre**
-fenêtre du navigateur, déjà authentifiée sur `sitescours.monportail.ulaval.ca`,
-pendant que la fenêtre pilotée par Playwright, elle, reste plantée sur l'écran
-Microsoft.
+**Symptôme observé.** `python -m extracteur` (quel que soit le mode) ouvrait
+bien le navigateur, mais la page restait indéfiniment sur un domaine de
+connexion Microsoft (`login.microsoftonline.com` et apparentés). L'attente de
+connexion finissait par expirer sans jamais détecter la connexion, alors que
+l'utilisateur avait bel et bien terminé son authentification — parfois
+visible dans une **autre** fenêtre du navigateur, déjà authentifiée sur
+`sitescours.monportail.ulaval.ca`, pendant que la fenêtre pilotée par
+Playwright, elle, restait plantée sur l'écran Microsoft.
 
-Cette dernière observation (une fenêtre authentifiée visible à l'écran) est
+Cette dernière observation (une fenêtre authentifiée visible à l'écran) était
 trompeuse : elle pousse naturellement à chercher le défaut du côté de la
 détection de connexion (`est_page_authentifiee`), du sélecteur de compte, ou
 d'une session déjà expirée — trois pistes qui se sont révélées fausses en
 usage réel avant que la vraie cause ne soit identifiée.
 
-**Cause réelle.** Le profil de navigateur Chromium persistant, conservé dans
-le dossier `.session` à la racine du projet (voir `DOSSIER_PROFIL` dans
-`extracteur/__main__.py`), s'est corrompu — vraisemblablement à la suite de
-processus Chromium tués en cours d'exécution pendant le développement
-(interruption brutale du processus Python, `Ctrl+C` répété, plantage). Un
-profil corrompu peut faire échouer silencieusement la chaîne de redirections
-OAuth : le navigateur reste sur l'écran de connexion Microsoft sans jamais
-recevoir la redirection finale vers le domaine `ulaval.ca`, quel que soit ce
-que fait l'utilisateur dans cette fenêtre.
+**Cause réelle.** Le profil de navigateur Chromium persistant, conservé à
+l'époque dans le dossier `.session` à la racine du projet, s'était corrompu —
+à deux reprises en conditions réelles, vraisemblablement à la suite de
+processus Chromium tués en cours d'exécution (interruption brutale du
+processus Python, `Ctrl+C` répété, plantage). Un profil corrompu pouvait
+faire échouer silencieusement la chaîne de redirections OAuth : le navigateur
+restait sur l'écran de connexion Microsoft sans jamais recevoir la
+redirection finale vers le domaine `ulaval.ca`, quel que soit ce que faisait
+l'utilisateur dans cette fenêtre. Le diagnostic a coûté du temps à chaque
+occurrence, faute d'indice reliant le symptôme (blocage sur l'écran Microsoft)
+à sa cause réelle (un dossier de profil corrompu, invisible depuis la
+console).
 
-**Remède.** Relancer avec le drapeau `--reinitialiser-session` :
+**Remède essayé, puis abandonné.** Un drapeau `--reinitialiser-session`
+supprimait le dossier `.session` avant l'ouverture, forçant une
+authentification complète depuis un profil neuf. Il fonctionnait, mais
+demandait à l'utilisateur de reconnaître lui-même le symptôme et de se
+souvenir du drapeau — exactement ce qui avait coûté une soirée entière la
+première fois. Le compromis (un lancement plus rapide la plupart du temps,
+contre un risque de blocage trompeur de temps en temps) a été jugé ne pas
+valoir son prix pour un outil dont l'unique raison d'être est de sauver du
+contenu avant une échéance ferme.
 
-```
-python -m extracteur --lister --reinitialiser-session
-```
+**Remède retenu : plus de profil persistant du tout.** Depuis, chaque
+lancement de `SessionNavigateur.ouvrir()` (voir `extracteur/auth.py`) crée un
+dossier de profil neuf dans le dossier temporaire du système
+(`tempfile.mkdtemp`), jamais dans le dépôt ni dans un dossier synchronisé
+OneDrive. `SessionNavigateur.fermer()` le supprime systématiquement, y
+compris sur interruption clavier, session expirée ou erreur inattendue —
+cette garantie s'appuie sur le `try/finally` qui entoure déjà chaque appel à
+`fermer()` dans `extracteur/__main__.py`. Un profil qui n'existe plus au
+lancement suivant ne peut plus se corrompre d'un lancement à l'autre : ce
+piège précis ne peut plus se reproduire.
 
-Ce drapeau supprime le dossier `.session` avant d'ouvrir le navigateur, ce qui
-force une authentification complète depuis un profil neuf (l'utilisateur doit
-donc se reconnecter entièrement, MFA compris — il n'y a pas de raccourci).
-C'est une option de préparation, pas un mode : elle se combine avec
-`--lister`, `--diagnostic`, `--un-seul-cours`, `--session` et `--tout`.
+Le coût est une authentification complète à chaque lancement, MFA compris —
+l'outil l'annonce explicitement avant d'ouvrir le navigateur, pour que ce ne
+soit jamais pris pour une régression. Le calcul reste favorable : le mode
+`--tout` traite les 33 cours du projet en une seule exécution, donc une seule
+authentification suffit pour tout récupérer.
 
-**Détection automatique.** L'outil n'attend pas que l'utilisateur découvre ce
-piège tout seul :
-
-- si l'attente de connexion reste bloquée sur un domaine de connexion
-  Microsoft au-delà de `SEUIL_SUGGESTION_REINITIALISATION` (90 secondes,
-  largement plus qu'une authentification à deux facteurs normale, voir
-  `extracteur/auth.py`), une suggestion explicite s'affiche une seule fois ;
-- si l'attente expire malgré tout, le message d'échec final rappelle la même
-  piste avec la commande exacte à lancer.
-
-Avant de supprimer quoi que ce soit, `reinitialiser_session` (dans
-`extracteur/auth.py`) vérifie que le dossier visé porte bien le nom attendu du
-profil du projet (`.session`) et en est bien un : un outil d'archivage qui
-effacerait le mauvais dossier serait une catastrophe d'un tout autre ordre que
-celle que ce drapeau prévient.
+**Pour qui reprend ce projet plus tard.** Si l'idée de réintroduire un profil
+persistant revient (pour économiser une reconnexion), le compromis a déjà été
+pesé et écarté : deux corruptions en conditions réelles, un diagnostic coûteux
+à chaque fois, et un drapeau de réinitialisation qui déplaçait le problème sur
+l'utilisateur plutôt que de le supprimer. Le profil persistant a un coût de
+fiabilité qui n'est pas justifié par le gain d'une reconnexion évitée de temps
+en temps.
