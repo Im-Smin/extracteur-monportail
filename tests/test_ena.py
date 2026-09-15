@@ -547,7 +547,10 @@ class LocatorOptionsSessionsFactice:
             def click(self, **_kwargs):
                 if not libelles:
                     raise ErreurDelaiPlaywright("Timeout 5000ms exceeded.")
-                page.session_selectionnee = libelles[0]
+                # Nettoyer le texte avant de l'assigner, pour correspondre
+                # au comportement reel ou les cours sont recuperes via le
+                # texte nettoye de la session selectionnee.
+                page.session_selectionnee = libelles[0].strip()
 
         return Lien()
 
@@ -1011,3 +1014,40 @@ def test_parcourir_menu_tolere_un_lien_non_cliquable():
 
     assert vues == ["Six biais"]
     assert nombre == 1
+
+
+def test_sites_de_session_tolere_les_espaces_autour_du_libelle():
+    # Le mecanisme de selection doit tolerer les espaces parasites autour
+    # du libelle, tout comme celui de lecture : si le DOM exposait un jour
+    # le moindre espace ou saut de ligne autour du libelle (ex. " Hiver 2027 "),
+    # la selection ne doit pas echouer silencieusement et laisser croire qu'on
+    # a les cours d'une autre session.
+    html_hiver_2026 = '<a href="/ena/site/accueil?idSite=181216">Ethique</a>'
+    page = PageAvecSelecteurSessions(
+        [" Hiver 2026 ", "\nAutomne 2025\n"],
+        {"Hiver 2026": html_hiver_2026},
+    )
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+    session = Session(code="202601", libelle="Hiver 2026")
+
+    cours = ena.sites_de_session(session)
+
+    # Le selecteur s'est ouvert, une option avec espaces parasites a ete
+    # trouvee (apres nettoyage), cliquee, et la page a ete reloadee.
+    assert page.session_selectionnee == "Hiver 2026"
+    assert [c.id_site for c in cours] == ["181216"]
+
+
+def test_sites_de_session_leve_si_la_session_est_introuvable():
+    # Une session absente du selecteur est une anomalie : ne pas lever
+    # d'exception risque de rendre les cours de la session courante (ou d'une
+    # autre) archives sous le nom de la session demandee, une corruption de
+    # donnees pire qu'une extraction incomplete. On leve donc bruyamment.
+    page = PageAvecSelecteurSessions(["Hiver 2026"])
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+    session_inexistante = Session(code="202509", libelle="Automne 2025")
+
+    with pytest.raises(SelecteurSessionsIllisible):
+        ena.sites_de_session(session_inexistante)
