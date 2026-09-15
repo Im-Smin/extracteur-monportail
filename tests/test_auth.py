@@ -3,7 +3,16 @@ from urllib.parse import urlparse
 
 from playwright.sync_api import Error as ErreurPlaywright
 
-from extracteur.auth import SessionNavigateur, HOTE_SITESCOURS, HOTE_PORTAIL, URL_DEPART
+from extracteur.auth import (
+    SessionNavigateur,
+    HOTE_SITESCOURS,
+    HOTE_PORTAIL,
+    URL_DEPART,
+    NOM_DOSSIER_PROFIL,
+    SEUIL_SUGGESTION_REINITIALISATION,
+    CheminProfilInattendu,
+    reinitialiser_session,
+)
 
 
 class PageFactice:
@@ -571,3 +580,151 @@ def test_attendre_connexion_ligne_d_etat_mentionne_tous_les_domaines_ouverts():
         "login.microsoftonline.com" in ligne and "login.live.com" in ligne
         for ligne in lignes_etat
     )
+
+
+# --- reinitialiser_session : suppression prudente du profil de navigateur
+# --- conserve (piege de la soiree du 2026-09-14 : profil corrompu) ---
+#
+# Aucun test ici ne touche a un vrai dossier de profil du projet : tmp_path
+# fournit un dossier temporaire isole, jamais .session lui-meme.
+
+
+def test_reinitialiser_session_supprime_le_dossier_vise(tmp_path):
+    """Le dossier de profil, et lui seul, est supprime."""
+    dossier_profil = tmp_path / NOM_DOSSIER_PROFIL
+    dossier_profil.mkdir()
+    (dossier_profil / "Default").mkdir()
+    (dossier_profil / "Default" / "Cookies").write_bytes(b"donnees")
+    autre_dossier = tmp_path / "ne-pas-toucher"
+    autre_dossier.mkdir()
+    (autre_dossier / "fichier.txt").write_text("intact")
+
+    reinitialiser_session(dossier_profil, imprimer=lambda _m: None)
+
+    assert not dossier_profil.exists()
+    assert autre_dossier.exists()
+    assert (autre_dossier / "fichier.txt").read_text() == "intact"
+
+
+def test_reinitialiser_session_affiche_ce_qu_elle_supprime_avant_de_le_faire(tmp_path):
+    dossier_profil = tmp_path / NOM_DOSSIER_PROFIL
+    dossier_profil.mkdir()
+    messages = []
+
+    reinitialiser_session(dossier_profil, imprimer=messages.append)
+
+    assert len(messages) == 1
+    assert str(dossier_profil.resolve()) in messages[0]
+
+
+def test_reinitialiser_session_sans_dossier_existant_ne_leve_rien(tmp_path):
+    """Le drapeau doit rester utilisable avant la toute premiere connexion,
+    quand aucun profil n'a encore ete cree."""
+    dossier_profil = tmp_path / NOM_DOSSIER_PROFIL
+    assert not dossier_profil.exists()
+
+    reinitialiser_session(dossier_profil, imprimer=lambda _m: None)
+
+    assert not dossier_profil.exists()
+
+
+def test_reinitialiser_session_refuse_un_chemin_qui_ne_porte_pas_le_bon_nom(tmp_path):
+    """Un chemin qui ne s'appelle pas .session est manifestement autre chose
+    que le profil du projet : refus d'agir plutot que de supprimer au hasard."""
+    dossier_quelconque = tmp_path / "Documents"
+    dossier_quelconque.mkdir()
+    (dossier_quelconque / "fichier.txt").write_text("important")
+
+    with pytest.raises(CheminProfilInattendu):
+        reinitialiser_session(dossier_quelconque, imprimer=lambda _m: None)
+
+    assert dossier_quelconque.exists()
+    assert (dossier_quelconque / "fichier.txt").exists()
+
+
+def test_reinitialiser_session_refuse_un_fichier_portant_le_bon_nom(tmp_path):
+    """Le nom seul ne suffit pas : si ce n'est pas un dossier, ce n'est
+    manifestement pas un profil de navigateur, refus d'agir."""
+    faux_profil = tmp_path / NOM_DOSSIER_PROFIL
+    faux_profil.write_text("ceci n'est pas un dossier de profil")
+
+    with pytest.raises(CheminProfilInattendu):
+        reinitialiser_session(faux_profil, imprimer=lambda _m: None)
+
+    assert faux_profil.exists()
+
+
+# --- attendre_connexion : suggestion de --reinitialiser-session au-dela du
+# --- seuil, une seule fois, seulement bloque sur le domaine de connexion ---
+
+
+def test_attendre_connexion_suggere_la_reinitialisation_au_dela_du_seuil():
+    page = PageFactice("https://login.microsoftonline.com/common/oauth2/authorize")
+    session = SessionAttenteTestable(page, connectee_au_nieme_appel=None)
+    messages = []
+
+    resultat = session.attendre_connexion(
+        delai=SEUIL_SUGGESTION_REINITIALISATION + 20,
+        imprimer=messages.append,
+        horloge=HorlogeFactice(pas=1.0),
+        sommeil=_sommeil_factice,
+    )
+
+    assert resultat is False
+    suggestions = [m for m in messages if "--reinitialiser-session" in m]
+    assert len(suggestions) == 1
+
+
+def test_attendre_connexion_ne_suggere_pas_la_reinitialisation_avant_le_seuil():
+    """Une attente qui expire avant le seuil (mais apres le rappel du
+    selecteur de compte) ne doit pas encore suggerer la reinitialisation :
+    largement plus qu'une authentification a deux facteurs normale."""
+    page = PageFactice("https://login.microsoftonline.com/common/oauth2/authorize")
+    session = SessionAttenteTestable(page, connectee_au_nieme_appel=None)
+    messages = []
+
+    resultat = session.attendre_connexion(
+        delai=SEUIL_SUGGESTION_REINITIALISATION - 10,
+        imprimer=messages.append,
+        horloge=HorlogeFactice(pas=1.0),
+        sommeil=_sommeil_factice,
+    )
+
+    assert resultat is False
+    assert not any("--reinitialiser-session" in m for m in messages)
+
+
+def test_attendre_connexion_ne_suggere_pas_la_reinitialisation_hors_microsoft():
+    """Rester bloque sur le domaine legitime, sans jamais passer par
+    Microsoft, n'a rien a voir avec un profil corrompu : aucune suggestion."""
+    page = PageFactice(f"https://{HOTE_SITESCOURS}/une/page/quelconque")
+    session = SessionAttenteTestable(page, connectee_au_nieme_appel=None)
+    messages = []
+
+    resultat = session.attendre_connexion(
+        delai=SEUIL_SUGGESTION_REINITIALISATION + 20,
+        imprimer=messages.append,
+        horloge=HorlogeFactice(pas=1.0),
+        sommeil=_sommeil_factice,
+    )
+
+    assert resultat is False
+    assert not any("--reinitialiser-session" in m for m in messages)
+
+
+def test_attendre_connexion_reussie_rapidement_n_affiche_aucune_suggestion():
+    """Une connexion qui aboutit bien avant le seuil ne doit produire aucune
+    suggestion de reinitialisation : elle n'a jamais eu lieu d'etre."""
+    page = PageFactice("https://login.microsoftonline.com/common/oauth2/authorize")
+    session = SessionAttenteTestable(page, connectee_au_nieme_appel=5)
+    messages = []
+
+    resultat = session.attendre_connexion(
+        delai=1000,
+        imprimer=messages.append,
+        horloge=HorlogeFactice(pas=1.0),
+        sommeil=_sommeil_factice,
+    )
+
+    assert resultat is True
+    assert not any("--reinitialiser-session" in m for m in messages)

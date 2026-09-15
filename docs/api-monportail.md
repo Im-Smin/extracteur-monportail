@@ -427,3 +427,60 @@ sur un cours ancien puis un cours récent.
    quels.
 4. L'énumération de l'historique passe par le sélecteur de session du panneau
    « Liste des cours ».
+
+## 10. Pièges d'exploitation
+
+### Le navigateur reste bloqué sur le domaine de connexion Microsoft
+
+**Symptôme.** `python -m extracteur` (quel que soit le mode) ouvre bien le
+navigateur, mais la page reste indéfiniment sur un domaine de connexion
+Microsoft (`login.microsoftonline.com` et apparentés). L'attente de connexion
+finit par expirer sans jamais détecter la connexion, alors que l'utilisateur a
+bel et bien terminé son authentification — parfois visible dans une **autre**
+fenêtre du navigateur, déjà authentifiée sur `sitescours.monportail.ulaval.ca`,
+pendant que la fenêtre pilotée par Playwright, elle, reste plantée sur l'écran
+Microsoft.
+
+Cette dernière observation (une fenêtre authentifiée visible à l'écran) est
+trompeuse : elle pousse naturellement à chercher le défaut du côté de la
+détection de connexion (`est_page_authentifiee`), du sélecteur de compte, ou
+d'une session déjà expirée — trois pistes qui se sont révélées fausses en
+usage réel avant que la vraie cause ne soit identifiée.
+
+**Cause réelle.** Le profil de navigateur Chromium persistant, conservé dans
+le dossier `.session` à la racine du projet (voir `DOSSIER_PROFIL` dans
+`extracteur/__main__.py`), s'est corrompu — vraisemblablement à la suite de
+processus Chromium tués en cours d'exécution pendant le développement
+(interruption brutale du processus Python, `Ctrl+C` répété, plantage). Un
+profil corrompu peut faire échouer silencieusement la chaîne de redirections
+OAuth : le navigateur reste sur l'écran de connexion Microsoft sans jamais
+recevoir la redirection finale vers le domaine `ulaval.ca`, quel que soit ce
+que fait l'utilisateur dans cette fenêtre.
+
+**Remède.** Relancer avec le drapeau `--reinitialiser-session` :
+
+```
+python -m extracteur --lister --reinitialiser-session
+```
+
+Ce drapeau supprime le dossier `.session` avant d'ouvrir le navigateur, ce qui
+force une authentification complète depuis un profil neuf (l'utilisateur doit
+donc se reconnecter entièrement, MFA compris — il n'y a pas de raccourci).
+C'est une option de préparation, pas un mode : elle se combine avec
+`--lister`, `--diagnostic`, `--un-seul-cours`, `--session` et `--tout`.
+
+**Détection automatique.** L'outil n'attend pas que l'utilisateur découvre ce
+piège tout seul :
+
+- si l'attente de connexion reste bloquée sur un domaine de connexion
+  Microsoft au-delà de `SEUIL_SUGGESTION_REINITIALISATION` (90 secondes,
+  largement plus qu'une authentification à deux facteurs normale, voir
+  `extracteur/auth.py`), une suggestion explicite s'affiche une seule fois ;
+- si l'attente expire malgré tout, le message d'échec final rappelle la même
+  piste avec la commande exacte à lancer.
+
+Avant de supprimer quoi que ce soit, `reinitialiser_session` (dans
+`extracteur/auth.py`) vérifie que le dossier visé porte bien le nom attendu du
+profil du projet (`.session`) et en est bien un : un outil d'archivage qui
+effacerait le mauvais dossier serait une catastrophe d'un tout autre ordre que
+celle que ce drapeau prévient.
