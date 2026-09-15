@@ -41,9 +41,14 @@ console) :
        a aucune session, ou --lister/--un-seul-cours/--session/--tout n'a
        rien produit et a consigne des echecs).
   2    --un-seul-cours : aucun cours ne correspond a l'idSite demande.
-  3    session expiree en cours de route ; relancer la meme commande, la
-       reprise est idempotente (--session et --tout reprennent aussi la ou
-       ils se sont arretes, sans retelecharger ce qui est deja sur disque).
+  3    session expiree en cours de route ; relancer la meme commande. Si
+       l'expiration survient pendant un telechargement, la reprise est
+       idempotente (--session et --tout reprennent aussi la ou ils se sont
+       arretes, sans retelecharger ce qui est deja sur disque). Si elle
+       survient plus tot -- pendant l'enumeration des sessions et cours,
+       avant qu'aucun fichier n'ait ete ecrit -- rien n'est a "reprendre" :
+       relancer recommence entierement l'enumeration a zero. Le message
+       console et _rapport.html distinguent explicitement les deux cas.
   4    --un-seul-cours, --session ou --tout : archivage partiel, au moins un
        fichier ecrit mais aussi des echecs consignes dans le rapport (voir
        _rapport.html).
@@ -208,14 +213,21 @@ def _drainer_progression(evenements: "queue.Queue", etat: dict, imprimer=print) 
             imprimer(f"  [{type_evenement}] {donnee}")
 
 
-def _ecrire_rapport_final(destination: Path, resultat: Resultat) -> Path:
+def _ecrire_rapport_final(
+    destination: Path, resultat: Resultat, interruption: str | None = None
+) -> Path:
     """Le compte rendu final : doit exister meme apres une session expiree ou
-    une interruption, pour dire ce qu'il reste a recuperer a la main."""
+    une interruption, pour dire ce qu'il reste a recuperer a la main.
+
+    `interruption`, quand fourni, est le message en clair qui fait basculer
+    le rapport dans son troisieme etat (voir ecrire_rapport) : ni succes
+    complet, ni simple echec partiel, mais un arret en cours de route."""
     chemin = destination / NOM_RAPPORT
     ecrire_rapport(
         chemin,
         resultat.echecs,
         {"fichiers ecrits": resultat.fichiers_ecrits, "fichiers sautes": resultat.fichiers_sautes},
+        interruption=interruption,
     )
     return chemin
 
@@ -317,6 +329,11 @@ def _diagnostic(session=None, fabrique_ena=Ena, imprimer=print) -> int:
                 imprimer(f"    - {texte!r}")
 
         imprimer(f"liens portant idSite= dans la page : {rapport['liens_id_site']}")
+        if rapport.get("echec_stabilisation_options"):
+            imprimer(
+                "echec de stabilisation des options de session : "
+                f"{rapport['echec_stabilisation_options']}"
+            )
         return 0
     except ConnexionEchouee as erreur:
         print(f"ECHEC : {erreur}", file=sys.stderr)
@@ -357,16 +374,26 @@ def _un_seul_cours(id_site: str, destination: Path, session=None, fabrique_ena=E
             print("Connexion detectee.")
 
             ena = fabrique_ena(session)
+            archiveur = Archiveur(ena, session.transport, destination, evenements)
+            # Stocke la reference AVANT _chercher_cours, pas seulement avant
+            # archiver() : _chercher_cours enumere lui-meme sessions et
+            # cours (ena.sessions_disponibles / ena.sites_de_session), donc
+            # le tout premier appel reseau de cette fonction peut deja lever
+            # SessionExpiree, avant qu'aucun cours n'ait ete localise. Sans
+            # l'archiveur des ce point, aucun rapport ne serait ecrit du
+            # tout -- le pire mode de defaillance du projet.
+            contexte["archiveur"] = archiveur
+
             cours = _chercher_cours(ena, id_site)
             if cours is None:
                 contexte["erreur"] = CoursIntrouvable(id_site)
                 return
 
-            archiveur = Archiveur(ena, session.transport, destination, evenements)
-            # Stocke la reference AVANT d'archiver : si SessionExpiree est
-            # levee pendant archiver(), le resultat partiel (echecs deja
-            # consignes) doit rester accessible pour le rapport final.
-            contexte["archiveur"] = archiveur
+            # Marque le passage a la phase d'archivage : distingue, pour le
+            # message de reprise, une expiration pendant la recherche du
+            # cours (rien de tente, l'enumeration recommencera a zero) d'une
+            # expiration pendant l'archivage lui-meme (reprise idempotente).
+            contexte["cours_localise"] = True
             contexte["resultat"] = archiveur.archiver([cours])
         except SessionExpiree as erreur:
             contexte["erreur"] = erreur
@@ -425,14 +452,36 @@ def _un_seul_cours(id_site: str, destination: Path, session=None, fabrique_ena=E
         return 1
 
     if isinstance(erreur, SessionExpiree):
-        print(
-            "\nSession expiree pendant l'archivage. Reconnectez-vous puis "
-            "relancez la meme commande : la reprise est idempotente, elle "
-            "continue la ou elle s'est arretee.",
-            file=sys.stderr,
-        )
+        if contexte.get("cours_localise"):
+            # L'archivage avait deja commence : la reprise par manifeste ne
+            # retelecharge jamais un fichier deja ecrit sur disque.
+            print(
+                "\nSession expiree pendant l'archivage. Reconnectez-vous puis "
+                "relancez la meme commande : la reprise est idempotente, elle "
+                "continue la ou elle s'est arretee.",
+                file=sys.stderr,
+            )
+            message_rapport = (
+                f"La session a expire pendant l'archivage du cours idSite={id_site} : "
+                "son contenu n'a pas pu etre completement recupere."
+            )
+        else:
+            # Rien n'a encore ete ecrit : le cours vise n'a meme pas ete
+            # localise. Relancer ne "reprend" rien, ca recommence a zero.
+            print(
+                "\nSession expiree avant meme de localiser le cours vise. "
+                "Aucun fichier n'a encore ete traite : reconnectez-vous puis "
+                "relancez la meme commande, l'enumeration recommencera "
+                "entierement depuis le debut.",
+                file=sys.stderr,
+            )
+            message_rapport = (
+                f"La session a expire avant meme que le cours vise (idSite={id_site}) "
+                "n'ait pu etre localise dans l'enumeration des sessions. Aucun fichier "
+                "n'a ete telecharge."
+            )
         if archiveur is not None:
-            _ecrire_rapport_final(destination, archiveur.resultat)
+            _ecrire_rapport_final(destination, archiveur.resultat, interruption=message_rapport)
         return 3
 
     if erreur is not None:
@@ -465,11 +514,14 @@ def _archiver_plusieurs_sessions(
     l'appeler une fois par session ecraserait ce fichier a chaque session au
     lieu de couvrir l'ensemble. Le cout est qu'aucun telechargement ne
     commence avant que toutes les sessions visees aient ete enumerees ; si
-    une session expire pendant cette enumeration, rien n'a encore ete
-    ecrit -- ce qui reste un rapport honnete, jamais un rapport tronque.
-    Une fois l'archivage entame, en revanche, une session qui expire au
-    milieu laisse un rapport qui couvre tout ce qui a deja ete tente,
-    exactement comme pour --un-seul-cours.
+    une session expire pendant cette enumeration, rien n'a encore ete ecrit,
+    ET le rapport le dit explicitement (etat "travail interrompu" de
+    ecrire_rapport) -- jamais un rapport qui pretendrait, a tort, que tout a
+    ete recupere simplement parce qu'aucun echec n'est consigne. Une fois
+    l'archivage entame, en revanche, une session qui expire au milieu laisse
+    un rapport qui couvre tout ce qui a deja ete tente, et signale de la
+    meme facon ce qui ne l'a jamais ete, exactement comme pour
+    --un-seul-cours.
 
     `session` et `fabrique_ena` sont injectables pour les tests, comme
     _un_seul_cours.
@@ -490,17 +542,23 @@ def _archiver_plusieurs_sessions(
             print("Connexion detectee.")
 
             ena = fabrique_ena(session)
-            sessions_a_traiter = resoudre_sessions(ena)
-            if not sessions_a_traiter:
-                contexte["aucune_session"] = True
-                return
-
             archiveur = Archiveur(ena, session.transport, destination, evenements)
-            # Stocke la reference AVANT toute enumeration ou tout archivage :
-            # si une session expire en cours de route (enumeration comprise),
-            # le rapport final doit exister quand meme, meme s'il ne couvre
-            # que ce qui a deja ete tente jusque-la.
+            # Stocke la reference AVANT resoudre_sessions : c'est deja le
+            # tout premier appel reseau (ena.sessions_disponibles, via
+            # resoudre_sessions), et il peut a lui seul lever SessionExpiree,
+            # avant qu'aucune session ne soit connue. Sans l'archiveur des ce
+            # point, aucun rapport ne serait ecrit du tout.
             contexte["archiveur"] = archiveur
+
+            # sessions_disponibles() ne rend jamais de liste vide : elle leve
+            # SelecteurSessionsIllisible des que le panneau n'offre aucune
+            # option valide (voir sa docstring dans ena.py). resoudre_sessions
+            # ne peut donc jamais rendre [] ici non plus : --session renvoie
+            # soit un candidat unique soit leve SessionIntrouvable, et --tout
+            # trie cette meme liste garantie non vide. Un garde sur une liste
+            # vide serait un chemin mort, jamais atteint.
+            sessions_a_traiter = resoudre_sessions(ena)
+            contexte["sessions_prevues"] = len(sessions_a_traiter)
 
             total_sessions = len(sessions_a_traiter)
             tous_les_cours = []
@@ -509,6 +567,7 @@ def _archiver_plusieurs_sessions(
                     ("session", (indice, total_sessions, session_cible.libelle, "enumeration en cours..."))
                 )
                 cours_de_la_session = ena.sites_de_session(session_cible)
+                contexte["sessions_enumerees"] = indice
                 evenements.put(
                     (
                         "session",
@@ -521,8 +580,14 @@ def _archiver_plusieurs_sessions(
                     )
                 )
                 tous_les_cours.extend(cours_de_la_session)
+                contexte["cours_enumeres"] = len(tous_les_cours)
 
             evenements.put(("plan", [c.session.libelle for c in tous_les_cours]))
+            # Marque le passage a la phase d'archivage : distingue, pour le
+            # message de reprise, une expiration pendant l'enumeration (rien
+            # de tente, tout recommencera a zero) d'une expiration pendant
+            # l'archivage lui-meme (reprise idempotente par manifeste).
+            contexte["archivage_commence"] = True
             contexte["resultat"] = archiveur.archiver(tous_les_cours)
         except SessionIntrouvable as erreur:
             contexte["erreur"] = erreur
@@ -583,24 +648,71 @@ def _archiver_plusieurs_sessions(
         return 1
 
     if isinstance(erreur, SessionExpiree):
-        print(
-            "\nSession expiree pendant l'archivage. Reconnectez-vous puis "
-            "relancez la meme commande : la reprise est idempotente, elle "
-            "continue la ou elle s'est arretee.",
-            file=sys.stderr,
-        )
+        sessions_prevues = contexte.get("sessions_prevues")
+        if contexte.get("archivage_commence"):
+            # Toutes les sessions visees ont ete enumerees, et archiver() a
+            # deja commence a ecrire sur disque : la reprise par manifeste
+            # ne retelecharge jamais ce qui est deja la.
+            print(
+                "\nSession expiree pendant l'archivage. Reconnectez-vous puis "
+                "relancez la meme commande : la reprise est idempotente, elle "
+                "continue la ou elle s'est arretee.",
+                file=sys.stderr,
+            )
+            cours_non_tentes = archiveur.resultat.cours_non_tentes if archiveur else 0
+            cours_prevus = contexte.get("cours_enumeres", 0)
+            message_rapport = (
+                f"L'archivage a ete interrompu : {cours_non_tentes} cours sur {cours_prevus} "
+                f"(repartis sur les {sessions_prevues} session(s) visee(s), toutes deja "
+                "enumerees) n'ont jamais ete tentes."
+            )
+        elif sessions_prevues is None:
+            # La resolution meme des sessions visees a echoue (le tout
+            # premier appel reseau) : on ne sait pas combien de sessions
+            # sont concernees, encore moins combien de cours.
+            print(
+                "\nSession expiree avant meme de determiner les sessions visees. "
+                "Aucun fichier n'a encore ete traite : reconnectez-vous puis "
+                "relancez la meme commande, l'enumeration recommencera "
+                "entierement depuis le debut.",
+                file=sys.stderr,
+            )
+            message_rapport = (
+                "La session a expire avant meme de savoir combien de sessions sont "
+                "visees par cette commande. Aucune session ni aucun cours n'a ete tente."
+            )
+        else:
+            # Une partie des sessions visees a ete enumeree, mais
+            # l'archivage proprement dit n'a jamais commence : il ne
+            # demarre qu'une fois TOUTES les sessions enumerees (voir la
+            # docstring de cette fonction). Rien n'a donc ete ecrit, pour
+            # aucune des sessions visees, enumeree ou non.
+            sessions_enumerees = contexte.get("sessions_enumerees", 0)
+            cours_enumeres = contexte.get("cours_enumeres", 0)
+            print(
+                "\nSession expiree pendant l'enumeration des sessions. Aucun "
+                "fichier n'a encore ete traite : reconnectez-vous puis relancez "
+                "la meme commande, l'enumeration recommencera entierement "
+                "depuis le debut.",
+                file=sys.stderr,
+            )
+            message_rapport = (
+                f"L'enumeration a ete interrompue : {sessions_enumerees} session(s) sur "
+                f"{sessions_prevues} avaient ete entierement enumerees ({cours_enumeres} "
+                "cours recenses), mais l'archivage n'avait commence pour aucune d'entre "
+                "elles (il ne demarre qu'une fois toutes les sessions visees enumerees). "
+                f"Les {sessions_prevues - sessions_enumerees} session(s) restante(s) n'ont "
+                "meme pas pu etre enumerees ; leur nombre de cours est inconnu. Aucun des "
+                f"{sessions_prevues} session(s) visee(s) n'a donc ete archive."
+            )
         if archiveur is not None:
-            _ecrire_rapport_final(destination, archiveur.resultat)
+            _ecrire_rapport_final(destination, archiveur.resultat, interruption=message_rapport)
         return 3
 
     if erreur is not None:
         print(f"ECHEC inattendu : {erreur}", file=sys.stderr)
         if archiveur is not None:
             _ecrire_rapport_final(destination, archiveur.resultat)
-        return 1
-
-    if contexte.get("aucune_session"):
-        print("ECHEC : aucune session trouvee.", file=sys.stderr)
         return 1
 
     resultat = contexte["resultat"]
