@@ -197,9 +197,24 @@ class SessionNavigateur:
                 if self.est_connecte():
                     return True
             except ErreurPlaywright:
-                # Fenetre ou contexte ferme par l'utilisateur : fin d'attente
-                # propre, pas une exception qui empeche l'appel a fermer().
-                return False
+                # ErreurPlaywright est la classe d'erreur generale de
+                # Playwright : elle couvre aussi bien une fenetre reellement
+                # fermee qu'une erreur transitoire de navigation ("Execution
+                # context was destroyed, most likely because of a
+                # navigation"), qui survient couramment et normalement en
+                # pleine chaine de redirections OAuth. Confondre les deux
+                # ferait conclure a une fermeture alors que la connexion est
+                # en cours de reussir.
+                #
+                # On tranche donc sur l'etat reel de la page/du contexte,
+                # que Playwright sait rendre de facon fiable, plutot que de
+                # le deduire du type d'exception. Seule une fermeture
+                # averee doit interrompre l'attente ; toute autre erreur est
+                # absorbee, le sondage continue jusqu'au delai imparti.
+                page_fermee = self.page is None or self.page.is_closed()
+                contexte_ferme = self.contexte is not None and self.contexte.is_closed()
+                if page_fermee or contexte_ferme:
+                    return False
 
             if self.page is not None:
                 self.dernier_domaine_observe = urlparse(self.page.url).hostname

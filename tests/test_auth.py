@@ -1,6 +1,8 @@
 import pytest
 from urllib.parse import urlparse
 
+from playwright.sync_api import Error as ErreurPlaywright
+
 from extracteur.auth import SessionNavigateur, HOTE_SITESCOURS
 
 
@@ -21,6 +23,7 @@ class PageFactice:
         self.url = url
         self._locateurs = {}
         self._textes = {}
+        self._fermee = False
 
     def locator(self, selector):
         """Retourne le nombre de locateurs pour ce selecteur."""
@@ -37,6 +40,14 @@ class PageFactice:
     def ajouter_texte(self, texte, nombre):
         """Ajoute une ou plusieurs occurrences d'un texte."""
         self._textes[texte] = nombre
+
+    def is_closed(self):
+        """Reflete l'etat reel de fermeture, comme Page.is_closed()."""
+        return self._fermee
+
+    def fermer(self):
+        """Simule la fermeture reelle de la fenetre par l'utilisateur."""
+        self._fermee = True
 
 
 class SessionNavigateurTestable(SessionNavigateur):
@@ -313,3 +324,98 @@ def test_attendre_connexion_pose_le_dernier_domaine_observe_sur_echec():
 
     assert resultat is False
     assert session.dernier_domaine_observe == "login.microsoftonline.com"
+
+
+# --- attendre_connexion : erreur Playwright transitoire pendant la chaine
+# --- de redirections OAuth, distinguee d'une fenetre reellement fermee ---
+#
+# "Execution context was destroyed, most likely because of a navigation" est
+# le message reel constate : il survient couramment et normalement pendant
+# une authentification, et ne doit jamais etre confondu avec une fermeture
+# de la fenetre par l'utilisateur.
+
+
+class SessionAttenteErreurTestable(SessionNavigateur):
+    """Session testable dont est_connecte() leve une erreur Playwright
+    generale un nombre de fois donne (simulant une navigation OAuth en
+    cours), puis se presente authentifiee.
+
+    La page factice porte l'etat de fermeture reel (is_closed()), verifie
+    par attendre_connexion pour distinguer une fenetre reellement fermee
+    d'une erreur transitoire.
+    """
+
+    def __init__(self, page, echecs_avant_succes=0):
+        super().__init__(dossier_profil="/tmp/test")
+        self.page = page
+        self._echecs_avant_succes = echecs_avant_succes
+        self._appels = 0
+
+    def est_connecte(self):
+        self._appels += 1
+        if self._appels <= self._echecs_avant_succes:
+            raise ErreurPlaywright(
+                "Execution context was destroyed, most likely because of a navigation"
+            )
+        return True
+
+
+def test_attendre_connexion_absorbe_une_erreur_transitoire_de_navigation():
+    """Une erreur Playwright generale (contexte d'execution detruit par une
+    navigation) survenant sur les premiers sondages ne doit pas mettre fin a
+    l'attente : la page n'est pas fermee, le sondage continue jusqu'a ce que
+    la connexion soit detectee.
+    """
+    page = PageFactice(f"https://{HOTE_SITESCOURS}/portail/cours")
+    session = SessionAttenteErreurTestable(page, echecs_avant_succes=3)
+
+    resultat = session.attendre_connexion(
+        delai=1000,
+        imprimer=lambda _m: None,
+        horloge=HorlogeFactice(pas=1.0),
+        sommeil=_sommeil_factice,
+    )
+
+    assert resultat is True
+
+
+def test_attendre_connexion_se_termine_sur_fenetre_reellement_fermee():
+    """Une fenetre reellement fermee (page.is_closed() vrai) doit terminer
+    l'attente en rendant False, sans attendre l'epuisement du delai."""
+    page = PageFactice(f"https://{HOTE_SITESCOURS}/portail/cours")
+    page.fermer()
+    session = SessionAttenteErreurTestable(page, echecs_avant_succes=1000)
+    horloge = HorlogeFactice(pas=1.0)
+
+    resultat = session.attendre_connexion(
+        delai=1000,
+        imprimer=lambda _m: None,
+        horloge=horloge,
+        sommeil=_sommeil_factice,
+    )
+
+    assert resultat is False
+    # L'attente s'est arretee des le premier sondage, pas apres 1000
+    # appels d'horloge simulant l'ecoulement complet du delai.
+    assert session._appels == 1
+
+
+def test_attendre_connexion_erreur_transitoire_ne_pollue_pas_l_affichage():
+    """Une erreur transitoire de navigation est normale pendant une
+    authentification : elle ne doit produire aucun message a l'utilisateur,
+    seules les lignes d'etat habituelles doivent apparaitre."""
+    page = PageFactice(f"https://{HOTE_SITESCOURS}/portail/cours")
+    session = SessionAttenteErreurTestable(page, echecs_avant_succes=3)
+    messages = []
+
+    resultat = session.attendre_connexion(
+        delai=1000,
+        imprimer=messages.append,
+        horloge=HorlogeFactice(pas=1.0),
+        sommeil=_sommeil_factice,
+    )
+
+    assert resultat is True
+    for message in messages:
+        assert "erreur" not in message.lower()
+        assert "Execution context" not in message
