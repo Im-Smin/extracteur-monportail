@@ -103,19 +103,6 @@ def ecrire_notes(destination: Path, notes) -> None:
             redacteur.writerow(_ligne_note(note))
 
 
-def ecrire_notes_consolidees(destination: Path, lignes) -> None:
-    """Toutes les notes de tous les cours dans un seul CSV, a la racine.
-
-    `lignes` est une suite de tuples (dossier_session, dossier_cours, Note).
-    """
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    with open(destination, "w", encoding=ENCODAGE_CSV, newline="") as sortie:
-        redacteur = csv.writer(sortie)
-        redacteur.writerow(["Session", "Cours"] + COLONNES_NOTE)
-        for session, cours, note in lignes:
-            redacteur.writerow([session, cours] + _ligne_note(note))
-
-
 def consolider_notes(racine: Path, destination: Path) -> None:
     """Reconstruit notes-tous-cours.csv a partir des notes.csv deja ecrits
     par cours sur le disque (voir ecrire_notes, appele une fois par cours

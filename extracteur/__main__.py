@@ -295,21 +295,34 @@ def _drainer_progression(evenements: "queue.Queue", etat: dict, imprimer=print) 
 
 def _ecrire_rapport_final(
     destination: Path, resultat: Resultat, interruption: str | None = None
-) -> Path:
+) -> Path | None:
     """Le compte rendu final : doit exister meme apres une session expiree ou
     une interruption, pour dire ce qu'il reste a recuperer a la main.
 
     `interruption`, quand fourni, est le message en clair qui fait basculer
     le rapport dans son troisieme etat (voir ecrire_rapport) : ni succes
-    complet, ni simple echec partiel, mais un arret en cours de route."""
+    complet, ni simple echec partiel, mais un arret en cours de route.
+
+    Si l'ecriture du rapport echoue (fichier verrouille, notamment), affiche
+    un message clair en stderr et retourne None sans elever d'exception :
+    l'archivage lui-meme a reussi, seul le compte rendu fait defaut."""
     chemin = destination / NOM_RAPPORT
-    ecrire_rapport(
-        chemin,
-        resultat.echecs,
-        {"fichiers ecrits": resultat.fichiers_ecrits, "fichiers sautes": resultat.fichiers_sautes},
-        interruption=interruption,
-    )
-    return chemin
+    try:
+        ecrire_rapport(
+            chemin,
+            resultat.echecs,
+            {"fichiers ecrits": resultat.fichiers_ecrits, "fichiers sautes": resultat.fichiers_sautes},
+            interruption=interruption,
+        )
+        return chemin
+    except OSError as erreur:
+        print(
+            f"ATTENTION : le rapport n'a pas pu etre ecrit : {erreur}\n"
+            f"  Cause probable : le fichier {NOM_RAPPORT} est ouvert ailleurs.\n"
+            f"  Rapport aurait ete ecrit a : {chemin}",
+            file=sys.stderr,
+        )
+        return None
 
 
 def _code_de_sortie(resultat: Resultat) -> int:
@@ -634,7 +647,10 @@ def _un_seul_cours(
     _fusionner_verification(resultat, controle)
     chemin_rapport = _ecrire_rapport_final(destination, resultat)
     print(f"\nEcrits : {resultat.fichiers_ecrits}   Sautes : {resultat.fichiers_sautes}")
-    print(f"Echecs : {len(resultat.echecs)}  -> {chemin_rapport}")
+    if chemin_rapport:
+        print(f"Echecs : {len(resultat.echecs)}  -> {chemin_rapport}")
+    else:
+        print(f"Echecs : {len(resultat.echecs)}  (rapport non ecrit)")
     print(
         f"Verification : {controle['inscrits']} inscrits, "
         f"{len(controle['manquants'])} manquants, "
@@ -914,7 +930,10 @@ def _archiver_plusieurs_sessions(
     _fusionner_verification(resultat, controle)
     chemin_rapport = _ecrire_rapport_final(destination, resultat)
     print(f"\nEcrits : {resultat.fichiers_ecrits}   Sautes : {resultat.fichiers_sautes}")
-    print(f"Echecs : {len(resultat.echecs)}  -> {chemin_rapport}")
+    if chemin_rapport:
+        print(f"Echecs : {len(resultat.echecs)}  -> {chemin_rapport}")
+    else:
+        print(f"Echecs : {len(resultat.echecs)}  (rapport non ecrit)")
     print(
         f"Verification : {controle['inscrits']} inscrits, "
         f"{len(controle['manquants'])} manquants, "

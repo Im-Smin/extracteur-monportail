@@ -76,32 +76,6 @@ def test_ecrire_notes_avec_accents(tmp_path):
     assert "Résumé de l'été" in destination.read_text(encoding="utf-8-sig")
 
 
-def test_notes_consolidees_portent_session_et_cours(tmp_path):
-    from extracteur.manifeste import ecrire_notes_consolidees
-
-    destination = tmp_path / "notes-tous-cours.csv"
-    ecrire_notes_consolidees(
-        destination,
-        [
-            ("2026-1 Hiver", "PHI-3900 Éthique", Note(evaluation="Examen 1", note="18", sur="20")),
-            ("2025-3 Automne", "GIN-3320 Projet", Note(evaluation="Rapport", note="45", sur="50")),
-        ],
-    )
-
-    contenu = destination.read_text(encoding="utf-8-sig")
-    assert "2026-1 Hiver" in contenu
-    assert "PHI-3900 Éthique" in contenu
-    assert "Rapport" in contenu
-
-
-def test_notes_consolidees_vides_ecrivent_l_entete(tmp_path):
-    from extracteur.manifeste import ecrire_notes_consolidees
-
-    destination = tmp_path / "notes-tous-cours.csv"
-    ecrire_notes_consolidees(destination, [])
-    assert destination.read_text(encoding="utf-8-sig").startswith("Session")
-
-
 def test_consolider_notes_reconstruit_depuis_les_fichiers_par_cours(tmp_path):
     # Source de verite : les notes.csv deja ecrits par cours sur le disque,
     # pas un etat en memoire limite au perimetre d'une seule execution.

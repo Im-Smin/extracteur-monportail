@@ -262,6 +262,22 @@ def test_ecrire_rapport_final_sans_echec(tmp_path):
     assert "Aucun échec" in chemin.read_text(encoding="utf-8")
 
 
+def test_ecrire_rapport_final_fichier_verrouille_retourne_none(tmp_path, capsys):
+    """Un fichier verrouille ne doit pas cracher, mais afficher un message et retourner None."""
+    from unittest.mock import patch
+
+    resultat = Resultat(fichiers_ecrits=5, fichiers_sautes=0, echecs=[])
+
+    with patch("extracteur.__main__.ecrire_rapport", side_effect=OSError("Permission denied")):
+        chemin = _ecrire_rapport_final(tmp_path, resultat)
+
+    assert chemin is None
+    stderr = capsys.readouterr().err
+    assert "ATTENTION" in stderr
+    assert "Permission denied" in stderr
+    assert "_rapport.html" in stderr
+
+
 # --- _code_de_sortie ---
 
 
