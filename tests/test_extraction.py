@@ -261,6 +261,166 @@ def test_resultats_sur_page_sans_tableau():
     assert resultats_depuis_html("<p>Aucun résultat</p>") == []
 
 
+# Structure relevee sur MAT-1900 (idSite=145065), /ena/site/resultats. Cette
+# page Oracle ADF porte 46 <table> : boites de dialogue, menus de navigation,
+# et un seul tableau de notes, repere par sa classe explicite. Deux valeurs
+# supplementaires (note finale, cote) vivent hors du tableau, dans le corps
+# de la page. Le sigle du cours est reduit ici, les libelles et classes des
+# lignes sont ceux constates en conditions reelles.
+HTML_RESULTATS_MAT_1900 = """
+<html><body>
+  <div id="dialogueFinSession" style="display:none">
+    <table>
+      <tr><td colspan="2">Votre session de travail se terminera dans 5 min.</td></tr>
+      <tr><td><button>Continuer la session</button></td><td><button>Déconnexion</button></td></tr>
+    </table>
+  </div>
+  <table class="menuNavigationSite">
+    <tr>
+      <td><a href="#">Accueil</a></td>
+      <td><a href="#">Modules</a></td>
+      <td><a href="#">Évaluations</a></td>
+    </tr>
+  </table>
+  <p>Note finale : 63,49 %</p>
+  <p>Cote : C+</p>
+  <table class="ul_table_data TableauAvecRegroupements">
+    <tr class="ul_table_header-row">
+      <th></th><th>Note obtenue</th><th>Pondération</th><th>Note pondérée</th>
+    </tr>
+    <tr class="ul_table_body-row regroupement-first">
+      <td>Évaluations en présentiel (Somme des évaluations de ce regroupement)</td>
+      <td>80 %</td>
+      <td>52,01 / 80</td>
+    </tr>
+    <tr class="ul_table_body-row pair p_AFOdd regr1">
+      <td>Examen 1 (E1)</td><td>71,5 %</td><td>40 %</td><td>28,6 / 40</td>
+    </tr>
+    <tr class="ul_table_body-row pair p_AFOdd regr1">
+      <td>Examen 2 (E2)</td><td>58,52 %</td><td>40 %</td><td>23,41 / 40</td>
+    </tr>
+    <tr class="ul_table_body-row regroupement-first">
+      <td>Évaluations en ligne (Somme des évaluations de ce regroupement)</td>
+      <td>20 %</td>
+      <td>11,48 / 20</td>
+    </tr>
+    <tr class="ul_table_body-row impair p_AFEven regr2">
+      <td>Minitest 1 (monPortail) (MT1)</td><td>68,57 %</td><td>10 %</td><td>6,86 / 10</td>
+    </tr>
+    <tr class="ul_table_body-row impair p_AFEven regr2">
+      <td>Minitest 2 - (monPortail) (MT2)</td><td>46,15 %</td><td>10 %</td><td>4,62 / 10</td>
+    </tr>
+    <tr class="ul_table_footer VerticalAlignMiddle">
+      <td></td><td></td><td></td><td>63,49 / 100</td>
+    </tr>
+  </table>
+</body></html>
+"""
+
+
+def test_resultats_cible_le_bon_tableau_malgre_les_parasites():
+    # Reproduit le defaut constate : balayer tous les <table> ramassait les
+    # boites de dialogue et menus, et le decompte a quatre cellules
+    # exigeait ecartait les lignes de regroupement (trois cellules
+    # seulement, pas de colonne de pourcentage).
+    notes = resultats_depuis_html(HTML_RESULTATS_MAT_1900)
+
+    # Sept lignes de tableau (2 regroupements + 4 evaluations + le total),
+    # plus les deux valeurs hors tableau (note finale, cote).
+    assert len(notes) == 9
+
+    evaluations = [n.evaluation for n in notes]
+    assert "Votre session de travail se terminera dans 5 min." not in evaluations
+    assert "Accueil" not in evaluations
+    assert "Continuer la session" not in evaluations
+
+    presentiel, e1, e2, en_ligne, mt1, mt2, total, note_finale, cote = notes
+
+    assert presentiel.evaluation == "Évaluations en présentiel"
+    assert presentiel.pourcentage == ""
+    assert presentiel.ponderation == "80 %"
+    assert presentiel.note == "52,01"
+    assert presentiel.sur == "80"
+    assert presentiel.est_regroupement is True
+
+    assert e1.evaluation == "Examen 1 (E1)"
+    assert e1.pourcentage == "71,5 %"
+    assert e1.ponderation == "40 %"
+    assert e1.note == "28,6"
+    assert e1.sur == "40"
+    assert e1.est_regroupement is False
+
+    assert e2.evaluation == "Examen 2 (E2)"
+    assert e2.pourcentage == "58,52 %"
+    assert e2.note == "23,41"
+    assert e2.sur == "40"
+
+    assert en_ligne.evaluation == "Évaluations en ligne"
+    assert en_ligne.pourcentage == ""
+    assert en_ligne.ponderation == "20 %"
+    assert en_ligne.note == "11,48"
+    assert en_ligne.sur == "20"
+    assert en_ligne.est_regroupement is True
+
+    assert mt1.evaluation == "Minitest 1 (monPortail) (MT1)"
+    assert mt1.pourcentage == "68,57 %"
+    assert mt1.note == "6,86"
+    assert mt1.sur == "10"
+
+    assert mt2.evaluation == "Minitest 2 - (monPortail) (MT2)"
+    assert mt2.pourcentage == "46,15 %"
+    assert mt2.note == "4,62"
+    assert mt2.sur == "10"
+
+    assert total.evaluation == ""
+    assert total.pourcentage == ""
+    assert total.ponderation == ""
+    assert total.note == "63,49"
+    assert total.sur == "100"
+    assert total.est_regroupement is False
+
+    # Note finale et cote, hors tableau : deux lignes dediees plutot qu'un
+    # nouveau champ sur Note (voir commentaire de _note_finale_et_cote).
+    assert note_finale.evaluation == "Note finale"
+    assert note_finale.pourcentage == "63,49 %"
+
+    assert cote.evaluation == "Cote"
+    assert cote.note == "C+"
+
+
+def test_resultats_repli_sans_classe_de_tableau():
+    # Si la classe venait a manquer (page modifiee), le comptage de cellules
+    # doit encore distinguer regroupement (3 cellules) et evaluation (4).
+    html = """
+    <table>
+      <tr>
+        <td>Examen final (Somme des évaluations de ce regroupement)</td>
+        <td>60 %</td>
+        <td>50 / 60</td>
+      </tr>
+      <tr>
+        <td>Devoir 1</td><td>90 %</td><td>10 %</td><td>9 / 10</td>
+      </tr>
+    </table>
+    """
+    notes = resultats_depuis_html(html)
+    assert len(notes) == 2
+
+    assert notes[0].evaluation == "Examen final"
+    assert notes[0].pourcentage == ""
+    assert notes[0].ponderation == "60 %"
+    assert notes[0].note == "50"
+    assert notes[0].sur == "60"
+    assert notes[0].est_regroupement is True
+
+    assert notes[1].evaluation == "Devoir 1"
+    assert notes[1].pourcentage == "90 %"
+    assert notes[1].ponderation == "10 %"
+    assert notes[1].note == "9"
+    assert notes[1].sur == "10"
+    assert notes[1].est_regroupement is False
+
+
 def test_sections_du_menu_varient_selon_les_sites():
     # PHI-3900 dit "Feuille de route", GIN-3320 dit "Contenu et activites".
     html_phi = '<nav><a href="#">Feuille de route</a><a href="#">Bibliographie</a></nav>'

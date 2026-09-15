@@ -354,6 +354,68 @@ def cours_depuis_html(html: str, session: Session) -> list[Cours]:
 # d'un pourcentage obtenu (colonne 2 vide) contrairement a une evaluation.
 MARQUEUR_REGROUPEMENT = "(Somme des évaluations de ce regroupement)"
 
+# Le tableau des notes porte cette classe explicite sur MAT-1900 (classe
+# complete : "ul_table_data TableauAvecRegroupements"). La page Oracle ADF
+# /ena/site/resultats en contient par ailleurs une quarantaine d'autres
+# (boites de dialogue de fin de session, menus de navigation) qu'un balayage
+# de tous les <table> ramasse a tort. On cible ce tableau par sa classe ;
+# repli sur un balayage complet si aucune classe ne correspond (page
+# modifiee) : mieux vaut risquer un faux positif occasionnel que ne plus
+# jamais rien extraire.
+CLASSE_TABLEAU_RESULTATS = "TableauAvecRegroupements"
+
+# Classe de la premiere ligne d'un regroupement, releve reel sur MAT-1900.
+# Confirme le marqueur textuel du titre ; sert aussi de repere si le
+# marqueur venait a changer de formulation.
+CLASSE_LIGNE_REGROUPEMENT = "regroupement-first"
+
+# Note finale et cote du cours vivent hors du tableau, en texte libre sur la
+# page (ex. "Note finale : 63,49 %" et "Cote : C+"). La cote est la note
+# litterale officielle du cours : elle n'apparait nulle part ailleurs dans
+# l'archive et vaut plus que n'importe quelle ligne du tableau.
+MOTIF_NOTE_FINALE = re.compile(r"Note finale\s*:\s*([\d,]+\s*%)")
+MOTIF_COTE = re.compile(r"\bCote\s*:\s*(\S+)")
+
+
+def _tableau_resultats(soupe: BeautifulSoup) -> list:
+    """Tableau(x) a inspecter pour en tirer les notes.
+
+    Ne balaie jamais tous les <table> de la page en presence d'une classe
+    correspondante : les boites de dialogue et menus de navigation d'Oracle
+    ADF y sont trop nombreux, et rien ne garantit qu'aucun ne ressemble par
+    coincidence a une ligne de resultat.
+    """
+    tous = soupe.find_all("table")
+    cibles = [
+        tableau for tableau in tous if CLASSE_TABLEAU_RESULTATS in (tableau.get("class") or [])
+    ]
+    return cibles or tous
+
+
+def _note_finale_et_cote(soupe: BeautifulSoup) -> list[Note]:
+    """Note finale et cote, en deux lignes dediees plutot qu'un champ de plus
+    sur Note.
+
+    Les deux valeurs sont deja des chaines libres, fideles a la source : la
+    note finale est un pourcentage comme les autres lignes ("pourcentage"),
+    et la cote EST la note officielle du cours ("note"). Reutiliser ces deux
+    champs evite d'ajouter un champ a Note et de faire bouger le CSV, le
+    manifeste et tout ce qui consomme le modele, pour deux valeurs qui n'ont
+    besoin que d'un intitule et d'une valeur.
+    """
+    texte = soupe.get_text(" ", strip=True)
+    extra: list[Note] = []
+
+    correspondance_finale = MOTIF_NOTE_FINALE.search(texte)
+    if correspondance_finale:
+        extra.append(Note(evaluation="Note finale", pourcentage=correspondance_finale.group(1)))
+
+    correspondance_cote = MOTIF_COTE.search(texte)
+    if correspondance_cote:
+        extra.append(Note(evaluation="Cote", note=correspondance_cote.group(1)))
+
+    return extra
+
 
 def resultats_depuis_html(html: str) -> list[Note]:
     """Notes du Sommaire des resultats (/ena/site/resultats?idSite=<id>).
@@ -362,16 +424,22 @@ def resultats_depuis_html(html: str) -> list[Note]:
     obtenus sur points possibles. Trois formes de lignes cohabitent dans le
     meme tableau :
     - evaluation : les quatre colonnes sont remplies ;
-    - regroupement : titre marque par MARQUEUR_REGROUPEMENT, pas de
-      pourcentage en colonne 2 ;
+    - regroupement : titre marque par MARQUEUR_REGROUPEMENT (et par la
+      classe CLASSE_LIGNE_REGROUPEMENT), TROIS colonnes seulement -- il n'y
+      a pas de colonne de pourcentage du tout, pas seulement une colonne
+      vide ;
     - total final, en fin de tableau, sans titre.
-    La derniere colonne (points/possibles) est le seul repere fiable : les
-    autres varient en nombre de cellules selon la forme de la ligne (colspan
-    sur la ligne de total).
+    La derniere colonne (points/possibles) est le seul repere fiable pour
+    savoir si la ligne porte un resultat ; le nombre de cellules distingue
+    ensuite les trois formes (colspan sur la ligne de total).
+
+    Note finale et cote, qui ne sont pas dans le tableau, sont ajoutees en
+    fin de liste (voir _note_finale_et_cote).
     """
+    soupe = _soupe(html)
     notes: list[Note] = []
 
-    for tableau in _soupe(html).find_all("table"):
+    for tableau in _tableau_resultats(soupe):
         for ligne in tableau.find_all("tr"):
             cellules = [c.get_text(" ", strip=True) for c in ligne.find_all("td")]
             if not cellules:
@@ -382,12 +450,21 @@ def resultats_depuis_html(html: str) -> list[Note]:
                 continue  # pas une ligne de resultat (texte de politique, etc.)
 
             note, sur = _scinder_note(texte_points)
-            titre = cellules[0] if len(cellules) >= 4 else ""
-            pourcentage = cellules[1] if len(cellules) >= 4 else ""
-            ponderation = cellules[2] if len(cellules) >= 4 else ""
 
-            est_regroupement = MARQUEUR_REGROUPEMENT in titre
-            if est_regroupement:
+            if len(cellules) >= 4:
+                titre, pourcentage, ponderation = cellules[0], cellules[1], cellules[2]
+            elif len(cellules) == 3:
+                # Regroupement : pas de colonne de pourcentage, la
+                # ponderation occupe la position 1 et non 2.
+                titre, pourcentage, ponderation = cellules[0], "", cellules[1]
+            else:
+                titre = pourcentage = ponderation = ""
+
+            classes_ligne = ligne.get("class") or []
+            est_regroupement = (
+                MARQUEUR_REGROUPEMENT in titre or CLASSE_LIGNE_REGROUPEMENT in classes_ligne
+            )
+            if MARQUEUR_REGROUPEMENT in titre:
                 titre = titre.split(MARQUEUR_REGROUPEMENT, 1)[0].strip()
 
             notes.append(
@@ -401,6 +478,7 @@ def resultats_depuis_html(html: str) -> list[Note]:
                 )
             )
 
+    notes.extend(_note_finale_et_cote(soupe))
     return notes
 
 
