@@ -368,9 +368,11 @@ def test_fichiers_de_depot_visitent_l_onglet_boite_depots():
     assert "onglet=boiteDepots" in ena.session.page.visitees[0]
 
 
+# Nom URL-encode (espace et accent) : le nom du depot vient de l'URL, jamais
+# du texte affiche du lien, qui peut etre tronque par la plateforme.
 LIEN_DOCUMENT_DEPOSE = (
     "/contenu/sitescours/040/04000/202601/site181216/depots"
-    "/Z1-PHI3900-H2026-TP2.docx?identifiant=abc"
+    "/Z1-PHI3900-H2026-TP2%20-%20%C3%89thique.docx?identifiant=abc"
 )
 
 

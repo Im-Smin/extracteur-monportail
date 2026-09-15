@@ -167,7 +167,7 @@ def test_integration_boite_de_depot_de_ena_jusqu_au_csv(tmp_path):
     <table>
       <tr><th>Nom du document</th><th>Taille</th><th>Déposé par</th><th>Date de remise</th></tr>
       <tr>
-        <td><a href="/contenu/sitescours/040/04000/202601/site181216/depots/tp2.docx?identifiant=abc">Z1-PHI3900-H2026-TP2 - Éthique.docx</a></td>
+        <td><a href="/contenu/sitescours/040/04000/202601/site181216/depots/Z1-PHI3900-H2026-TP2%20-%20%C3%89thique.docx?identifiant=abc">Z1-PHI3900-H2026-TP2 - Éthique.docx</a></td>
         <td>3,25 Mo</td>
         <td>Buteau, Laurent</td>
         <td>12 avr. 2026 18h43</td>

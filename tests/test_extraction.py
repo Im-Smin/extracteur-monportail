@@ -673,9 +673,14 @@ def test_session_depuis_libelle_inattendu_ne_plante_pas():
     assert session_depuis_libelle("Printemps 2025").libelle == "Printemps 2025"
 
 
+# URL reelle relevee sur PHI-3900, boite de depot du TP2 : le nom du fichier
+# est URL-encode (espaces et accents) et ne passe jamais par le traceur
+# d'analytique, contrairement aux fichiers de module.
 LIEN_DOCUMENT_DEPOSE = (
-    "/contenu/sitescours/040/04000/202601/site181216/depots"
-    "/Z1-PHI3900-H2026-TP2.docx?identifiant=abc"
+    "/contenu/sitescours/040/04000/202601/site181216/evaluations1434432"
+    "/evaluation1018611/boitedepot/equipe1528525"
+    "/Z1-PHI3900-H2026-TP2%20-%20%C3%89thique%20et%20professionnalisme.docx"
+    "?identifiant=9b035967"
 )
 
 
@@ -742,6 +747,113 @@ def test_depots_depuis_html_ne_rend_jamais_la_case_a_cocher_ni_le_bouton_supprim
 def test_depots_depuis_html_ignore_les_tableaux_sans_colonne_nom_du_document():
     html = "<table><tr><th>Module</th><th>Titre</th></tr><tr><td>1</td><td>Intro</td></tr></table>"
     assert depots_depuis_html(html) == []
+
+
+def test_depots_depuis_html_ignore_un_tableau_parasite_de_la_meme_classe():
+    # La classe ul_table_data n'est pas discriminante a elle seule : d'autres
+    # tableaux de la plateforme la portent sans etre la boite de depot. Seul
+    # l'en-tete "Nom du document" doit designer le bon tableau.
+    html = """
+    <table class="ul_table_data">
+      <tr><th>Module</th><th>Titre</th></tr>
+      <tr><td>1</td><td>Intro</td></tr>
+    </table>
+    """
+    assert depots_depuis_html(html) == []
+
+
+def test_depots_depuis_html_associe_les_colonnes_par_entete_quel_que_soit_l_ordre():
+    # Rien ne garantit que l'ordre observe sur PHI-3900 soit celui d'une autre
+    # boite de depot : l'association se fait par libelle d'en-tete, jamais
+    # par position de colonne.
+    html = f"""
+    <table>
+      <tr>
+        <th>Déposé par</th>
+        <th>Date de remise</th>
+        <th>Nom du document</th>
+        <th>Taille</th>
+      </tr>
+      <tr>
+        <td>Buteau, Laurent</td>
+        <td>12 avr. 2026 18h43</td>
+        <td><a href="{LIEN_DOCUMENT_DEPOSE}">Z1-PHI3900-H2026-TP2 - Éthique et professionnalisme.docx</a></td>
+        <td>3,25 Mo</td>
+      </tr>
+    </table>
+    """
+    depots = depots_depuis_html(html)
+    assert len(depots) == 1
+    depot = depots[0]
+    assert depot.nom == "Z1-PHI3900-H2026-TP2 - Éthique et professionnalisme.docx"
+    assert depot.taille == "3,25 Mo"
+    assert depot.depose_par == "Buteau, Laurent"
+    assert depot.date_remise == "12 avr. 2026 18h43"
+
+
+def test_depots_depuis_html_nom_vient_de_l_url_meme_si_le_texte_du_lien_est_tronque():
+    # Comme pour les fichiers de module, rien ne garantit que la plateforme
+    # ne tronque jamais le texte affiche du lien : le nom retenu doit venir
+    # de l'URL, la seule source fidele.
+    html = f"""
+    <table>
+      <tr><th>Nom du document</th><th>Taille</th><th>Déposé par</th><th>Date de remise</th></tr>
+      <tr>
+        <td><a href="{LIEN_DOCUMENT_DEPOSE}">Z1-PHI3900-H2026-TP2 - Éthiq...</a></td>
+        <td>3,25 Mo</td>
+        <td>Buteau, Laurent</td>
+        <td>12 avr. 2026 18h43</td>
+      </tr>
+    </table>
+    """
+    depots = depots_depuis_html(html)
+    assert len(depots) == 1
+    assert depots[0].nom == "Z1-PHI3900-H2026-TP2 - Éthique et professionnalisme.docx"
+
+
+def test_depots_depuis_html_html_reel_boite_de_depot_phi3900():
+    # Transcription fidele du HTML releve sur PHI-3900 (boite de depot du
+    # TP2) : cinq cellules par ligne, la premiere vide pour la case a cocher,
+    # classe ul_table_data, lien direct sous /contenu/sitescours/ (pas de
+    # traceur d'analytique pour les depots).
+    html = """
+    <table class="ul_table_data">
+      <tr>
+        <th></th>
+        <th>Nom du document</th>
+        <th>Taille</th>
+        <th>Déposé par</th>
+        <th>Date de remise</th>
+      </tr>
+      <tr>
+        <td><input type="checkbox" id="r1:0:t1:0:selectionner::content"></td>
+        <td>
+          <a id="r1:0:t1:0:gl1"
+             href="/contenu/sitescours/040/04000/202601/site181216/evaluations1434432/evaluation1018611/boitedepot/equipe1528525/Z1-PHI3900-H2026-TP2%20-%20%C3%89thique%20et%20professionnalisme.docx?identifiant=9b035967">
+            Z1-PHI3900-H2026-TP2 - Éthique et professionnalisme.docx
+          </a>
+        </td>
+        <td>3,25 Mo</td>
+        <td>Buteau, Laurent</td>
+        <td>12 avr. 2026 18h43</td>
+      </tr>
+    </table>
+    """
+    depots = depots_depuis_html(html)
+
+    assert len(depots) == 1
+    depot = depots[0]
+    assert depot.nom == "Z1-PHI3900-H2026-TP2 - Éthique et professionnalisme.docx"
+    assert depot.taille == "3,25 Mo"
+    assert depot.depose_par == "Buteau, Laurent"
+    assert depot.date_remise == "12 avr. 2026 18h43"
+    assert (
+        depot.url
+        == "/contenu/sitescours/040/04000/202601/site181216/evaluations1434432"
+        "/evaluation1018611/boitedepot/equipe1528525"
+        "/Z1-PHI3900-H2026-TP2%20-%20%C3%89thique%20et%20professionnalisme.docx"
+        "?identifiant=9b035967"
+    )
 
 
 def test_depots_depuis_html_page_sans_tableau():
