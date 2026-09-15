@@ -14,12 +14,16 @@ from extracteur.__main__ import (
     _drainer,
     _drainer_progression,
     _ecrire_rapport_final,
+    _fusionner_verification,
     _lister,
     _session,
     _tout,
     _un_seul_cours,
+    _verifier_mode,
+    _zip_mode,
 )
 from extracteur.ena import SelecteurSessionsIllisible
+from extracteur.manifeste import Manifeste
 from extracteur.modele import Cours, Echec, Resultat, Session
 from extracteur.telechargement import SessionExpiree
 
@@ -961,3 +965,193 @@ def test_tout_seul_est_accepte():
 
     assert arguments.tout is True
     assert arguments.session_cible is None
+
+
+# --- argparse : --verifier et --zip mutuellement exclusifs avec les autres modes ---
+
+
+def test_verifier_et_zip_ensemble_sont_rejetes():
+    analyseur = _construire_analyseur()
+
+    with pytest.raises(SystemExit):
+        analyseur.parse_args(["--verifier", "--zip"])
+
+
+def test_lister_et_verifier_ensemble_sont_rejetes():
+    analyseur = _construire_analyseur()
+
+    with pytest.raises(SystemExit):
+        analyseur.parse_args(["--lister", "--verifier"])
+
+
+def test_tout_et_zip_ensemble_sont_rejetes():
+    analyseur = _construire_analyseur()
+
+    with pytest.raises(SystemExit):
+        analyseur.parse_args(["--tout", "--zip"])
+
+
+def test_verifier_seul_est_accepte():
+    analyseur = _construire_analyseur()
+
+    arguments = analyseur.parse_args(["--verifier"])
+
+    assert arguments.verifier is True
+    assert arguments.zip_ is False
+
+
+def test_zip_seul_est_accepte():
+    analyseur = _construire_analyseur()
+
+    arguments = analyseur.parse_args(["--zip"])
+
+    assert arguments.zip_ is True
+    assert arguments.verifier is False
+
+
+# --- _fusionner_verification : les anomalies deviennent des Echec ---
+
+
+def test_fusionner_verification_ajoute_un_echec_par_anomalie():
+    resultat = Resultat(fichiers_ecrits=2)
+    controle = {"inscrits": 3, "manquants": ["a.pdf"], "taille_incorrecte": ["b.pdf"]}
+
+    _fusionner_verification(resultat, controle)
+
+    assert len(resultat.echecs) == 2
+    causes = {echec.element: echec.cause for echec in resultat.echecs}
+    assert "manquant" in causes["a.pdf"]
+    assert "taille" in causes["b.pdf"]
+
+
+def test_fusionner_verification_sans_anomalie_ne_change_rien():
+    resultat = Resultat(fichiers_ecrits=2)
+
+    _fusionner_verification(resultat, {"inscrits": 1, "manquants": [], "taille_incorrecte": []})
+
+    assert resultat.echecs == []
+
+
+# --- _verifier_mode : verification en console, sans reseau ---
+
+
+def test_verifier_mode_dossier_introuvable_rend_code_non_nul(tmp_path, capsys):
+    code = _verifier_mode(tmp_path / "absent")
+
+    assert code == 1
+    assert "introuvable" in capsys.readouterr().err
+
+
+def test_verifier_mode_archive_coherente_rend_zero(tmp_path):
+    (tmp_path / "a.pdf").write_bytes(b"abc")
+    Manifeste(tmp_path).ajouter("a.pdf", 3, "x", "/contenu/a.pdf")
+    lignes = []
+
+    code = _verifier_mode(tmp_path, imprimer=lignes.append)
+
+    assert code == 0
+    assert any("0 manquants" in ligne for ligne in lignes)
+
+
+def test_verifier_mode_signale_les_anomalies_et_rend_code_non_nul(tmp_path):
+    Manifeste(tmp_path).ajouter("absent.pdf", 3, "x", "/contenu/absent.pdf")
+    lignes = []
+
+    code = _verifier_mode(tmp_path, imprimer=lignes.append)
+
+    assert code == 1
+    assert any("absent.pdf" in ligne for ligne in lignes)
+
+
+# --- _zip_mode : compression en console, sans reseau ---
+
+
+def test_zip_mode_dossier_introuvable_rend_code_non_nul(tmp_path, capsys):
+    code = _zip_mode(tmp_path / "absent")
+
+    assert code == 1
+    assert "introuvable" in capsys.readouterr().err
+
+
+def test_zip_mode_ecrit_le_zip_a_cote_du_dossier(tmp_path):
+    archive = tmp_path / "Archive"
+    archive.mkdir()
+    (archive / "a.pdf").write_bytes(b"abc")
+    lignes = []
+
+    code = _zip_mode(archive, imprimer=lignes.append)
+
+    cible = tmp_path / "Archive.zip"
+    assert code == 0
+    assert cible.exists()
+    assert any(str(cible) in ligne for ligne in lignes)
+
+
+def test_zip_mode_echec_d_ecriture_rend_code_non_nul(tmp_path, monkeypatch, capsys):
+    archive = tmp_path / "Archive"
+    archive.mkdir()
+
+    def leve(*_args, **_kwargs):
+        raise OSError("disque plein")
+
+    monkeypatch.setattr("extracteur.__main__.creer_zip", leve)
+
+    code = _zip_mode(archive)
+
+    assert code == 1
+    assert "disque plein" in capsys.readouterr().err
+
+
+# --- verification finale branchee sur --un-seul-cours, --session et --tout ---
+
+
+def test_un_seul_cours_anomalie_de_verification_degrade_le_code_de_sortie(
+    tmp_path, monkeypatch, capsys
+):
+    # Un archivage par ailleurs reussi (tous les fichiers prevus ecrits, aucun
+    # echec de telechargement) ne doit plus rendre 0 si la verification
+    # finale trouve une anomalie : celle-ci doit peser sur le code de sortie
+    # exactement comme un echec de telechargement.
+    ena = EnaDeTest({SESSION_HIVER: [COURS_HIVER]})
+    session = SessionFactice()
+    monkeypatch.setattr(
+        "extracteur.__main__.verifier",
+        lambda destination: {"inscrits": 1, "manquants": ["a.pdf"], "taille_incorrecte": []},
+    )
+
+    code = _un_seul_cours("181216", tmp_path, session=session, fabrique_ena=lambda _s: ena)
+
+    assert code == 4
+    rapport = (tmp_path / "_rapport.html").read_text(encoding="utf-8")
+    assert "a.pdf" in rapport
+    sortie = capsys.readouterr().out
+    assert "Verification : 1 inscrits, 1 manquants, 0 de taille incorrecte" in sortie
+
+
+def test_session_anomalie_de_verification_degrade_le_code_de_sortie(tmp_path, monkeypatch):
+    ena = EnaDeTest({SESSION_HIVER: [COURS_HIVER]})
+    session = SessionFactice()
+    monkeypatch.setattr(
+        "extracteur.__main__.verifier",
+        lambda destination: {"inscrits": 1, "manquants": [], "taille_incorrecte": ["b.pdf"]},
+    )
+
+    code = _session("Hiver 2026", tmp_path, session=session, fabrique_ena=lambda _s: ena)
+
+    assert code == 4
+    rapport = (tmp_path / "_rapport.html").read_text(encoding="utf-8")
+    assert "b.pdf" in rapport
+
+
+def test_tout_verification_coherente_laisse_le_code_de_sortie_a_zero(tmp_path, capsys):
+    # Contre-epreuve : une verification qui ne trouve rien a signaler ne doit
+    # rien degrader, et son resume doit tout de meme etre visible.
+    ena = EnaDeTest({SESSION_HIVER: [COURS_HIVER]})
+    session = SessionFactice()
+
+    code = _tout(tmp_path, session=session, fabrique_ena=lambda _s: ena)
+
+    assert code == 0
+    sortie = capsys.readouterr().out
+    assert "Verification :" in sortie
+    assert "0 manquants" in sortie

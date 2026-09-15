@@ -7,10 +7,26 @@
   python -m extracteur --tout                   -> archivage de toutes les sessions, de la plus
                                                     ancienne a la plus recente
   python -m extracteur --diagnostic             -> etat des lieux du DOM du selecteur de sessions
+  python -m extracteur --verifier               -> confronte une archive existante a son manifeste,
+                                                    sans rien telecharger ni ouvrir de navigateur
+  python -m extracteur --zip                    -> compresse une archive existante en un fichier .zip,
+                                                    sans rien telecharger
 
---lister, --un-seul-cours, --session, --tout et --diagnostic sont mutuellement
-exclusifs : les combiner est rejete par argparse plutot que de laisser l'un
-l'emporter en silence.
+--lister, --un-seul-cours, --session, --tout, --diagnostic, --verifier et
+--zip sont mutuellement exclusifs : les combiner est rejete par argparse
+plutot que de laisser l'un l'emporter en silence.
+
+--verifier et --zip ne se connectent jamais a monPortail : ils ne touchent
+qu'au disque, sur le dossier --destination d'une archive deja produite par un
+des modes ci-dessus. Penses pour rester utilisables bien apres la fermeture
+de la plateforme, le 1er novembre 2026, quand aucun autre mode ne le sera
+plus.
+
+--un-seul-cours, --session et --tout terminent tous les trois par le meme
+controle : verification.verifier() confronte le manifeste au disque, et toute
+anomalie (fichier manquant, taille incorrecte) est versee dans le rapport
+d'echecs final au meme titre qu'un echec de telechargement -- avec le meme
+effet sur le code de sortie (voir _code_de_sortie).
 
 --session et --tout reutilisent l'archiveur existant sans rien lui ajouter :
 ils se contentent de determiner la liste des Session a couvrir (une seule
@@ -35,11 +51,16 @@ de secours (impression de page) au lieu du PDF officiel de l'Universite.
 
 Codes de sortie (contrat pour un appelant qui ne lirait que le code, pas la
 console) :
-  0    succes complet : rien a signaler.
+  0    succes complet : rien a signaler. Pour --verifier, aucune anomalie
+       detectee (aucun fichier manquant, aucune taille incorrecte). Pour
+       --zip, le fichier compresse a ete ecrit.
   1    echec sans rien ecrire (connexion non detectee, selecteur de sessions
        illisible, erreur inattendue, --session dont le libelle ne correspond
        a aucune session, ou --lister/--un-seul-cours/--session/--tout n'a
-       rien produit et a consigne des echecs).
+       rien produit et a consigne des echecs). Pour --verifier : dossier
+       d'archive introuvable, ou au moins un fichier manquant ou de taille
+       incorrecte. Pour --zip : dossier d'archive introuvable, ou echec
+       d'ecriture du fichier compresse.
   2    --un-seul-cours : aucun cours ne correspond a l'idSite demande.
   3    session expiree en cours de route ; relancer la meme commande. Si
        l'expiration survient pendant un telechargement, la reprise est
@@ -51,7 +72,8 @@ console) :
        console et _rapport.html distinguent explicitement les deux cas.
   4    --un-seul-cours, --session ou --tout : archivage partiel, au moins un
        fichier ecrit mais aussi des echecs consignes dans le rapport (voir
-       _rapport.html).
+       _rapport.html) -- une anomalie relevee par la verification finale y
+       compte au meme titre qu'un echec de telechargement.
   130  interruption au clavier (Ctrl+C).
 """
 
@@ -67,8 +89,9 @@ from extracteur.archiveur import Archiveur
 from extracteur.auth import SessionNavigateur
 from extracteur.ena import Ena, SelecteurSessionsIllisible
 from extracteur.manifeste import ecrire_rapport
-from extracteur.modele import Resultat
+from extracteur.modele import Echec, Resultat
 from extracteur.telechargement import SessionExpiree
+from extracteur.verification import creer_zip, verifier
 
 DOSSIER_PROFIL = Path(".session")
 NOM_RAPPORT = "_rapport.html"
@@ -239,6 +262,28 @@ def _code_de_sortie(resultat: Resultat) -> int:
     if not resultat.echecs:
         return 0
     return 4 if resultat.fichiers_ecrits else 1
+
+
+def _fusionner_verification(resultat: Resultat, controle: dict) -> None:
+    """Verse les anomalies de la verification finale dans le resultat.
+
+    Elles apparaissent ainsi dans _rapport.html au meme titre qu'un echec de
+    telechargement -- c'est le document qui dit ce qu'il reste a recuperer a
+    la main -- et pesent de la meme facon sur le code de sortie
+    (_code_de_sortie ne distingue pas leur origine).
+    """
+    for relatif in controle["manquants"]:
+        resultat.echecs.append(
+            Echec(cours="(verification)", element=relatif, cause="fichier manquant sur disque")
+        )
+    for relatif in controle["taille_incorrecte"]:
+        resultat.echecs.append(
+            Echec(
+                cours="(verification)",
+                element=relatif,
+                cause="taille sur disque differente du manifeste",
+            )
+        )
 
 
 def _afficher_sessions(ena, imprimer=print) -> None:
@@ -491,9 +536,16 @@ def _un_seul_cours(id_site: str, destination: Path, session=None, fabrique_ena=E
         return 1
 
     resultat = contexte["resultat"]
+    controle = verifier(destination)
+    _fusionner_verification(resultat, controle)
     chemin_rapport = _ecrire_rapport_final(destination, resultat)
     print(f"\nEcrits : {resultat.fichiers_ecrits}   Sautes : {resultat.fichiers_sautes}")
     print(f"Echecs : {len(resultat.echecs)}  -> {chemin_rapport}")
+    print(
+        f"Verification : {controle['inscrits']} inscrits, "
+        f"{len(controle['manquants'])} manquants, "
+        f"{len(controle['taille_incorrecte'])} de taille incorrecte"
+    )
     return _code_de_sortie(resultat)
 
 
@@ -716,9 +768,16 @@ def _archiver_plusieurs_sessions(
         return 1
 
     resultat = contexte["resultat"]
+    controle = verifier(destination)
+    _fusionner_verification(resultat, controle)
     chemin_rapport = _ecrire_rapport_final(destination, resultat)
     print(f"\nEcrits : {resultat.fichiers_ecrits}   Sautes : {resultat.fichiers_sautes}")
     print(f"Echecs : {len(resultat.echecs)}  -> {chemin_rapport}")
+    print(
+        f"Verification : {controle['inscrits']} inscrits, "
+        f"{len(controle['manquants'])} manquants, "
+        f"{len(controle['taille_incorrecte'])} de taille incorrecte"
+    )
     return _code_de_sortie(resultat)
 
 
@@ -757,6 +816,55 @@ def _tout(destination: Path, session=None, fabrique_ena=Ena) -> int:
     return _archiver_plusieurs_sessions(resoudre, destination, session, fabrique_ena)
 
 
+def _verifier_mode(destination: Path, imprimer=print) -> int:
+    """Confronte une archive deja sur disque a son manifeste, en console.
+
+    Ne se connecte jamais a monPortail et n'ouvre aucun navigateur : pense
+    pour rester utilisable des mois apres l'archivage, y compris apres la
+    fermeture de la plateforme le 1er novembre 2026, quand plus aucun autre
+    mode ne le sera.
+    """
+    if not destination.is_dir():
+        print(f"ECHEC : dossier introuvable : {destination}", file=sys.stderr)
+        return 1
+
+    controle = verifier(destination)
+    imprimer(
+        f"{controle['inscrits']} inscrits, {len(controle['manquants'])} manquants, "
+        f"{len(controle['taille_incorrecte'])} de taille incorrecte"
+    )
+    for relatif in controle["manquants"]:
+        imprimer(f"  manquant : {relatif}")
+    for relatif in controle["taille_incorrecte"]:
+        imprimer(f"  taille incorrecte : {relatif}")
+
+    if controle["manquants"] or controle["taille_incorrecte"]:
+        return 1
+    return 0
+
+
+def _zip_mode(destination: Path, imprimer=print) -> int:
+    """Compresse une archive deja sur disque en un fichier .zip, en console.
+
+    Ne telecharge rien et ne se connecte jamais a monPortail. Le fichier
+    compresse est ecrit a cote du dossier archive, jamais dedans, pour ne
+    jamais avoir a s'exclure de son propre contenu.
+    """
+    if not destination.is_dir():
+        print(f"ECHEC : dossier introuvable : {destination}", file=sys.stderr)
+        return 1
+
+    cible = destination.parent / f"{destination.name}.zip"
+    try:
+        creer_zip(destination, cible)
+    except OSError as erreur:
+        print(f"ECHEC : {erreur}", file=sys.stderr)
+        return 1
+
+    imprimer(f"Archive compressee : {cible}")
+    return 0
+
+
 def _construire_analyseur() -> argparse.ArgumentParser:
     analyseur = argparse.ArgumentParser(prog="extracteur")
     # Mutuellement exclusifs : si plusieurs etaient acceptes ensemble, l'un
@@ -787,6 +895,20 @@ def _construire_analyseur() -> argparse.ArgumentParser:
             "ouvre le selecteur de sessions et affiche un etat des lieux du "
             "DOM, sans rien telecharger ni rien ecrire"
         ),
+    )
+    groupe_mode.add_argument(
+        "--verifier",
+        action="store_true",
+        help=(
+            "confronte une archive existante (--destination) a son manifeste, "
+            "sans rien telecharger ni ouvrir de navigateur"
+        ),
+    )
+    groupe_mode.add_argument(
+        "--zip",
+        dest="zip_",
+        action="store_true",
+        help="compresse une archive existante (--destination) en fichier .zip, sans rien telecharger",
     )
     analyseur.add_argument(
         "--destination", type=Path, default=Path("Archive monPortail"), help="dossier de sortie"
@@ -825,6 +947,12 @@ def main() -> int:
 
         if arguments.diagnostic:
             return _diagnostic()
+
+        if arguments.verifier:
+            return _verifier_mode(arguments.destination)
+
+        if arguments.zip_:
+            return _zip_mode(arguments.destination)
     except KeyboardInterrupt:
         print("\nInterrompu par l'utilisateur.", file=sys.stderr)
         return 130
