@@ -1,4 +1,5 @@
 import queue
+from pathlib import Path
 
 import pytest
 
@@ -11,8 +12,11 @@ from extracteur.__main__ import (
     _construire_analyseur,
     _diagnostic,
     _drainer,
+    _drainer_progression,
     _ecrire_rapport_final,
     _lister,
+    _session,
+    _tout,
     _un_seul_cours,
 )
 from extracteur.ena import SelecteurSessionsIllisible
@@ -21,6 +25,7 @@ from extracteur.telechargement import SessionExpiree
 
 SESSION_HIVER = Session(code="202601", libelle="Hiver 2026")
 SESSION_AUTOMNE = Session(code="202509", libelle="Automne 2025")
+SESSION_ETE = Session(code="202505", libelle="Été 2025")
 
 COURS_HIVER = Cours(
     id_site="181216",
@@ -32,6 +37,13 @@ COURS_HIVER = Cours(
 )
 COURS_ANCIEN = Cours(
     id_site="148734", sigle=None, titre="Nos biais inconscients", session=SESSION_AUTOMNE
+)
+COURS_ETE = Cours(
+    id_site="200000",
+    sigle="ABC-1000",
+    titre="Cours d'été",
+    session=SESSION_ETE,
+    url_plan_de_cours="/contenu/sitescours/x/plan.pdf?identifiant=c",
 )
 
 
@@ -572,3 +584,229 @@ def test_un_seul_cours_selecteur_sessions_illisible_sans_trace_brute(tmp_path, c
     erreur = capsys.readouterr().err
     assert "panneau illisible" in erreur
     assert "Traceback" not in erreur
+
+
+# --- _drainer_progression : progression au fil de l'eau sur plusieurs sessions ---
+
+
+def test_drainer_progression_annonce_la_session_et_le_rang_global():
+    # Ordre reel : toute l'enumeration (donc tous les evenements 'session')
+    # se termine avant que l'archivage -- et donc les evenements 'cours' --
+    # ne commence. La session affichee a cote de chaque cours doit venir du
+    # 'plan' pose juste avant, pas d'un pointeur mis a jour par le dernier
+    # evenement 'session' vu : celui-ci serait fige sur la derniere session
+    # enumeree pour tous les cours, quelle que soit leur session reelle.
+    evenements = queue.Queue()
+    evenements.put(("session", (1, 2, "Automne 2025", "enumeration en cours...")))
+    evenements.put(("session", (1, 2, "Automne 2025", "1 cours")))
+    evenements.put(("session", (2, 2, "Hiver 2026", "enumeration en cours...")))
+    evenements.put(("session", (2, 2, "Hiver 2026", "1 cours")))
+    evenements.put(("plan", ["Automne 2025", "Hiver 2026"]))
+    evenements.put(("cours", "AAA-1000 Cours ancien"))
+    evenements.put(("fichier", "plan-de-cours.pdf"))
+    evenements.put(("cours", "PHI-3900 Éthique"))
+    lignes = []
+    etat = {}
+
+    _drainer_progression(evenements, etat, imprimer=lignes.append)
+
+    assert "\n=== Session 1/2 : Automne 2025 - 1 cours ===" in lignes
+    assert "  [Automne 2025] (1/2) AAA-1000 Cours ancien" in lignes
+    assert "  [fichier] plan-de-cours.pdf" in lignes
+    assert "\n=== Session 2/2 : Hiver 2026 - 1 cours ===" in lignes
+    assert "  [Hiver 2026] (2/2) PHI-3900 Éthique" in lignes
+
+
+def test_drainer_progression_appele_deux_fois_ne_reaffiche_pas():
+    # Vidage au fil de l'eau, comme _drainer : un evenement deja affiche ne
+    # doit jamais ressortir a un second passage, meme avec l'etat de
+    # progression maintenu entre deux appels.
+    evenements = queue.Queue()
+    evenements.put(("plan", ["Hiver 2026"]))
+    evenements.put(("cours", "PHI-3900"))
+    lignes = []
+    etat = {}
+
+    _drainer_progression(evenements, etat, imprimer=lignes.append)
+    evenements.put(("fin", "1 fichier archive"))
+    _drainer_progression(evenements, etat, imprimer=lignes.append)
+
+    assert lignes[-1] == "  [fin] 1 fichier archive"
+    # Le cours deja affiche au premier passage ne doit pas ressortir au
+    # second, meme avec l'etat de progression maintenu entre deux appels.
+    assert lignes.count("  [Hiver 2026] (1/1) PHI-3900") == 1
+
+
+# --- _session : archive tous les cours d'une session, tolerant sur le libelle ---
+
+
+def test_session_archive_seulement_les_cours_de_la_session_demandee(tmp_path):
+    ena = EnaDeTest({SESSION_HIVER: [COURS_HIVER], SESSION_AUTOMNE: [COURS_ANCIEN]})
+    session = SessionFactice()
+
+    code = _session("Hiver 2026", tmp_path, session=session, fabrique_ena=lambda _s: ena)
+
+    assert code == 0
+    assert session.fermee is True
+    assert (tmp_path / "_rapport.html").exists()
+    # Le cours de la session demandee est bien archive...
+    assert (tmp_path / SESSION_HIVER.dossier() / COURS_HIVER.dossier()).exists()
+    # ... mais pas celui d'une autre session.
+    assert not (tmp_path / SESSION_AUTOMNE.dossier()).exists()
+
+
+def test_session_tolere_casse_espaces_de_tete_et_de_fin_et_accents(tmp_path):
+    # Le libelle sera tape a la main : "  ete 2025  " doit retrouver "Été
+    # 2025" sans que l'utilisateur ait a reproduire l'accent ou la casse
+    # exacts affiches par le selecteur.
+    ena = EnaDeTest({SESSION_ETE: [COURS_ETE], SESSION_HIVER: [COURS_HIVER]})
+    session = SessionFactice()
+
+    code = _session("  ete 2025  ", tmp_path, session=session, fabrique_ena=lambda _s: ena)
+
+    assert code == 0
+    assert (tmp_path / SESSION_ETE.dossier() / COURS_ETE.dossier()).exists()
+    assert not (tmp_path / SESSION_HIVER.dossier()).exists()
+
+
+def test_session_introuvable_affiche_les_libelles_disponibles_et_rend_code_non_nul(
+    tmp_path, capsys
+):
+    ena = EnaDeTest({SESSION_HIVER: [COURS_HIVER], SESSION_AUTOMNE: [COURS_ANCIEN]})
+    session = SessionFactice()
+
+    code = _session("Hiver 2099", tmp_path, session=session, fabrique_ena=lambda _s: ena)
+
+    assert code == 1
+    assert session.fermee is True
+    assert not (tmp_path / "_rapport.html").exists()
+    erreur = capsys.readouterr().err
+    assert "Hiver 2099" in erreur
+    assert "Hiver 2026" in erreur
+    assert "Automne 2025" in erreur
+
+
+# --- _tout : enchaine toutes les sessions, de la plus ancienne a la plus recente ---
+
+
+def test_tout_archive_toutes_les_sessions_de_la_plus_ancienne_a_la_plus_recente(tmp_path, capsys):
+    ena = EnaDeTest({SESSION_HIVER: [COURS_HIVER], SESSION_AUTOMNE: [COURS_ANCIEN]})
+    session = SessionFactice()
+
+    code = _tout(tmp_path, session=session, fabrique_ena=lambda _s: ena)
+
+    assert code == 0
+    assert session.fermee is True
+    assert (tmp_path / SESSION_AUTOMNE.dossier() / COURS_ANCIEN.dossier()).exists()
+    assert (tmp_path / SESSION_HIVER.dossier() / COURS_HIVER.dossier()).exists()
+    sortie = capsys.readouterr().out
+    # Automne 2025 (la plus ancienne) doit etre traitee avant Hiver 2026.
+    assert sortie.index("Automne 2025") < sortie.index("Hiver 2026")
+
+
+class EnaAvecExpirationSurUnCours(EnaDeTest):
+    """Doublure d'Ena : n'expire que pour le cours designe, pour simuler une
+    session qui echoue au milieu d'un enchainement de plusieurs sessions --
+    les cours deja archives avant elle doivent rester comptabilises dans le
+    rapport final."""
+
+    def __init__(self, cours_par_session, cours_qui_expire):
+        super().__init__(cours_par_session)
+        self._cours_qui_expire = cours_qui_expire
+
+    def modules(self, cours):
+        if cours == self._cours_qui_expire:
+            raise SessionExpiree("expiree")
+        return super().modules(cours)
+
+
+def test_tout_session_expiree_au_milieu_ecrit_le_rapport_de_ce_qui_est_fait(tmp_path):
+    cours_automne = Cours(
+        id_site="199999",
+        sigle="AAA-1000",
+        titre="Cours ancien avec plan",
+        session=SESSION_AUTOMNE,
+        # Identifiant distinct de celui de COURS_HIVER : deux url differentes,
+        # sinon le manifeste (cle = url) considererait le second telechargement
+        # comme deja fait et le compterait en "saute", pas en "ecrit".
+        url_plan_de_cours="/contenu/sitescours/x/plan.pdf?identifiant=automne",
+    )
+    ena = EnaAvecExpirationSurUnCours(
+        {SESSION_AUTOMNE: [cours_automne], SESSION_HIVER: [COURS_HIVER]},
+        cours_qui_expire=COURS_HIVER,
+    )
+    session = SessionFactice()
+
+    code = _tout(tmp_path, session=session, fabrique_ena=lambda _s: ena)
+
+    assert code == 3
+    assert session.fermee is True
+    chemin_rapport = tmp_path / "_rapport.html"
+    assert chemin_rapport.exists()
+    contenu = chemin_rapport.read_text(encoding="utf-8")
+    # Le cours de la session la plus ancienne (Automne, archivee avant que
+    # Hiver n'expire) reste comptabilise : le rapport couvre l'ensemble de
+    # ce qui a ete tente, pas seulement la derniere session.
+    assert "<li>fichiers ecrits : 2</li>" in contenu
+
+
+def test_session_et_tout_connexion_non_detectee_rend_code_non_nul():
+    session = SessionFactice(connectee=False)
+
+    code_session = _session(
+        "Hiver 2026", Path("."), session=session, fabrique_ena=lambda _s: EnaDeTest({})
+    )
+    assert code_session == 1
+
+    session2 = SessionFactice(connectee=False)
+    code_tout = _tout(Path("."), session=session2, fabrique_ena=lambda _s: EnaDeTest({}))
+    assert code_tout == 1
+
+
+# --- argparse : --session et --tout mutuellement exclusifs avec les autres modes ---
+
+
+def test_session_et_tout_ensemble_sont_rejetes():
+    analyseur = _construire_analyseur()
+
+    with pytest.raises(SystemExit):
+        analyseur.parse_args(["--session", "Automne 2022", "--tout"])
+
+
+def test_lister_et_session_ensemble_sont_rejetes():
+    analyseur = _construire_analyseur()
+
+    with pytest.raises(SystemExit):
+        analyseur.parse_args(["--lister", "--session", "Automne 2022"])
+
+
+def test_un_seul_cours_et_tout_ensemble_sont_rejetes():
+    analyseur = _construire_analyseur()
+
+    with pytest.raises(SystemExit):
+        analyseur.parse_args(["--un-seul-cours", "181216", "--tout"])
+
+
+def test_diagnostic_et_session_ensemble_sont_rejetes():
+    analyseur = _construire_analyseur()
+
+    with pytest.raises(SystemExit):
+        analyseur.parse_args(["--diagnostic", "--session", "Automne 2022"])
+
+
+def test_session_seul_est_accepte():
+    analyseur = _construire_analyseur()
+
+    arguments = analyseur.parse_args(["--session", "Automne 2022"])
+
+    assert arguments.session_cible == "Automne 2022"
+    assert arguments.tout is False
+
+
+def test_tout_seul_est_accepte():
+    analyseur = _construire_analyseur()
+
+    arguments = analyseur.parse_args(["--tout"])
+
+    assert arguments.tout is True
+    assert arguments.session_cible is None

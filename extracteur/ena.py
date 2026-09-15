@@ -529,6 +529,14 @@ class Ena:
         interroge quand meme tous les selecteurs candidats : des comptes a
         zero sont eux-memes une information utile pour trancher sur des
         faits.
+
+        La lecture par la forme du libelle (_options_sessions, via
+        _stabiliser_options) peut de la meme facon lever
+        SelecteurSessionsInstable si le compte d'options oscille sans
+        jamais se stabiliser. Ce mode existe pour les situations ou plus
+        rien ne marche : il doit rapporter ce qu'il observe, jamais
+        s'interrompre. On l'intercepte donc elle aussi, on la consigne, et
+        le compte de liens idSite= est quand meme interroge ensuite.
         """
         self._visiter(URL.cours())
         self._assurer_authentifie()
@@ -544,10 +552,15 @@ class Ena:
             textes = self.session.page.locator(selecteur).all_text_contents()
             candidats.append((selecteur, len(textes), textes[:5]))
 
-        textes_forme = self._options_sessions().all_text_contents()
-        candidats.append(
-            ("forme du libelle (saison + annee)", len(textes_forme), textes_forme[:12])
-        )
+        echec_stabilisation_options = None
+        try:
+            textes_forme = self._options_sessions().all_text_contents()
+            candidats.append(
+                ("forme du libelle (saison + annee)", len(textes_forme), textes_forme[:12])
+            )
+        except SelecteurSessionsInstable as erreur:
+            echec_stabilisation_options = str(erreur)
+            candidats.append(("forme du libelle (saison + annee)", 0, []))
 
         liens_id_site = self.session.page.locator("a[href*='idSite=']").count()
 
@@ -555,6 +568,7 @@ class Ena:
             "candidats": candidats,
             "liens_id_site": liens_id_site,
             "echec_ouverture_selecteur": echec_ouverture_selecteur,
+            "echec_stabilisation_options": echec_stabilisation_options,
         }
 
     def sites_de_session(self, session: Session) -> list[Cours]:

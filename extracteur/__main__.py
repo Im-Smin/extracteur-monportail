@@ -3,11 +3,25 @@
   python -m extracteur                          -> fenetre graphique
   python -m extracteur --lister                 -> enumeration en console
   python -m extracteur --un-seul-cours 181216   -> archivage d'un seul cours, en console
+  python -m extracteur --session "Automne 2022" -> archivage de tous les cours d'une session
+  python -m extracteur --tout                   -> archivage de toutes les sessions, de la plus
+                                                    ancienne a la plus recente
   python -m extracteur --diagnostic             -> etat des lieux du DOM du selecteur de sessions
 
---lister, --un-seul-cours et --diagnostic sont mutuellement exclusifs : les
-combiner est rejete par argparse plutot que de laisser l'un l'emporter en
-silence.
+--lister, --un-seul-cours, --session, --tout et --diagnostic sont mutuellement
+exclusifs : les combiner est rejete par argparse plutot que de laisser l'un
+l'emporter en silence.
+
+--session et --tout reutilisent l'archiveur existant sans rien lui ajouter :
+ils se contentent de determiner la liste des Session a couvrir (une seule
+pour --session, toutes pour --tout, triees de la plus ancienne a la plus
+recente), d'enumerer leurs cours, puis de remettre la liste complete a
+Archiveur.archiver() en un seul appel -- celui-ci sait deja isoler les echecs
+cours par cours, et sa reprise par manifeste ne retelecharge jamais un
+fichier deja present sur disque. --session accepte le libelle avec une
+tolerance raisonnable sur la casse, les espaces de tete et de fin, et les
+accents, puisqu'il sera tape a la main ; si aucune session ne correspond, les
+libelles disponibles sont affiches plutot que de deviner.
 
 --diagnostic ne telecharge rien et n'ecrit rien : il sert uniquement, quand
 --lister ne trouve aucune session, a voir sur des faits ce que le DOM reel
@@ -23,13 +37,16 @@ Codes de sortie (contrat pour un appelant qui ne lirait que le code, pas la
 console) :
   0    succes complet : rien a signaler.
   1    echec sans rien ecrire (connexion non detectee, selecteur de sessions
-       illisible, erreur inattendue, ou --lister/--un-seul-cours n'a rien
-       produit et a consigne des echecs).
+       illisible, erreur inattendue, --session dont le libelle ne correspond
+       a aucune session, ou --lister/--un-seul-cours/--session/--tout n'a
+       rien produit et a consigne des echecs).
   2    --un-seul-cours : aucun cours ne correspond a l'idSite demande.
   3    session expiree en cours de route ; relancer la meme commande, la
-       reprise est idempotente.
-  4    --un-seul-cours : archivage partiel, au moins un fichier ecrit mais
-       aussi des echecs consignes dans le rapport (voir _rapport.html).
+       reprise est idempotente (--session et --tout reprennent aussi la ou
+       ils se sont arretes, sans retelecharger ce qui est deja sur disque).
+  4    --un-seul-cours, --session ou --tout : archivage partiel, au moins un
+       fichier ecrit mais aussi des echecs consignes dans le rapport (voir
+       _rapport.html).
   130  interruption au clavier (Ctrl+C).
 """
 
@@ -38,6 +55,7 @@ import queue
 import sys
 import threading
 import traceback
+import unicodedata
 from pathlib import Path
 
 from extracteur.archiveur import Archiveur
@@ -61,6 +79,36 @@ class CoursIntrouvable(Exception):
 
 class ConnexionEchouee(Exception):
     """La connexion n'a pas ete detectee dans le delai imparti."""
+
+
+class SessionIntrouvable(Exception):
+    """Aucune session offerte par le selecteur ne correspond au libelle
+    demande par --session.
+
+    Porte les sessions reellement disponibles : le message d'erreur doit les
+    afficher plutot que de laisser l'utilisateur deviner l'orthographe
+    exacte attendue.
+    """
+
+    def __init__(self, libelle_demande: str, sessions_disponibles: "list"):
+        super().__init__(f"aucune session ne correspond a '{libelle_demande}'")
+        self.libelle_demande = libelle_demande
+        self.sessions_disponibles = sessions_disponibles
+
+
+def _normaliser_libelle_session(libelle: str) -> str:
+    """Neutralise casse, espaces de tete/fin et accents avant de comparer un
+    libelle de session tape a la main a celui affiche par le selecteur.
+
+    Decompose les caracteres accentues (NFKD) puis retire les marques
+    combinantes : "Été" et "ete" se comparent ainsi egaux, tout comme "
+    Automne 2022 " et "AUTOMNE 2022".
+    """
+    sans_accents = unicodedata.normalize("NFKD", libelle.strip())
+    sans_accents = "".join(
+        caractere for caractere in sans_accents if not unicodedata.combining(caractere)
+    )
+    return sans_accents.casefold()
 
 
 def _connecter(
@@ -121,6 +169,43 @@ def _drainer(evenements: "queue.Queue", imprimer=print) -> None:
     while not evenements.empty():
         type_evenement, texte = evenements.get()
         imprimer(f"  [{type_evenement}] {texte}")
+
+
+def _drainer_progression(evenements: "queue.Queue", etat: dict, imprimer=print) -> None:
+    """Vide la file comme _drainer, mais annote chaque evenement 'cours' de
+    son rang global (toutes sessions confondues) sur le total, et de la
+    session dont il fait partie.
+
+    Reservee a --session et --tout : sur des dizaines de cours repartis sur
+    plusieurs sessions, un compteur qui ne bouge qu'a la fin est
+    indiscernable d'un programme bloque, et savoir seulement qu'un cours
+    avance sans savoir combien il en reste ni dans quelle session ne dit pas
+    grand-chose sur un enchainement de plusieurs heures.
+
+    La session de chaque cours vient d'un 'plan' pose en un seul evenement,
+    PAS des evenements 'session' (qui ne font qu'annoncer la progression de
+    l'enumeration, laquelle se termine entierement avant que l'archivage --
+    et donc les evenements 'cours' -- ne commence : un simple pointeur mis a
+    jour par ces evenements 'session' figerait sur la derniere session
+    enumeree pour tous les cours). `etat` porte ce plan, dans l'ordre exact
+    ou Archiveur.archiver() traite les cours, d'un appel de drainage a
+    l'autre.
+    """
+    while not evenements.empty():
+        type_evenement, donnee = evenements.get()
+        if type_evenement == "plan":
+            etat["plan"] = donnee
+        elif type_evenement == "session":
+            indice, total_sessions, libelle, detail = donnee
+            imprimer(f"\n=== Session {indice}/{total_sessions} : {libelle} - {detail} ===")
+        elif type_evenement == "cours":
+            plan = etat.get("plan", [])
+            rang = etat.get("rang", 0)
+            libelle_session = plan[rang] if rang < len(plan) else "?"
+            etat["rang"] = rang + 1
+            imprimer(f"  [{libelle_session}] ({etat['rang']}/{len(plan)}) {donnee}")
+        else:
+            imprimer(f"  [{type_evenement}] {donnee}")
 
 
 def _ecrire_rapport_final(destination: Path, resultat: Resultat) -> Path:
@@ -363,6 +448,203 @@ def _un_seul_cours(id_site: str, destination: Path, session=None, fabrique_ena=E
     return _code_de_sortie(resultat)
 
 
+def _archiver_plusieurs_sessions(
+    resoudre_sessions, destination: Path, session=None, fabrique_ena=Ena
+) -> int:
+    """Archive les cours d'une ou plusieurs sessions, en console.
+
+    Reutilise Archiveur telle quelle, sans rien lui ajouter : `resoudre_sessions(ena)`
+    determine seulement LA LISTE des Session a couvrir (une seule pour
+    --session, toutes pour --tout) ; l'enumeration de leurs cours puis
+    l'archivage passent par les memes mecanismes que _un_seul_cours, sur la
+    liste complete de tous les cours retenus, remise a Archiveur.archiver()
+    en un seul appel.
+
+    Un seul appel, jamais un par session : Archiveur.archiver() ecrit
+    notes-tous-cours.csv a partir d'une liste locale a l'appel en cours ;
+    l'appeler une fois par session ecraserait ce fichier a chaque session au
+    lieu de couvrir l'ensemble. Le cout est qu'aucun telechargement ne
+    commence avant que toutes les sessions visees aient ete enumerees ; si
+    une session expire pendant cette enumeration, rien n'a encore ete
+    ecrit -- ce qui reste un rapport honnete, jamais un rapport tronque.
+    Une fois l'archivage entame, en revanche, une session qui expire au
+    milieu laisse un rapport qui couvre tout ce qui a deja ete tente,
+    exactement comme pour --un-seul-cours.
+
+    `session` et `fabrique_ena` sont injectables pour les tests, comme
+    _un_seul_cours.
+    """
+    if session is None:
+        session = SessionNavigateur(DOSSIER_PROFIL)
+
+    evenements: "queue.Queue" = queue.Queue()
+    contexte: dict = {}
+
+    def travailler() -> None:
+        try:
+            session.ouvrir()
+            print("Connectez-vous dans la fenetre du navigateur...")
+            if not session.attendre_connexion():
+                contexte["connexion_echouee"] = True
+                return
+            print("Connexion detectee.")
+
+            ena = fabrique_ena(session)
+            sessions_a_traiter = resoudre_sessions(ena)
+            if not sessions_a_traiter:
+                contexte["aucune_session"] = True
+                return
+
+            archiveur = Archiveur(ena, session.transport, destination, evenements)
+            # Stocke la reference AVANT toute enumeration ou tout archivage :
+            # si une session expire en cours de route (enumeration comprise),
+            # le rapport final doit exister quand meme, meme s'il ne couvre
+            # que ce qui a deja ete tente jusque-la.
+            contexte["archiveur"] = archiveur
+
+            total_sessions = len(sessions_a_traiter)
+            tous_les_cours = []
+            for indice, session_cible in enumerate(sessions_a_traiter, start=1):
+                evenements.put(
+                    ("session", (indice, total_sessions, session_cible.libelle, "enumeration en cours..."))
+                )
+                cours_de_la_session = ena.sites_de_session(session_cible)
+                evenements.put(
+                    (
+                        "session",
+                        (
+                            indice,
+                            total_sessions,
+                            session_cible.libelle,
+                            f"{len(cours_de_la_session)} cours",
+                        ),
+                    )
+                )
+                tous_les_cours.extend(cours_de_la_session)
+
+            evenements.put(("plan", [c.session.libelle for c in tous_les_cours]))
+            contexte["resultat"] = archiveur.archiver(tous_les_cours)
+        except SessionIntrouvable as erreur:
+            contexte["erreur"] = erreur
+        except SessionExpiree as erreur:
+            contexte["erreur"] = erreur
+        except SelecteurSessionsIllisible as erreur:
+            contexte["erreur"] = erreur
+        # Isolation stricte, comme _un_seul_cours : une exception dans ce fil
+        # ne doit jamais mourir en silence sans que l'appelant le sache.
+        except Exception as erreur:
+            traceback.print_exc()
+            contexte["erreur"] = erreur
+        finally:
+            session.fermer()
+
+    fil = threading.Thread(target=travailler, daemon=False)
+    fil.start()
+    etat_progression: dict = {}
+    try:
+        while fil.is_alive():
+            _drainer_progression(evenements, etat_progression)
+            fil.join(timeout=0.2)
+    except KeyboardInterrupt:
+        # Meme raisonnement que _un_seul_cours : on attend la fin du fil,
+        # dont le finally ferme le navigateur, plutot que de couper court et
+        # laisser un processus Playwright orphelin sur Windows.
+        print(
+            "\nInterruption demandee : fermeture du navigateur en cours, patientez...",
+            file=sys.stderr,
+        )
+        fil.join()
+        _drainer_progression(evenements, etat_progression)
+        archiveur = contexte.get("archiveur")
+        if archiveur is not None:
+            _ecrire_rapport_final(destination, archiveur.resultat)
+        return 130
+
+    _drainer_progression(evenements, etat_progression)
+
+    if contexte.get("connexion_echouee"):
+        print("ECHEC : connexion non detectee.", file=sys.stderr)
+        return 1
+
+    erreur = contexte.get("erreur")
+    archiveur = contexte.get("archiveur")
+
+    if isinstance(erreur, SessionIntrouvable):
+        print(f"ECHEC : {erreur}", file=sys.stderr)
+        print("Sessions disponibles :", file=sys.stderr)
+        for session_disponible in erreur.sessions_disponibles:
+            print(f"  - {session_disponible.libelle}", file=sys.stderr)
+        return 1
+
+    if isinstance(erreur, SelecteurSessionsIllisible):
+        print(f"ECHEC : {erreur}", file=sys.stderr)
+        if archiveur is not None:
+            _ecrire_rapport_final(destination, archiveur.resultat)
+        return 1
+
+    if isinstance(erreur, SessionExpiree):
+        print(
+            "\nSession expiree pendant l'archivage. Reconnectez-vous puis "
+            "relancez la meme commande : la reprise est idempotente, elle "
+            "continue la ou elle s'est arretee.",
+            file=sys.stderr,
+        )
+        if archiveur is not None:
+            _ecrire_rapport_final(destination, archiveur.resultat)
+        return 3
+
+    if erreur is not None:
+        print(f"ECHEC inattendu : {erreur}", file=sys.stderr)
+        if archiveur is not None:
+            _ecrire_rapport_final(destination, archiveur.resultat)
+        return 1
+
+    if contexte.get("aucune_session"):
+        print("ECHEC : aucune session trouvee.", file=sys.stderr)
+        return 1
+
+    resultat = contexte["resultat"]
+    chemin_rapport = _ecrire_rapport_final(destination, resultat)
+    print(f"\nEcrits : {resultat.fichiers_ecrits}   Sautes : {resultat.fichiers_sautes}")
+    print(f"Echecs : {len(resultat.echecs)}  -> {chemin_rapport}")
+    return _code_de_sortie(resultat)
+
+
+def _session(libelle: str, destination: Path, session=None, fabrique_ena=Ena) -> int:
+    """Archive tous les cours d'une session, en console.
+
+    Le libelle demande est compare a ceux du selecteur avec une tolerance
+    raisonnable sur la casse, les espaces de tete et de fin, et les accents
+    (voir _normaliser_libelle_session) : il sera tape a la main. Si aucune
+    session ne correspond, resoudre() leve SessionIntrouvable avec la liste
+    reelle des sessions disponibles, affichee par _archiver_plusieurs_sessions.
+    """
+
+    def resoudre(ena):
+        disponibles = ena.sessions_disponibles()
+        cible = _normaliser_libelle_session(libelle)
+        for candidate in disponibles:
+            if _normaliser_libelle_session(candidate.libelle) == cible:
+                return [candidate]
+        raise SessionIntrouvable(libelle, disponibles)
+
+    return _archiver_plusieurs_sessions(resoudre, destination, session, fabrique_ena)
+
+
+def _tout(destination: Path, session=None, fabrique_ena=Ena) -> int:
+    """Archive toutes les sessions, de la plus ancienne a la plus recente.
+
+    Session.code est de la forme AAAASS (annee puis mois de debut) : trier
+    dessus rend directement l'ordre chronologique, sans avoir a interpreter
+    le libelle affiche.
+    """
+
+    def resoudre(ena):
+        return sorted(ena.sessions_disponibles(), key=lambda s: s.code)
+
+    return _archiver_plusieurs_sessions(resoudre, destination, session, fabrique_ena)
+
+
 def _construire_analyseur() -> argparse.ArgumentParser:
     analyseur = argparse.ArgumentParser(prog="extracteur")
     # Mutuellement exclusifs : si plusieurs etaient acceptes ensemble, l'un
@@ -375,6 +657,16 @@ def _construire_analyseur() -> argparse.ArgumentParser:
     )
     groupe_mode.add_argument(
         "--un-seul-cours", dest="id_site", help="idSite a archiver, en console"
+    )
+    groupe_mode.add_argument(
+        "--session",
+        dest="session_cible",
+        help="libelle de la session a archiver en entier, ex. \"Automne 2022\"",
+    )
+    groupe_mode.add_argument(
+        "--tout",
+        action="store_true",
+        help="archive toutes les sessions, de la plus ancienne a la plus recente",
     )
     groupe_mode.add_argument(
         "--diagnostic",
@@ -412,6 +704,12 @@ def main() -> int:
 
         if arguments.id_site:
             return _un_seul_cours(arguments.id_site, arguments.destination)
+
+        if arguments.session_cible:
+            return _session(arguments.session_cible, arguments.destination)
+
+        if arguments.tout:
+            return _tout(arguments.destination)
 
         if arguments.diagnostic:
             return _diagnostic()

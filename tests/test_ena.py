@@ -1363,6 +1363,67 @@ def test_diagnostiquer_sessions_survit_a_un_bouton_qui_n_apparait_jamais():
     assert rapport["liens_id_site"] == 0
 
 
+class LocatorCompteOscillant:
+    """Simule un Locator dont le compte oscille sans jamais se stabiliser
+    (3, 9, 3, 9, ...), comme dans
+    test_stabiliser_options_leve_si_le_compte_oscille_sans_jamais_se_stabiliser
+    -- mais rejoue ici a travers diagnostiquer_sessions plutot que
+    directement contre _stabiliser_options."""
+
+    def __init__(self, page):
+        self.page = page
+
+    def count(self):
+        self.page.nombre_sondages += 1
+        return 3 if self.page.nombre_sondages % 2 else 9
+
+
+class PageDiagnosticOptionsInstables(PageFactice):
+    """Simule un panneau de sessions dont le compte d'options n'a jamais de
+    palier : _stabiliser_options leve SelecteurSessionsInstable des qu'on
+    l'interroge par la classe canonique. Sert a verifier que le diagnostic
+    survit a cette exception plutot que de s'interrompre avant d'avoir
+    examine le reste des selecteurs candidats."""
+
+    def __init__(self):
+        super().__init__({})
+        self.nombre_sondages = 0
+
+    def click(self, *_args, **_kwargs):
+        pass
+
+    def locator(self, selecteur):
+        if selecteur == "a[href*='/ena/site/']":
+            return LocatorFactice(1)
+        if selecteur == Ena.SELECTEUR_SESSIONS:
+            return LocatorFactice(1)
+        if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS_CLASSE:
+            return LocatorCompteOscillant(self)
+        if selecteur == "a[href*='idSite=']":
+            return LocatorFactice(4)
+        return LocatorTextesFactice([])
+
+
+def test_diagnostiquer_sessions_survit_a_une_oscillation_du_compte_d_options():
+    # _stabiliser_options peut desormais lever SelecteurSessionsInstable
+    # (voir test_stabiliser_options_leve_si_le_compte_oscille_sans_jamais_se_stabiliser).
+    # Le diagnostic existe justement pour les situations ou plus rien ne
+    # marche : il doit consigner cette instabilite dans son rapport et
+    # poursuivre l'interrogation de tous les selecteurs candidats, jamais
+    # s'interrompre.
+    ena = Ena(SessionFactice({}))
+    ena.session.page = PageDiagnosticOptionsInstables()
+
+    rapport = ena.diagnostiquer_sessions()
+
+    assert rapport["echec_stabilisation_options"] is not None
+    assert "compte d'options" in rapport["echec_stabilisation_options"]
+    # Les selecteurs candidats et le compte de liens idSite= restent
+    # interroges malgre l'echec de stabilisation.
+    assert len(rapport["candidats"]) == len(CANDIDATS_DIAGNOSTIC_SESSIONS) + 1
+    assert rapport["liens_id_site"] == 4
+
+
 def test_sites_de_session_leve_si_la_session_est_introuvable():
     # Une session absente du selecteur est une anomalie : ne pas lever
     # d'exception risque de rendre les cours de la session courante (ou d'une
