@@ -143,6 +143,10 @@ def depots_depuis_html(html: str) -> list[Depot]:
     liens de telechargement trouves dans la colonne "Nom du document" du
     tableau "Liste des documents deposes" sont retenus. Un clic malencontreux
     sur Supprimer detruirait un travail remis.
+
+    Comme pour fichiers_depuis_html, le nom retenu est celui tire de l'URL,
+    jamais le texte affiche du lien : rien ne garantit que la plateforme ne
+    le tronque pas ici non plus.
     """
     depots: list[Depot] = []
 
@@ -175,7 +179,10 @@ def depots_depuis_html(html: str) -> list[Depot]:
 
             depots.append(
                 Depot(
-                    nom=lien.get_text(strip=True) or nom_depuis_url(url),
+                    # Le nom vient de l'URL, pas du texte affiche du lien :
+                    # comme pour les fichiers de module, rien ne garantit que
+                    # la plateforme ne le tronque jamais (voir nom_depuis_url).
+                    nom=nom_depuis_url(url) or lien.get_text(strip=True),
                     url=url,
                     taille=_texte("Taille"),
                     depose_par=_texte("Déposé par"),
