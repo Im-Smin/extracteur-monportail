@@ -164,3 +164,152 @@ def test_rejette_page_nulle():
     session = SessionNavigateurTestable()
     assert session.page is None
     assert not session.est_connecte()
+
+
+# --- attendre_connexion : bavardage, rappel du selecteur de compte,
+# --- dernier domaine observe (defauts 1, 2 et 4 de la tache) ---
+#
+# Horloge et sommeil sont toujours injectes : aucun de ces tests ne doit
+# faire dormir la suite pour de vrai.
+
+
+class HorlogeFactice:
+    """Horloge deterministe : avance d'un pas fixe a chaque appel, sans
+    jamais toucher a l'horloge reelle."""
+
+    def __init__(self, pas=1.0):
+        self._temps = 0.0
+        self._pas = pas
+
+    def __call__(self):
+        maintenant = self._temps
+        self._temps += self._pas
+        return maintenant
+
+
+def _sommeil_factice(_secondes):
+    """Remplace time.sleep : ne dort jamais, seule l'horloge factice avance
+    le temps simule."""
+
+
+class SessionAttenteTestable(SessionNavigateur):
+    """Version testable de SessionNavigateur pour attendre_connexion.
+
+    est_connecte() est remplacee par un compteur d'appels plutot que par de
+    vrais marqueurs Playwright, pour piloter precisement l'instant de la
+    connexion reussie sans dependre de PageFactice. La page factice sert
+    uniquement a exposer `.url`, lu par attendre_connexion pour peupler
+    dernier_domaine_observe.
+    """
+
+    def __init__(self, page, connectee_au_nieme_appel=None):
+        super().__init__(dossier_profil="/tmp/test")
+        self.page = page
+        self._connectee_au_nieme_appel = connectee_au_nieme_appel
+        self._appels = 0
+
+    def est_connecte(self):
+        self._appels += 1
+        if self._connectee_au_nieme_appel is None:
+            return False
+        return self._appels >= self._connectee_au_nieme_appel
+
+
+def test_attendre_connexion_affiche_une_ligne_d_etat_a_intervalle_regulier():
+    """La ligne d'etat apparait toutes les INTERVALLE_STATUT_ATTENTE secondes
+    (5s), pas plus souvent : sur une attente de 15s avant succes, exactement
+    trois lignes doivent etre emises (a 5s, 10s et 15s)."""
+    page = PageFactice("https://login.microsoftonline.com/common/oauth2/authorize")
+    # Connectee au 16e appel d'est_connecte() ; avec un pas d'horloge de 1s,
+    # cela correspond a un succes juste apres la 3e ligne d'etat (15s).
+    session = SessionAttenteTestable(page, connectee_au_nieme_appel=16)
+    messages = []
+
+    resultat = session.attendre_connexion(
+        delai=1000,
+        imprimer=messages.append,
+        horloge=HorlogeFactice(pas=1.0),
+        sommeil=_sommeil_factice,
+    )
+
+    assert resultat is True
+    lignes_etat = [message for message in messages if message.startswith("en attente")]
+    assert len(lignes_etat) == 3
+    for ligne, ecoule_attendu in zip(lignes_etat, (5, 10, 15)):
+        assert f"({ecoule_attendu}s)" in ligne
+
+
+def test_attendre_connexion_ne_dit_rien_si_la_connexion_est_immediate():
+    """Une connexion detectee des le premier sondage n'affiche aucun bruit :
+    pas de ligne d'etat pour une attente qui n'a pas eu lieu."""
+    page = PageFactice(f"https://{HOTE_SITESCOURS}/portail/cours")
+    session = SessionAttenteTestable(page, connectee_au_nieme_appel=1)
+    messages = []
+
+    resultat = session.attendre_connexion(
+        delai=1000,
+        imprimer=messages.append,
+        horloge=HorlogeFactice(pas=1.0),
+        sommeil=_sommeil_factice,
+    )
+
+    assert resultat is True
+    assert messages == []
+
+
+def test_attendre_connexion_rappelle_le_selecteur_de_compte_sur_microsoft():
+    """Quand la page reste sur le domaine de connexion Microsoft au-dela du
+    seuil, un rappel invite a choisir le bon compte parmi ceux proposes."""
+    page = PageFactice("https://login.microsoftonline.com/common/oauth2/authorize")
+    session = SessionAttenteTestable(page, connectee_au_nieme_appel=None)
+    messages = []
+
+    resultat = session.attendre_connexion(
+        delai=40,
+        imprimer=messages.append,
+        horloge=HorlogeFactice(pas=1.0),
+        sommeil=_sommeil_factice,
+    )
+
+    assert resultat is False
+    rappels = [m for m in messages if "selecteur de compte" in m]
+    assert len(rappels) == 1
+    assert "Universite Laval" in rappels[0]
+    assert session.dernier_domaine_observe == "login.microsoftonline.com"
+
+
+def test_attendre_connexion_ne_rappelle_pas_le_selecteur_hors_domaine_microsoft():
+    """Sur le bon domaine sans marqueur, rester bloque n'a rien a voir avec
+    un selecteur de compte : aucun rappel ne doit apparaitre."""
+    page = PageFactice(f"https://{HOTE_SITESCOURS}/une/page/quelconque")
+    session = SessionAttenteTestable(page, connectee_au_nieme_appel=None)
+    messages = []
+
+    resultat = session.attendre_connexion(
+        delai=40,
+        imprimer=messages.append,
+        horloge=HorlogeFactice(pas=1.0),
+        sommeil=_sommeil_factice,
+    )
+
+    assert resultat is False
+    assert not any("selecteur de compte" in m for m in messages)
+    assert session.dernier_domaine_observe == HOTE_SITESCOURS
+
+
+def test_attendre_connexion_pose_le_dernier_domaine_observe_sur_echec():
+    """Le domaine du dernier sondage est conserve meme apres expiration du
+    delai : c'est ce que _message_echec_connexion lit pour batir un message
+    utile."""
+    page = PageFactice("https://login.microsoftonline.com/common/oauth2/authorize")
+    session = SessionAttenteTestable(page, connectee_au_nieme_appel=None)
+
+    resultat = session.attendre_connexion(
+        delai=3,
+        imprimer=lambda _m: None,
+        horloge=HorlogeFactice(pas=1.0),
+        sommeil=_sommeil_factice,
+    )
+
+    assert resultat is False
+    assert session.dernier_domaine_observe == "login.microsoftonline.com"

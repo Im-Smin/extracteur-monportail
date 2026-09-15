@@ -86,7 +86,7 @@ import unicodedata
 from pathlib import Path
 
 from extracteur.archiveur import Archiveur
-from extracteur.auth import SessionNavigateur
+from extracteur.auth import HOTE_SITESCOURS, SessionNavigateur
 from extracteur.ena import Ena, SelecteurSessionsIllisible
 from extracteur.manifeste import ecrire_rapport
 from extracteur.modele import Echec, Resultat
@@ -139,6 +139,28 @@ def _normaliser_libelle_session(libelle: str) -> str:
     return sans_accents.casefold()
 
 
+def _message_echec_connexion(session) -> str:
+    """Message d'echec explicite : dit sur quel domaine la page se trouvait
+    au dernier sondage d'attendre_connexion, et ce que cela suggere, plutot
+    que le seul constat d'un delai ecoule (qui n'aide en rien a agir).
+
+    `dernier_domaine_observe` peut etre absent (doublure de test qui ne le
+    pose pas) : le message se rabat alors sur le constat generique.
+    """
+    domaine = getattr(session, "dernier_domaine_observe", None)
+    if domaine is None:
+        return "connexion non detectee dans le delai imparti (aucune page chargee)."
+    if domaine == HOTE_SITESCOURS:
+        return (
+            f"connexion non detectee dans le delai imparti (page restee sur {domaine} "
+            "sans afficher son contenu : page qui n'a pas fini de charger, ou acces refuse)."
+        )
+    return (
+        f"connexion non detectee dans le delai imparti (page restee sur {domaine} : "
+        "la connexion n'a jamais abouti)."
+    )
+
+
 def _connecter(
     sans_fenetre: bool = False, session: SessionNavigateur | None = None
 ) -> SessionNavigateur:
@@ -159,7 +181,7 @@ def _connecter(
         session.ouvrir()
         print("Connectez-vous dans la fenetre du navigateur...")
         if not session.attendre_connexion():
-            raise ConnexionEchouee("connexion non detectee dans le delai imparti")
+            raise ConnexionEchouee(_message_echec_connexion(session))
         print("Connexion detectee.")
         return session
     except BaseException:
@@ -414,7 +436,7 @@ def _un_seul_cours(id_site: str, destination: Path, session=None, fabrique_ena=E
             session.ouvrir()
             print("Connectez-vous dans la fenetre du navigateur...")
             if not session.attendre_connexion():
-                contexte["connexion_echouee"] = True
+                contexte["connexion_echouee"] = _message_echec_connexion(session)
                 return
             print("Connexion detectee.")
 
@@ -480,7 +502,7 @@ def _un_seul_cours(id_site: str, destination: Path, session=None, fabrique_ena=E
     _drainer(evenements)
 
     if contexte.get("connexion_echouee"):
-        print("ECHEC : connexion non detectee.", file=sys.stderr)
+        print(f"ECHEC : {contexte['connexion_echouee']}", file=sys.stderr)
         return 1
 
     erreur = contexte.get("erreur")
@@ -589,7 +611,7 @@ def _archiver_plusieurs_sessions(
             session.ouvrir()
             print("Connectez-vous dans la fenetre du navigateur...")
             if not session.attendre_connexion():
-                contexte["connexion_echouee"] = True
+                contexte["connexion_echouee"] = _message_echec_connexion(session)
                 return
             print("Connexion detectee.")
 
@@ -680,7 +702,7 @@ def _archiver_plusieurs_sessions(
     _drainer_progression(evenements, etat_progression)
 
     if contexte.get("connexion_echouee"):
-        print("ECHEC : connexion non detectee.", file=sys.stderr)
+        print(f"ECHEC : {contexte['connexion_echouee']}", file=sys.stderr)
         return 1
 
     erreur = contexte.get("erreur")
