@@ -152,10 +152,91 @@ class SessionNavigateur:
         self.page = self.contexte.pages[0] if self.contexte.pages else self.contexte.new_page()
         self.page.goto(URL_DEPART, wait_until="domcontentloaded")
 
+    def _pages_du_contexte(self) -> list:
+        """Pages a examiner : toutes celles connues du contexte, ou a
+        defaut la seule page capturee (repli pour les doublures de test qui
+        ne simulent pas de contexte).
+
+        Rien ne garantit qu'une authentification federee aboutisse dans la
+        page ou elle a commence : le contexte peut ouvrir un nouvel onglet,
+        remplacer la page, ou faire d'une popup la page principale. On
+        n'interroge donc jamais une seule reference figee, mais toutes les
+        pages que le contexte connait au moment du sondage.
+        """
+        if self.contexte is not None:
+            return list(self.contexte.pages)
+        if self.page is not None:
+            return [self.page]
+        return []
+
+    def _trouver_page_authentifiee(self):
+        """Cherche, parmi toutes les pages ouvertes, celle qui est
+        authentifiee.
+
+        Une page peut etre fermee ou en pleine navigation au moment du
+        sondage : ni l'une ni l'autre ne doit interrompre l'examen des
+        autres pages. Une erreur de navigation est un etat normal pendant
+        une authentification federee (voir attendre_connexion), jamais une
+        raison d'abandonner l'examen des pages restantes.
+        """
+        for page in self._pages_du_contexte():
+            try:
+                if page.is_closed():
+                    continue
+                if est_page_authentifiee(page):
+                    return page
+            except ErreurPlaywright:
+                continue
+        return None
+
+    def _hostnames_pages_ouvertes(self) -> list:
+        """Nom d'hote de chaque page actuellement ouverte et exploitable.
+
+        `None` est conserve pour une page ouverte mais pas encore chargee
+        (about:blank) ; une page fermee ou dont l'examen echoue (navigation
+        en cours) est simplement omise, sans interrompre les autres.
+        """
+        hostnames = []
+        for page in self._pages_du_contexte():
+            try:
+                if page.is_closed():
+                    continue
+                hostnames.append(urlparse(page.url).hostname)
+            except ErreurPlaywright:
+                continue
+        return hostnames
+
+    def _toutes_pages_fermees(self) -> bool:
+        """Vrai si plus aucune page exploitable ne subsiste (contexte
+        ferme, ou chaque page connue est fermee). Seul ce constat doit
+        mettre fin a attendre_connexion avant l'echeance du delai."""
+        if self.contexte is not None and self.contexte.is_closed():
+            return True
+        pages = self._pages_du_contexte()
+        if not pages:
+            return True
+        for page in pages:
+            try:
+                if not page.is_closed():
+                    return False
+            except ErreurPlaywright:
+                continue
+        return True
+
     def est_connecte(self) -> bool:
-        if self.page is None:
+        """Vrai si une des pages ouvertes est authentifiee.
+
+        Des qu'une page authentifiee est trouvee, elle devient la page de
+        travail (`self.page`) : toute la navigation ulterieure (extracteur
+        et ena.py, qui lisent tous deux `session.page` sans jamais en
+        garder de copie figee) se propage donc automatiquement sur la bonne
+        page, plutot que sur celle capturee a l'ouverture du navigateur.
+        """
+        page = self._trouver_page_authentifiee()
+        if page is None:
             return False
-        return est_page_authentifiee(self.page)
+        self.page = page
+        return True
 
     def attendre_connexion(
         self,
@@ -168,15 +249,22 @@ class SessionNavigateur:
 
         Ne reste jamais muette : une ligne d'etat toutes les
         INTERVALLE_STATUT_ATTENTE secondes dit depuis combien de temps on
-        attend et sur quel domaine se trouve la page, pour que l'utilisateur
-        distingue une attente normale d'un programme bloque. Si la page
+        attend et sur quels domaines se trouvent les pages actuellement
+        ouvertes, pour que l'utilisateur distingue une attente normale d'un
+        programme bloque. Cette ligne rend compte de tout ce qui est
+        reellement observe -- toutes les pages du contexte, pas une seule
+        reference figee -- car rien ne garantit qu'une authentification
+        federee aboutisse dans la page ou elle a commence (nouvel onglet,
+        page remplacee, popup devenue page principale). Si une page
         s'attarde sur le domaine de connexion Microsoft, un rappel invite a
         choisir le bon compte parmi ceux que propose le selecteur de comptes
         -- un blocage que l'utilisateur ne peut pas deviner de lui-meme.
 
         `dernier_domaine_observe` est pose a chaque sondage (y compris en cas
         d'echec final) : l'appelant s'en sert pour batir un message d'echec
-        qui dit ou la page en etait, plutot qu'un simple delai ecoule.
+        qui dit ou la page en etait, plutot qu'un simple delai ecoule. Il
+        retient le premier domaine connu parmi les pages ouvertes (souvent
+        la seule page en usage normal).
 
         `imprimer`, `horloge` et `sommeil` sont injectables pour les tests :
         aucun test ne doit faire dormir la suite pour de vrai.
@@ -198,29 +286,30 @@ class SessionNavigateur:
                     return True
             except ErreurPlaywright:
                 # ErreurPlaywright est la classe d'erreur generale de
-                # Playwright : elle couvre aussi bien une fenetre reellement
-                # fermee qu'une erreur transitoire de navigation ("Execution
-                # context was destroyed, most likely because of a
-                # navigation"), qui survient couramment et normalement en
-                # pleine chaine de redirections OAuth. Confondre les deux
-                # ferait conclure a une fermeture alors que la connexion est
-                # en cours de reussir.
-                #
-                # On tranche donc sur l'etat reel de la page/du contexte,
-                # que Playwright sait rendre de facon fiable, plutot que de
-                # le deduire du type d'exception. Seule une fermeture
-                # averee doit interrompre l'attente ; toute autre erreur est
-                # absorbee, le sondage continue jusqu'au delai imparti.
-                page_fermee = self.page is None or self.page.is_closed()
-                contexte_ferme = self.contexte is not None and self.contexte.is_closed()
-                if page_fermee or contexte_ferme:
-                    return False
+                # Playwright. est_connecte() n'en leve plus normalement --
+                # elle absorbe deja les erreurs de navigation page par page
+                # -- mais les doublures de test historiques la simulent
+                # encore pour figer le comportement documente ci-dessous :
+                # confondre une fenetre reellement fermee avec une erreur
+                # transitoire de navigation ("Execution context was
+                # destroyed, most likely because of a navigation", courante
+                # et normale en pleine chaine de redirections OAuth) ferait
+                # conclure a tort a une fermeture. On absorbe donc ici aussi
+                # et on tranche juste apres sur l'etat reel des pages.
+                pass
 
-            if self.page is not None:
-                self.dernier_domaine_observe = urlparse(self.page.url).hostname
+            # Seule la disparition de toutes les pages met fin a l'attente
+            # avant l'echeance du delai : une page individuelle fermee ou en
+            # echec d'examen ne doit jamais suffire, d'autres pages du
+            # contexte peuvent porter la session authentifiee.
+            if self._toutes_pages_fermees():
+                return False
 
-            domaine = self.dernier_domaine_observe
-            sur_microsoft = domaine is not None and FRAGMENT_HOTE_MICROSOFT in domaine
+            hostnames = self._hostnames_pages_ouvertes()
+            domaines_connus = [nom for nom in hostnames if nom is not None]
+            self.dernier_domaine_observe = domaines_connus[0] if domaines_connus else None
+
+            sur_microsoft = any(FRAGMENT_HOTE_MICROSOFT in nom for nom in domaines_connus)
             if sur_microsoft:
                 if debut_sur_microsoft is None:
                     debut_sur_microsoft = maintenant
@@ -231,15 +320,17 @@ class SessionNavigateur:
             if maintenant >= prochain_statut:
                 ecoule = int(maintenant - debut)
                 restant = int(limite - maintenant)
-                if domaine is None:
+                if not hostnames:
                     imprimer(f"en attente ({ecoule}s) - page pas encore chargee")
-                elif domaine == HOTE_SITESCOURS:
-                    imprimer(
-                        f"en attente ({ecoule}s) - page sur {domaine}, "
-                        "contenu pas encore rendu"
-                    )
                 else:
-                    imprimer(f"en attente ({ecoule}s) - page actuellement sur {domaine}")
+                    descriptif = ", ".join(
+                        nom if nom is not None else "page pas encore chargee"
+                        for nom in hostnames
+                    )
+                    imprimer(
+                        f"en attente ({ecoule}s) - {len(hostnames)} page(s) ouverte(s) : "
+                        f"{descriptif}"
+                    )
 
                 if (
                     sur_microsoft
