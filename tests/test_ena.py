@@ -96,14 +96,13 @@ class SessionFactice:
 
 class PageNonAuthentifiee(PageFactice):
     """Simule la page de connexion servie quand la session Microsoft expire en
-    cours de navigation : aucun marqueur d'authentification, quel que soit le
-    contenu demande."""
+    cours de navigation : la redirection SSO fait atterrir sur un hote de
+    connexion federee, hors du domaine ulaval.ca, quel que soit le chemin
+    demande (est_page_authentifiee ne verifie plus que le nom d'hote)."""
 
-    def locator(self, _selecteur):
-        return LocatorFactice(0)
-
-    def get_by_text(self, _texte):
-        return LocatorFactice(0)
+    def goto(self, url, **_):
+        self.visitees.append(url)
+        self.url = "https://login.microsoftonline.com/common/oauth2/authorize"
 
 
 COURS_QUELCONQUE = Cours(

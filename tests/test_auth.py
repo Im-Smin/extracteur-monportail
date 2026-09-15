@@ -3,17 +3,7 @@ from urllib.parse import urlparse
 
 from playwright.sync_api import Error as ErreurPlaywright
 
-from extracteur.auth import SessionNavigateur, HOTE_SITESCOURS
-
-
-class LocatorFactice:
-    """Simule un locator Playwright avec une methode count()."""
-
-    def __init__(self, nombre):
-        self._nombre = nombre
-
-    def count(self):
-        return self._nombre
+from extracteur.auth import SessionNavigateur, HOTE_SITESCOURS, HOTE_PORTAIL, URL_DEPART
 
 
 class PageFactice:
@@ -21,25 +11,15 @@ class PageFactice:
 
     def __init__(self, url):
         self.url = url
-        self._locateurs = {}
-        self._textes = {}
         self._fermee = False
+        # Appels a goto() : sert a verifier que la page adoptee est bien
+        # renavigee vers la page des cours, sans supposer qu'elle y est deja.
+        self.appels_goto = []
 
-    def locator(self, selector):
-        """Retourne le nombre de locateurs pour ce selecteur."""
-        return LocatorFactice(self._locateurs.get(selector, 0))
-
-    def get_by_text(self, texte):
-        """Retourne le nombre de fois ce texte apparait."""
-        return LocatorFactice(self._textes.get(texte, 0))
-
-    def ajouter_locateur(self, selector, nombre):
-        """Ajoute un nombre de locateurs pour un selecteur donne."""
-        self._locateurs[selector] = nombre
-
-    def ajouter_texte(self, texte, nombre):
-        """Ajoute une ou plusieurs occurrences d'un texte."""
-        self._textes[texte] = nombre
+    def goto(self, url, **_kwargs):
+        """Simule Page.goto : met a jour l'url et enregistre l'appel."""
+        self.url = url
+        self.appels_goto.append(url)
 
     def is_closed(self):
         """Reflete l'etat reel de fermeture, comme Page.is_closed()."""
@@ -59,49 +39,27 @@ class SessionNavigateurTestable(SessionNavigateur):
             self.page = page_factice
 
 
-def test_reconnait_page_site_cours_avec_lien_ena_site():
-    """Test: une page de site de cours avec lien /ena/site/ est reconnue."""
-    page = PageFactice(f"https://{HOTE_SITESCOURS}/ena/site/123")
-    page.ajouter_locateur("a[href*='/ena/site/']", 1)
+def test_reconnait_page_sitescours_quel_que_soit_son_contenu():
+    """Une page sur sitescours.monportail.ulaval.ca est reconnue authentifiee
+    des le nom d'hote, quel que soit son contenu.
 
-    session = SessionNavigateurTestable(page)
-    assert session.est_connecte()
-
-
-def test_reconnait_page_site_cours_avec_liste_des_cours():
-    """Test: une page de site de cours avec 'Liste des cours' est reconnue."""
-    page = PageFactice(f"https://{HOTE_SITESCOURS}/ena/site/456")
-    page.ajouter_texte("Liste des cours", 1)
-
-    session = SessionNavigateurTestable(page)
-    assert session.est_connecte()
-
-
-def test_reconnait_page_portail_avec_cours_suivis():
-    """Test: la page /portail/cours avec 'Cours suivis' est reconnue."""
-    page = PageFactice(f"https://{HOTE_SITESCOURS}/portail/cours")
-    page.ajouter_texte("Cours suivis", 1)
-
-    session = SessionNavigateurTestable(page)
-    assert session.est_connecte()
-
-
-def test_reconnait_page_authentifiee_menu_de_compte_seul():
-    """Test: une page avec le lien du menu de compte personnel est reconnue.
-
-    Ce test verifie le cas de /portail/cours apres connexion, sans lien /ena/site/
-    ni texte 'Liste des cours' ni 'Cours suivis', mais avec le lien du menu de
-    compte personnel (monportail.ulaval.ca/mon-compte), releve en session reelle
-    et absent de toute page publique ou d'erreur.
+    L'exigence d'un marqueur de contenu (lien /ena/site/, texte "Cours
+    suivis", menu de compte personnel...) a ete abandonnee : trois correctifs
+    successifs sur ce marqueur n'ont pas suffi en usage reel, une
+    authentification federee n'atterrissant pas toujours au meme endroit. La
+    garantie s'est deplacee en aval, au selecteur de sessions.
     """
-    page = PageFactice(f"https://{HOTE_SITESCOURS}/portail/cours")
-    # Pas de lien /ena/site/ ni texte "Liste des cours"
-    page.ajouter_locateur("a[href*='/ena/site/']", 0)
-    page.ajouter_texte("Liste des cours", 0)
-    # Pas de "Cours suivis"
-    page.ajouter_texte("Cours suivis", 0)
-    # Mais le lien du menu de compte personnel est present
-    page.ajouter_locateur("a[href*='monportail.ulaval.ca/mon-compte']", 1)
+    page = PageFactice(f"https://{HOTE_SITESCOURS}/une/page/quelconque")
+
+    session = SessionNavigateurTestable(page)
+    assert session.est_connecte()
+
+
+def test_reconnait_page_monportail_quel_que_soit_son_contenu():
+    """Meme constat sur monportail.ulaval.ca (sans le sous-domaine
+    sitescours) : autre hote attendu cote portail apres connexion, reconnu
+    lui aussi sans marqueur de contenu."""
+    page = PageFactice(f"https://{HOTE_PORTAIL}/mon-compte")
 
     session = SessionNavigateurTestable(page)
     assert session.est_connecte()
@@ -138,43 +96,23 @@ def test_rejette_url_autorisation_microsoft_avec_redirect_uri_en_clair():
     assert not session.est_connecte()
 
 
-def test_rejette_page_sans_marqueur():
-    """Test: une page sur le bon domaine sans marqueur n'est pas authentifiee."""
-    page = PageFactice(f"https://{HOTE_SITESCOURS}/une/page/quelconque")
-    # Aucun marqueur d'authentification
-    page.ajouter_locateur("a[href*='/ena/site/']", 0)
-    page.ajouter_texte("Liste des cours", 0)
-    page.ajouter_texte("Cours suivis", 0)
-    page.ajouter_locateur("a[href*='monportail.ulaval.ca/mon-compte']", 0)
-
-    session = SessionNavigateurTestable(page)
-    assert not session.est_connecte()
-
-
-def test_rejette_page_avec_menu_statique_mais_sans_menu_de_compte():
-    """Test: un menu statique d'au moins cinq liens /portail ne suffit pas.
-
-    Une page d'erreur ou une redirection intermediaire du domaine peut deja
-    porter un menu statique de cinq liens ou plus vers /portail sans que
-    l'utilisateur soit connecte : ce compte ne doit plus jamais suffire a lui
-    seul, contrairement a l'ancien comptage heuristique.
-    """
-    page = PageFactice(f"https://{HOTE_SITESCOURS}/portail/page_erreur")
-    page.ajouter_locateur("a[href*='/ena/site/']", 0)
-    page.ajouter_texte("Liste des cours", 0)
-    page.ajouter_texte("Cours suivis", 0)
-    page.ajouter_locateur("a[href*='monportail.ulaval.ca/portail']", 19)
-    page.ajouter_locateur("a[href*='monportail.ulaval.ca/mon-compte']", 0)
-
-    session = SessionNavigateurTestable(page)
-    assert not session.est_connecte()
-
-
 def test_rejette_page_nulle():
     """Test: est_connecte() retourne False si page est None."""
     session = SessionNavigateurTestable()
     assert session.page is None
     assert not session.est_connecte()
+
+
+def test_est_connecte_navigue_vers_la_page_des_cours_apres_adoption():
+    """Une fois la page authentifiee adoptee, le programme y navigue lui-meme
+    vers la page des cours, plutot que de supposer qu'elle s'y trouve deja :
+    le critere assoupli (domaine seul) ne garantit plus que la page
+    authentifiee atterrisse au bon endroit."""
+    page = PageFactice(f"https://{HOTE_PORTAIL}/mon-compte")
+
+    session = SessionNavigateurTestable(page)
+    assert session.est_connecte()
+    assert page.appels_goto == [URL_DEPART]
 
 
 # --- attendre_connexion : bavardage, rappel du selecteur de compte,
@@ -476,11 +414,9 @@ class SessionContexteTestable(SessionNavigateur):
 
 
 def _page_authentifiee_factice():
-    """Page factice de /portail/cours portant le marqueur d'authentification
-    'Cours suivis'."""
-    page = PageFactice(f"https://{HOTE_SITESCOURS}/portail/cours")
-    page.ajouter_texte("Cours suivis", 1)
-    return page
+    """Page factice de /portail/cours : authentifiee des le nom d'hote, sans
+    plus exiger aucun marqueur de contenu."""
+    return PageFactice(f"https://{HOTE_SITESCOURS}/portail/cours")
 
 
 def test_est_connecte_examine_toutes_les_pages_et_adopte_la_page_authentifiee():
@@ -609,14 +545,16 @@ def test_attendre_connexion_ligne_d_etat_mentionne_tous_les_domaines_ouverts():
     """La ligne d'etat rend compte de toutes les pages ouvertes et de leurs
     domaines, pas du domaine d'une seule page choisie arbitrairement : c'est
     ce qui aurait revele immediatement le defaut de page abandonnee sur le
-    domaine de connexion pendant qu'une autre page, authentifiee, restait
-    invisible du programme."""
+    domaine de connexion pendant qu'une autre page, sur un autre domaine,
+    restait invisible du programme."""
     page_connexion = PageFactice("https://login.microsoftonline.com/common/oauth2/authorize")
-    # Sur le bon domaine mais sans marqueur : ne doit pas etre prise pour
-    # authentifiee, sert seulement a peupler la ligne d'etat.
-    page_site_cours = PageFactice(f"https://{HOTE_SITESCOURS}/portail/cours")
+    # Autre relais de connexion federee, distinct du premier : aucun des deux
+    # n'est authentifie (le critere rejette tout hote de la famille
+    # Microsoft), sert seulement a peupler la ligne d'etat avec un second
+    # domaine.
+    page_relais = PageFactice("https://login.live.com/oauth20_authorize.srf")
 
-    session = SessionContexteTestable([page_connexion, page_site_cours])
+    session = SessionContexteTestable([page_connexion, page_relais])
     messages = []
 
     resultat = session.attendre_connexion(
@@ -630,6 +568,6 @@ def test_attendre_connexion_ligne_d_etat_mentionne_tous_les_domaines_ouverts():
     lignes_etat = [m for m in messages if m.startswith("en attente")]
     assert lignes_etat
     assert any(
-        "login.microsoftonline.com" in ligne and HOTE_SITESCOURS in ligne
+        "login.microsoftonline.com" in ligne and "login.live.com" in ligne
         for ligne in lignes_etat
     )
