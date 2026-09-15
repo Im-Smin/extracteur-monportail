@@ -101,6 +101,38 @@ MOTIF_LIBELLE_SESSION = re.compile(r"^(?:hiver|automne|[ée]t[ée])\s+\d{4}$", r
 # plutot que de deviner une nouvelle fois la structure du DOM.
 CANDIDATS_DIAGNOSTIC_SESSIONS = ("[role=option]", ".mpo-deroulant-element", "li", "a")
 
+# Delai minimal accorde a l'apparition du bouton du selecteur de sessions.
+# Releve en session reelle : /portail/cours (application AngularJS) met 8 a
+# 9 secondes a se rendre, largement au-dela du signal reseau "networkidle"
+# que Playwright declenche des que les requetes se taisent -- bien avant que
+# l'UI ne soit affichee. Attendre ce signal reseau plutot qu'un element
+# concret du DOM final a deja fait disparaitre deux sessions entieres d'une
+# enumeration reelle, en silence. Ce delai est nettement plus genereux que
+# le temps observe, pour absorber les sessions plus lentes.
+DELAI_CHARGEMENT_SESSIONS_MS = 30_000
+
+# Delai accorde a la confirmation du changement de session par le bouton,
+# une fois son option cliquee. Le changement lui-meme est rapide -- mesure a
+# moins de 500 ms en session reelle -- mais reste asynchrone (AngularJS) ;
+# ce delai est nettement plus genereux que le temps observe.
+DELAI_CONFIRMATION_SESSION_MS = 5_000
+
+
+class SelecteurSessionsIndisponible(Exception):
+    """Le mecanisme du selecteur de sessions n'a pas repondu comme attendu :
+    bouton jamais apparu apres un delai genereux, clic sur le bouton en
+    echec malgre sa presence, ou session cliquee dont la confirmation n'est
+    jamais apparue sur le bouton.
+
+    /portail/cours est une application AngularJS qui met 8 a 9 secondes a se
+    rendre en usage reel, bien au-dela du signal reseau "networkidle" que
+    Playwright declenche des que les requetes se taisent. Une page lue trop
+    tot semble "sans cours", en silence : deux sessions entieres de
+    l'historique de l'utilisateur ont ainsi disparu d'une enumeration reelle.
+    Une session reellement vide et un echec de chargement sont sinon
+    indiscernables ; on leve donc bruyamment plutot que de deviner.
+    """
+
 
 class SelecteurSessionsIllisible(Exception):
     """Le panneau du selecteur de sessions s'est ouvert, mais aucune option
@@ -163,21 +195,37 @@ class Ena:
         if not est_page_authentifiee(self.session.page):
             raise SessionExpiree(self.session.page.url)
 
-    def _ouvrir_selecteur_sessions(self) -> bool:
-        """Clique le selecteur pour faire apparaitre ses options dans le DOM.
+    def _ouvrir_selecteur_sessions(self) -> None:
+        """Attend que le bouton du selecteur de sessions soit present et
+        exploitable, puis clique dessus pour faire apparaitre ses options.
 
-        Rend Vrai si le clic a reussi, Faux sinon. Un echec (selecteur absent,
-        page pas encore chargee) n'est pas fatal en soi : c'est
-        sessions_disponibles qui decide, a partir de ce retour, si une liste
-        d'options vide est normale (le panneau n'a jamais pu s'ouvrir) ou
-        doit lever SelecteurSessionsIllisible (le panneau s'est ouvert, mais
-        son contenu ne colle a aucune forme connue).
+        /portail/cours met 8 a 9 secondes a se rendre en usage reel
+        (application AngularJS) : le signal reseau "networkidle" se
+        declenche bien avant que le bouton n'existe dans le DOM. On attend
+        donc explicitement ce bouton, avec un delai genereux
+        (DELAI_CHARGEMENT_SESSIONS_MS), plutot que d'esperer qu'un clic
+        immediat tombe juste.
+
+        Leve SelecteurSessionsIndisponible si le bouton n'apparait jamais
+        dans ce delai, ou si le clic echoue malgre sa presence : ni l'un ni
+        l'autre n'est tolere en silence, une session ainsi ratee
+        disparaitrait de l'enumeration sans le moindre signe.
         """
         try:
+            self.session.page.locator(self.SELECTEUR_SESSIONS).wait_for(
+                timeout=DELAI_CHARGEMENT_SESSIONS_MS
+            )
             self.session.page.click(self.SELECTEUR_SESSIONS, timeout=5000)
-            return True
-        except (ErreurDelaiPlaywright, ErreurPlaywright):
-            return False
+        except (ErreurDelaiPlaywright, ErreurPlaywright) as erreur:
+            raise SelecteurSessionsIndisponible(
+                "le bouton du selecteur de sessions "
+                '(div[role="listbox"].mpo-deroulant-bouton) n\'a pas pu '
+                f"etre ouvert apres {DELAI_CHARGEMENT_SESSIONS_MS} ms "
+                "d'attente. La page /portail/cours (application AngularJS) "
+                "met 8 a 9 secondes a se rendre en usage reel ; ce delai "
+                "peut signaler un vrai probleme de chargement, pas une "
+                "session sans cours."
+            ) from erreur
 
     def _options_sessions(self):
         """Localisateur des options du selecteur, mecanisme partage par
@@ -237,7 +285,8 @@ class Ena:
         return candidats.filter(has_text=motif_valides)
 
     def _selectionner_session(self, session: Session) -> None:
-        """Selectionne une session en cliquant son option dans le selecteur.
+        """Selectionne une session en cliquant son option dans le selecteur,
+        puis attend que le bouton confirme reellement ce changement.
 
         Repere l'option par le meme mecanisme que la lecture :
         classe canonique d'abord, repli par forme de libelle. Tolere les
@@ -251,6 +300,12 @@ class Ena:
         donnees pire qu'une liste vide. On garantit donc bruyamment que la
         session demandee existe bien avant de laisser l'extraction se
         poursuivre en silence avec des cours faux.
+
+        Leve SelecteurSessionsIndisponible si, apres le clic, le bouton ne
+        confirme jamais le passage a cette session (voir
+        _confirmer_session_selectionnee) : un clic tombe dans le vide sur
+        une page pas encore prete laisserait sinon lire les cours de la
+        session encore affichee, sous le nom de celle demandee.
         """
         options = self._options_sessions()
 
@@ -283,6 +338,39 @@ class Ena:
         lien = options.filter(has_text=motif_cible).first
         lien.click(timeout=5000)
 
+        self._confirmer_session_selectionnee(session)
+
+    def _confirmer_session_selectionnee(self, session: Session) -> None:
+        """Attend que le bouton du selecteur affiche exactement le libelle
+        de la session demandee, apres le clic sur son option.
+
+        Verifiee et non esperee : le bouton du selecteur rend sa valeur
+        courante (constate en session reelle -- apres avoir clique "Hiver
+        2023", le bouton rend exactement "Hiver 2023"). C'est une
+        verification gratuite et decisive, qui distingue un vrai changement
+        de session d'un clic tombe dans le vide sur une page pas encore
+        prete. Le changement lui-meme est rapide (moins de 500 ms mesures en
+        session reelle) ; le delai accorde ici est nettement plus genereux.
+
+        Leve SelecteurSessionsIndisponible si cette confirmation n'apparait
+        jamais dans ce delai.
+        """
+        libelle_attendu = session.libelle.strip()
+        motif_exact = re.compile(f"^{re.escape(libelle_attendu)}$")
+        bouton_confirme = self.session.page.locator(self.SELECTEUR_SESSIONS).filter(
+            has_text=motif_exact
+        )
+        try:
+            bouton_confirme.wait_for(timeout=DELAI_CONFIRMATION_SESSION_MS)
+        except (ErreurDelaiPlaywright, ErreurPlaywright) as erreur:
+            raise SelecteurSessionsIndisponible(
+                f"le bouton du selecteur de sessions n'a jamais confirme le "
+                f"passage a '{session.libelle}' apres le clic, dans le "
+                f"delai accorde ({DELAI_CONFIRMATION_SESSION_MS} ms). Le "
+                "clic est peut-etre tombe dans le vide sur une page pas "
+                "encore prete."
+            ) from erreur
+
     def sessions_disponibles(self) -> list[Session]:
         """Liste les sessions offertes par le selecteur de /portail/cours.
 
@@ -297,10 +385,10 @@ class Ena:
         """
         self._visiter(URL.cours())
         self._assurer_authentifie()
-        ouvert = self._ouvrir_selecteur_sessions()
+        self._ouvrir_selecteur_sessions()
 
         libelles = self._options_sessions().all_text_contents()
-        if ouvert and not libelles:
+        if not libelles:
             raise SelecteurSessionsIllisible(
                 "le panneau du selecteur de sessions s'est ouvert, mais "
                 "aucune option de la forme <saison> <annee> n'y a ete "
@@ -340,25 +428,34 @@ class Ena:
     def sites_de_session(self, session: Session) -> list[Cours]:
         """Selectionne une session puis rend ses cours.
 
-        Le clic sur l'option recharge la liste de facon asynchrone : on
-        attend avant de lire le DOM. Une session sans cours (par exemple la
-        session courante de l'utilisateur) est normale : elle rend une liste
-        vide, pas une erreur.
+        La confirmation du changement (bouton affichant exactement le
+        libelle demande, voir _confirmer_session_selectionnee) est attendue
+        avant toute lecture du DOM : sans elle, une session reellement vide
+        et un echec de chargement (page pas prete, clic tombe dans le vide)
+        sont indiscernables, et le second finit par etre lu comme le
+        premier -- exactement le defaut qui a fait disparaitre deux sessions
+        entieres d'une enumeration reelle, en silence. Une fois la session
+        confirmee, une liste de cours vide est un resultat normal (par
+        exemple la session courante de l'utilisateur, pas encore remplie) :
+        elle ne leve rien.
 
         Leve SelecteurSessionsIllisible si la session demandee n'est pas
-        presente dans le selecteur : attendre les cours d'une autre session
-        et les archiver sous le nom demande est une corruption de donnees
-        pire qu'une liste vide.
+        presente dans le selecteur, ou SelecteurSessionsIndisponible si le
+        bouton du selecteur ne confirme jamais le changement : dans les deux
+        cas, lire la page reviendrait a archiver les cours d'une autre
+        session sous le nom demande, une corruption de donnees pire qu'une
+        liste vide.
         """
         self._visiter(URL.cours())
         self._assurer_authentifie()
         self._ouvrir_selecteur_sessions()
+        self._selectionner_session(session)
 
-        try:
-            self._selectionner_session(session)
-            self.session.page.wait_for_timeout(1500)
-        except (ErreurDelaiPlaywright, ErreurPlaywright):
-            pass
+        # Marge de securite apres la confirmation du bouton : la session
+        # reelle mesuree affiche a la fois le bouton et les cours en moins
+        # de 500 ms, mais rien ne garantit que les deux soient rendus dans
+        # la meme micro-tache Angular.
+        self.session.page.wait_for_timeout(500)
 
         return cours_depuis_html(self.session.page.content(), session)
 
