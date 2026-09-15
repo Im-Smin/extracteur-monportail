@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from extracteur.__main__ import (
+    DOSSIER_PROFIL,
     ConnexionEchouee,
     _afficher_sessions,
     _chercher_cours,
@@ -385,6 +386,54 @@ def test_un_seul_cours_ferme_toujours_la_session_meme_sur_erreur_inattendue(tmp_
     assert session.fermee is True
 
 
+# --- _un_seul_cours : --reinitialiser-session (option de preparation) ---
+#
+# fonction_reinitialisation est toujours injectee : aucun de ces tests ne
+# doit jamais toucher a un vrai dossier de profil.
+
+
+def test_un_seul_cours_reinitialise_le_profil_avant_l_ouverture_si_demande(tmp_path):
+    ena = EnaDeTest({SESSION_HIVER: [COURS_HIVER]})
+    session = SessionFactice()
+    appels = []
+    ouvrir_original = session.ouvrir
+
+    def ouvrir_espion():
+        appels.append("ouvrir")
+        ouvrir_original()
+
+    session.ouvrir = ouvrir_espion
+
+    code = _un_seul_cours(
+        "181216",
+        tmp_path,
+        session=session,
+        fabrique_ena=lambda _s: ena,
+        reinitialiser=True,
+        fonction_reinitialisation=lambda dossier: appels.append(("reinitialiser", dossier)),
+    )
+
+    assert code == 0
+    assert appels == [("reinitialiser", DOSSIER_PROFIL), "ouvrir"]
+
+
+def test_un_seul_cours_n_appelle_pas_la_reinitialisation_par_defaut(tmp_path):
+    ena = EnaDeTest({SESSION_HIVER: [COURS_HIVER]})
+    session = SessionFactice()
+    appels = []
+
+    code = _un_seul_cours(
+        "181216",
+        tmp_path,
+        session=session,
+        fabrique_ena=lambda _s: ena,
+        fonction_reinitialisation=lambda dossier: appels.append(dossier),
+    )
+
+    assert code == 0
+    assert appels == []
+
+
 # --- _connecter : fermeture garantie du navigateur (defaut 1) ---
 
 
@@ -417,6 +466,44 @@ def test_connecter_rend_la_session_ouverte_sur_connexion_reussie():
     resultat = _connecter(session=session)
 
     assert resultat is session
+
+
+# --- _connecter : --reinitialiser-session (option de preparation) ---
+#
+# fonction_reinitialisation est toujours injectee dans ces tests : aucun ne
+# doit jamais toucher a un vrai dossier de profil.
+
+
+def test_connecter_reinitialise_le_profil_avant_l_ouverture_si_demande():
+    session = SessionFactice(connectee=True)
+    appels = []
+    ouvrir_original = session.ouvrir
+
+    def ouvrir_espion():
+        appels.append("ouvrir")
+        ouvrir_original()
+
+    session.ouvrir = ouvrir_espion
+
+    _connecter(
+        session=session,
+        reinitialiser=True,
+        fonction_reinitialisation=lambda dossier: appels.append(("reinitialiser", dossier)),
+    )
+
+    assert appels == [("reinitialiser", DOSSIER_PROFIL), "ouvrir"]
+
+
+def test_connecter_n_appelle_pas_la_reinitialisation_par_defaut():
+    session = SessionFactice(connectee=True)
+    appels = []
+
+    _connecter(
+        session=session,
+        fonction_reinitialisation=lambda dossier: appels.append(dossier),
+    )
+
+    assert appels == []
 
 
 # --- _message_echec_connexion : message d'echec informatif (defaut 4) ---
@@ -467,6 +554,25 @@ def test_connecter_leve_avec_le_domaine_observe_dans_le_message():
 
     assert "login.microsoftonline.com" in str(info.value)
     assert session.fermee is True
+
+
+def test_message_echec_mentionne_toujours_la_piste_de_reinitialisation():
+    """C'est le dernier endroit ou l'utilisateur regarde avant d'abandonner :
+    la commande exacte doit y figurer, quel que soit le domaine observe."""
+    session = SessionFactice(dernier_domaine_observe="login.microsoftonline.com")
+
+    message = _message_echec_connexion(session)
+
+    assert "--reinitialiser-session" in message
+
+
+def test_message_echec_sans_domaine_observe_mentionne_aussi_la_piste():
+    session = SessionFactice()
+    session.dernier_domaine_observe = None
+
+    message = _message_echec_connexion(session)
+
+    assert "--reinitialiser-session" in message
 
 
 # --- _lister : point d'injection et fermeture garantie (defaut 5) ---
@@ -776,6 +882,54 @@ def test_session_introuvable_affiche_les_libelles_disponibles_et_rend_code_non_n
     assert "Automne 2025" in erreur
 
 
+# --- _session (--archiver-plusieurs-sessions) : --reinitialiser-session ---
+#
+# fonction_reinitialisation est toujours injectee : aucun de ces tests ne
+# doit jamais toucher a un vrai dossier de profil.
+
+
+def test_session_reinitialise_le_profil_avant_l_ouverture_si_demande(tmp_path):
+    ena = EnaDeTest({SESSION_HIVER: [COURS_HIVER]})
+    session = SessionFactice()
+    appels = []
+    ouvrir_original = session.ouvrir
+
+    def ouvrir_espion():
+        appels.append("ouvrir")
+        ouvrir_original()
+
+    session.ouvrir = ouvrir_espion
+
+    code = _session(
+        "Hiver 2026",
+        tmp_path,
+        session=session,
+        fabrique_ena=lambda _s: ena,
+        reinitialiser=True,
+        fonction_reinitialisation=lambda dossier: appels.append(("reinitialiser", dossier)),
+    )
+
+    assert code == 0
+    assert appels == [("reinitialiser", DOSSIER_PROFIL), "ouvrir"]
+
+
+def test_session_n_appelle_pas_la_reinitialisation_par_defaut(tmp_path):
+    ena = EnaDeTest({SESSION_HIVER: [COURS_HIVER]})
+    session = SessionFactice()
+    appels = []
+
+    code = _session(
+        "Hiver 2026",
+        tmp_path,
+        session=session,
+        fabrique_ena=lambda _s: ena,
+        fonction_reinitialisation=lambda dossier: appels.append(dossier),
+    )
+
+    assert code == 0
+    assert appels == []
+
+
 # --- _tout : enchaine toutes les sessions, de la plus ancienne a la plus recente ---
 
 
@@ -1024,6 +1178,65 @@ def test_tout_seul_est_accepte():
 
     assert arguments.tout is True
     assert arguments.session_cible is None
+
+
+# --- argparse : --reinitialiser-session, option de preparation combinable
+# --- avec chaque mode, pas un mode a part entiere ---
+
+
+def test_reinitialiser_session_absent_par_defaut():
+    analyseur = _construire_analyseur()
+
+    arguments = analyseur.parse_args(["--lister"])
+
+    assert arguments.reinitialiser_session is False
+
+
+def test_reinitialiser_session_combinable_avec_lister():
+    analyseur = _construire_analyseur()
+
+    arguments = analyseur.parse_args(["--lister", "--reinitialiser-session"])
+
+    assert arguments.lister is True
+    assert arguments.reinitialiser_session is True
+
+
+def test_reinitialiser_session_combinable_avec_un_seul_cours():
+    analyseur = _construire_analyseur()
+
+    arguments = analyseur.parse_args(["--un-seul-cours", "181216", "--reinitialiser-session"])
+
+    assert arguments.id_site == "181216"
+    assert arguments.reinitialiser_session is True
+
+
+def test_reinitialiser_session_combinable_avec_session():
+    analyseur = _construire_analyseur()
+
+    arguments = analyseur.parse_args(
+        ["--session", "Automne 2022", "--reinitialiser-session"]
+    )
+
+    assert arguments.session_cible == "Automne 2022"
+    assert arguments.reinitialiser_session is True
+
+
+def test_reinitialiser_session_combinable_avec_tout():
+    analyseur = _construire_analyseur()
+
+    arguments = analyseur.parse_args(["--tout", "--reinitialiser-session"])
+
+    assert arguments.tout is True
+    assert arguments.reinitialiser_session is True
+
+
+def test_reinitialiser_session_combinable_avec_diagnostic():
+    analyseur = _construire_analyseur()
+
+    arguments = analyseur.parse_args(["--diagnostic", "--reinitialiser-session"])
+
+    assert arguments.diagnostic is True
+    assert arguments.reinitialiser_session is True
 
 
 # --- argparse : --verifier et --zip mutuellement exclusifs avec les autres modes ---
