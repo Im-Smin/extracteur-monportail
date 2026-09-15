@@ -4,10 +4,13 @@ from playwright.sync_api import TimeoutError as ErreurDelaiPlaywright
 
 from extracteur.ena import (
     CANDIDATS_DIAGNOSTIC_SESSIONS,
+    DELAI_OBSERVATION_MINIMALE_STABILISATION_MS,
+    INTERVALLE_SONDAGE_STABILISATION_MS,
     URL,
     Ena,
     SelecteurSessionsIllisible,
     SelecteurSessionsIndisponible,
+    SelecteurSessionsInstable,
 )
 from extracteur.modele import Cours, Evaluation, Module, Session
 from extracteur.telechargement import SessionExpiree
@@ -1372,3 +1375,103 @@ def test_sites_de_session_leve_si_la_session_est_introuvable():
 
     with pytest.raises(SelecteurSessionsIllisible):
         ena.sites_de_session(session_inexistante)
+
+
+class LocatorDeCompte:
+    """Simule un Locator dont .count() rend une valeur fixe, sans autre
+    mecanisme -- suffisant pour tester _stabiliser_options isolement, qui
+    n'appelle jamais autre chose que .count() sur ce qu'elle sonde."""
+
+    def __init__(self, compte):
+        self.compte = compte
+
+    def count(self):
+        return self.compte
+
+
+class CompteEvolutif:
+    """Rejoue une sequence de comptes programmee, comme celles mesurees par
+    la revue contre la vraie fonction _stabiliser_options.
+
+    Sans boucle (par defaut) : la derniere valeur de la sequence se repete
+    indefiniment une fois atteinte -- simule un panneau qui trouve son palier
+    (peuplement progressif, ou panneau vide en permanence).
+
+    Avec boucle=True : la sequence entiere se repete sans fin -- simule une
+    oscillation qui ne trouve jamais de palier.
+    """
+
+    def __init__(self, comptes, boucle=False):
+        self.comptes = comptes
+        self.boucle = boucle
+        self.nombre_sondages = 0
+
+    def obtenir_options(self):
+        indice = self.nombre_sondages
+        if self.boucle:
+            indice %= len(self.comptes)
+        else:
+            indice = min(indice, len(self.comptes) - 1)
+        self.nombre_sondages += 1
+        return LocatorDeCompte(self.comptes[indice])
+
+
+def _ena_pour_stabilisation():
+    ena = Ena(SessionFactice({}))
+    ena.session.page = PageFactice({})
+    return ena
+
+
+def test_stabiliser_options_attend_la_fin_d_un_peuplement_progressif():
+    # Rejoue la sequence mesuree par la revue : 3, puis 12 en continu. Un
+    # premier sondage a 3 ne doit plus suffire a conclure a la stabilite du
+    # tout premier coup -- il faut voir le compte se maintenir sur plusieurs
+    # sondages avant de conclure.
+    sequence = CompteEvolutif([3, 12])
+    ena = _ena_pour_stabilisation()
+
+    options = ena._stabiliser_options(sequence.obtenir_options)
+
+    assert options.count() == 12
+
+
+def test_stabiliser_options_conclut_vite_un_compte_deja_stable():
+    # Cas nominal : toutes les options sont presentes des le premier sondage.
+    # Le cout doit rester borne (quelques sondages, une fraction de seconde),
+    # meme si l'exigence est plus stricte qu'avant (trois sondages
+    # consecutifs sur une fenetre d'au moins 600 ms, plutot que deux).
+    sequence = CompteEvolutif([12])
+    ena = _ena_pour_stabilisation()
+
+    options = ena._stabiliser_options(sequence.obtenir_options)
+
+    assert options.count() == 12
+    sondages_attendus = (
+        DELAI_OBSERVATION_MINIMALE_STABILISATION_MS // INTERVALLE_SONDAGE_STABILISATION_MS + 1
+    )
+    assert sequence.nombre_sondages == sondages_attendus
+
+
+def test_stabiliser_options_leve_si_le_compte_oscille_sans_jamais_se_stabiliser():
+    # Rejoue l'oscillation mesuree par la revue : 3, 9, 3, 9, ... ne trouve
+    # jamais de palier. Rendre la derniere valeur sondee tronquerait la
+    # liste de sessions en silence -- un echec de lecture explicite vaut
+    # mieux qu'un resultat plausible mais faux.
+    sequence = CompteEvolutif([3, 9], boucle=True)
+    ena = _ena_pour_stabilisation()
+
+    with pytest.raises(SelecteurSessionsInstable):
+        ena._stabiliser_options(sequence.obtenir_options)
+
+
+def test_stabiliser_options_conserve_le_comportement_actuel_pour_un_panneau_vide():
+    # Un panneau vide en permanence (0, 0, 0, ...) est deja correct
+    # aujourd'hui : c'est une vraie stabilite (le compte ne varie jamais),
+    # pas une oscillation. Le durcissement ne doit pas le faire basculer en
+    # SelecteurSessionsInstable.
+    sequence = CompteEvolutif([0])
+    ena = _ena_pour_stabilisation()
+
+    options = ena._stabiliser_options(sequence.obtenir_options)
+
+    assert options.count() == 0

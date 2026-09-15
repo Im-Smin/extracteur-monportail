@@ -229,6 +229,19 @@ def test_afficher_sessions_montre_id_sigle_titre_et_indicateurs():
     assert "plan de cours officiel : non" in texte
 
 
+def test_afficher_sessions_annonce_le_compte_en_tete():
+    # Seule protection reelle contre un panneau qui plafonne durablement sur
+    # un compte incomplet (palier indecidable pour le code) : l'utilisateur
+    # connait son propre parcours et peut remarquer d'un coup d'oeil qu'il
+    # manque des sessions. Doit donc apparaitre en tete, avant la liste.
+    ena = EnaDeTest({SESSION_HIVER: [COURS_HIVER], SESSION_AUTOMNE: [COURS_ANCIEN]})
+    lignes = []
+
+    _afficher_sessions(ena, imprimer=lignes.append)
+
+    assert lignes[0] == "2 session(s) detectee(s)."
+
+
 def test_afficher_sessions_sans_cours_le_dit():
     ena = EnaDeTest({SESSION_HIVER: []})
     lignes = []
