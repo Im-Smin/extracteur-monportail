@@ -1,3 +1,6 @@
+import re
+from pathlib import Path
+
 import pytest
 from playwright.sync_api import Error as ErreurPlaywright
 from playwright.sync_api import TimeoutError as ErreurDelaiPlaywright
@@ -545,8 +548,8 @@ class LienNonCliquable(LienFactice):
 
 class LocatorBoutonSessionFactice:
     """Simule le Locator du bouton du selecteur de sessions
-    (Ena.SELECTEUR_SESSIONS) : sa presence (wait_for), et le filtrage par
-    texte exact utilise pour confirmer, apres un clic sur une option, que le
+    (Ena.SELECTEUR_SESSIONS) : sa presence (wait_for), et son texte, lu via
+    text_content() pour confirmer, apres un clic sur une option, que le
     bouton affiche bien la session demandee.
 
     Lit sa valeur courante directement sur la page factice
@@ -571,6 +574,13 @@ class LocatorBoutonSessionFactice:
     def wait_for(self, timeout=None):
         if not self.present:
             raise ErreurDelaiPlaywright(f"Timeout {timeout}ms exceeded.")
+
+    def text_content(self, timeout=None):
+        # Comme le vrai Locator Playwright, leve un depassement de delai si
+        # l'element n'est pas present -- jamais None en silence.
+        if not self.present:
+            raise ErreurDelaiPlaywright(f"Timeout {timeout}ms exceeded.")
+        return self._texte()
 
     def filter(self, has_text=None):
         correspond = self.present and (has_text is None or bool(has_text.search(self._texte())))
@@ -794,6 +804,136 @@ def test_sites_de_session_leve_si_le_clic_ne_confirme_jamais_le_changement():
 
     with pytest.raises(SelecteurSessionsIndisponible):
         ena.sites_de_session(session)
+
+
+class PageAvecBoutonPorteDesEspacesDeMiseEnForme(PageAvecSelecteurSessions):
+    """Reproduit le DOM reel du bouton du selecteur de sessions, releve en
+    session reelle : innerText porte de l'indentation et des sauts de ligne
+    autour du libelle (innerText.trim() donnait "Hiver 2023" sur le DOM
+    reel). Le clic sur l'option a bien fonctionne (session_selectionnee est
+    mis a jour normalement), mais le texte brut du bouton ne correspond
+    jamais exactement, caractere pour caractere, au libelle attendu : seule
+    une comparaison de textes nettoyes cote Python peut reconnaitre cette
+    confirmation. Un motif ancre (^...$) confie tel quel a has_text -- qui ne
+    normalise pas les espaces d'un texte compare a une expression reguliere
+    compilee -- ne la reconnaitrait jamais.
+    """
+
+    def __init__(self, libelles_sessions, texte_bouton_brut, html_par_session=None):
+        super().__init__(libelles_sessions, html_par_session)
+        self._texte_bouton_brut = texte_bouton_brut
+
+    def locator(self, selecteur):
+        if selecteur == Ena.SELECTEUR_SESSIONS:
+            return LocatorBoutonSessionFactice(self, texte_impose=self._texte_bouton_brut)
+        return super().locator(selecteur)
+
+
+def test_sites_de_session_reconnait_un_bouton_avec_espaces_de_mise_en_forme():
+    # Constat reel qui a fait echouer TOUTES les sessions apres le
+    # durcissement de la confirmation ("Hiver 2027", "Automne 2026", "Hiver
+    # 2026", y compris des sessions deja vues rendues correctement) : le
+    # bouton du selecteur porte de l'indentation et des sauts de ligne autour
+    # du libelle. Playwright ne normalise pas les espaces d'un texte compare
+    # a une expression reguliere compilee : un motif ancre (^Hiver 2027$)
+    # confie a has_text sur ce texte brut ne correspond alors jamais. Ce
+    # test doit echouer avec ce motif ancre, et reussir une fois la
+    # comparaison faite cote Python sur des textes nettoyes.
+    html_hiver_2027 = '<a href="/ena/site/accueil?idSite=1">A</a>'
+    page = PageAvecBoutonPorteDesEspacesDeMiseEnForme(
+        ["Hiver 2027"],
+        texte_bouton_brut="\n      Hiver 2027\n    ",
+        html_par_session={"Hiver 2027": html_hiver_2027},
+    )
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+    session = Session(code="202701", libelle="Hiver 2027")
+
+    cours = ena.sites_de_session(session)
+
+    assert [c.id_site for c in cours] == ["1"]
+
+
+class PageAvecBoutonAffichantUneAutreSession(PageAvecSelecteurSessions):
+    """Le clic sur l'option est bien recu, mais le bouton finit par afficher
+    une session differente de celle demandee, en permanence -- et le
+    contenu de la page ne change pas non plus : aucune veritable bascule
+    n'a eu lieu, contrairement a un simple retard de rendu. Ne doit jamais
+    etre confirme, ni par le libelle ni par le second signal : lire les
+    cours dans cet etat les archiverait sous le nom d'une autre session,
+    une corruption de donnees pire qu'une session sautee.
+    """
+
+    def __init__(self, libelles_sessions, texte_bouton_fige):
+        super().__init__(libelles_sessions)
+        self._texte_bouton_fige = texte_bouton_fige
+
+    def locator(self, selecteur):
+        if selecteur == Ena.SELECTEUR_SESSIONS:
+            return LocatorBoutonSessionFactice(self, texte_impose=self._texte_bouton_fige)
+        return super().locator(selecteur)
+
+    def content(self):
+        # Rien ne change reellement : ni avant ni apres le clic.
+        return "<html></html>"
+
+
+def test_sites_de_session_ne_confirme_pas_un_bouton_affichant_une_autre_session():
+    # Le bouton affiche en permanence une session differente de celle
+    # demandee, et le contenu de la page ne bouge pas non plus : ni le
+    # libelle ni le second signal (liste des cours) ne confirment la
+    # selection. La session doit etre signalee en echec (isolation deja
+    # assuree par _afficher_sessions/_tout, voir test_main.py), jamais lue
+    # en silence sous un mauvais nom.
+    page = PageAvecBoutonAffichantUneAutreSession(["Hiver 2027"], texte_bouton_fige="Automne 2026")
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+    session = Session(code="202701", libelle="Hiver 2027")
+
+    with pytest.raises(SelecteurSessionsIndisponible):
+        ena.sites_de_session(session)
+
+
+class LocatorBoutonJamaisLisibleFactice:
+    """Simule un bouton bel et bien present (l'ouverture du selecteur
+    reussit) mais dont le texte est en permanence illisible : chaque sondage
+    tombe entre la destruction et la recreation du bouton par AngularJS,
+    text_content() leve donc systematiquement un depassement de delai. Le
+    second signal (liste des cours) est alors la seule confirmation
+    possible."""
+
+    def wait_for(self, timeout=None):
+        pass
+
+    def text_content(self, timeout=None):
+        raise ErreurDelaiPlaywright(f"Timeout {timeout}ms exceeded.")
+
+
+class PageAvecBoutonJamaisLisibleMaisCoursCharges(PageAvecSelecteurSessions):
+    def locator(self, selecteur):
+        if selecteur == Ena.SELECTEUR_SESSIONS:
+            return LocatorBoutonJamaisLisibleFactice()
+        return super().locator(selecteur)
+
+
+def test_sites_de_session_confirme_via_la_liste_des_cours_si_le_bouton_reste_illisible():
+    # Le bouton du selecteur est detruit puis recree par AngularJS : un
+    # sondage peut tomber en permanence entre les deux et ne jamais lire de
+    # texte. Si la liste des cours affichee a neanmoins change depuis avant
+    # le clic, la selection a bien eu lieu -- inutile de la declarer en
+    # echec au seul motif que le bouton, lui, n'a jamais pu etre relu a
+    # temps.
+    html_hiver_2027 = '<a href="/ena/site/accueil?idSite=1">A</a>'
+    page = PageAvecBoutonJamaisLisibleMaisCoursCharges(
+        ["Hiver 2027"], {"Hiver 2027": html_hiver_2027}
+    )
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+    session = Session(code="202701", libelle="Hiver 2027")
+
+    cours = ena.sites_de_session(session)
+
+    assert [c.id_site for c in cours] == ["1"]
 
 
 class PageNonAuthentifieeAvecSelecteurSessions(PageNonAuthentifiee):
@@ -1535,3 +1675,22 @@ def test_stabiliser_options_conserve_le_comportement_actuel_pour_un_panneau_vide
     options = ena._stabiliser_options(sequence.obtenir_options)
 
     assert options.count() == 0
+
+
+def test_ena_ne_confie_plus_aucun_motif_ancre_a_has_text():
+    # Piege deja reproduit deux fois dans ce fichier (lecture des options,
+    # puis confirmation de la session selectionnee) : Playwright ne
+    # normalise pas les espaces d'un texte compare a un motif ancre (^...$)
+    # confie a has_text. Audit statique plutot que de faire confiance a la
+    # relecture : aucune ligne de production ne doit plus transmettre a
+    # has_text= le motif ancre MOTIF_LIBELLE_SESSION, ni construire un
+    # nouveau motif ancre a la volee pour le lui confier.
+    source = (Path(__file__).resolve().parent.parent / "extracteur" / "ena.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "has_text=MOTIF_LIBELLE_SESSION" not in source
+    assert not re.search(r"""f["']\^.*\$["']""", source), (
+        "un motif ancre (f-string commencant par ^ et finissant par $) est "
+        "construit dans ena.py -- verifier qu'il n'est pas confie a has_text"
+    )

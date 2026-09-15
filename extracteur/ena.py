@@ -96,6 +96,13 @@ SECTIONS_PLAN_DE_COURS = ("plan_de_cours", "plancours", "plan_cours")
 # navigateur.
 MOTIF_LIBELLE_SESSION = re.compile(r"^(?:hiver|automne|[ée]t[ée])\s+\d{4}$", re.IGNORECASE)
 
+# Chaine de repli passee a has_text quand aucun candidat n'a survecu au
+# controle cote Python (voir _options_sessions_par_forme) : un Locator vide
+# est alors le seul rendu correct, et une chaine litterale (jamais une
+# expression reguliere ancree) qui ne peut apparaitre dans aucun libelle
+# reel le garantit simplement.
+AUCUNE_CORRESPONDANCE_POSSIBLE = "@@aucune-correspondance-mpo-deroulant@@"
+
 # Selecteurs candidats explores par --diagnostic : le but est de voir, sur
 # des faits, ce que chacun trouve reellement une fois le panneau ouvert,
 # plutot que de deviner une nouvelle fois la structure du DOM.
@@ -115,13 +122,33 @@ DELAI_CHARGEMENT_SESSIONS_MS = 30_000
 # une fois son option cliquee. Le clic recharge la liste des cours : le
 # bouton du selecteur est detruit puis recree par AngularJS, exactement le
 # meme rendu que le chargement initial de /portail/cours -- mesure a 8 a 10
-# secondes en session reelle (constat direct sur un plantage en conditions
-# reelles : "Hiver 2027" a echoue sur SelecteurSessionsIndisponible avec un
-# delai de 5000 ms, coupe court avant la fin du rendu). Aligne donc sur
-# DELAI_CHARGEMENT_SESSIONS_MS, avec la meme marge : une valeur reduite sans
-# connaitre cette mesure ferait a nouveau disparaitre des sessions en
-# silence, exactement le defaut que ce delai corrige.
-DELAI_CONFIRMATION_SESSION_MS = DELAI_CHARGEMENT_SESSIONS_MS
+# secondes en session reelle.
+#
+# Ce delai a ete porte a 30 secondes (aligne sur DELAI_CHARGEMENT_SESSIONS_MS)
+# a la suite d'un plantage reel ou "Hiver 2027" avait echoue sur
+# SelecteurSessionsIndisponible avec un delai de 5000 ms. Mauvais diagnostic :
+# la cause reelle n'etait pas un delai trop court, mais un motif ancre
+# (^...$) confie a has_text sur un texte de bouton non nettoye -- Playwright
+# ne normalise pas les espaces d'un texte compare a une expression reguliere
+# compilee, et le bouton reel porte de l'indentation et des sauts de ligne
+# autour du libelle. Un motif ancre ne pouvait donc jamais correspondre,
+# quel que soit le delai accorde : TOUTES les sessions echouaient, y compris
+# celles deja vues rendues correctement. Voir _confirmer_session_selectionnee
+# pour la correction (comparaison de textes nettoyes cote Python, plus de
+# motif ancre confie au navigateur).
+#
+# La comparaison une fois reparee, ce delai revient a la fourchette
+# reellement mesuree (8 a 10 secondes), sans la marge de
+# DELAI_CHARGEMENT_SESSIONS_MS : 30 secondes par session, multipliees par
+# douze sessions, ajoutent six minutes d'attente pure au moindre probleme.
+DELAI_CONFIRMATION_SESSION_MS = 9_000
+
+# Intervalle de sondage du texte du bouton pendant l'attente de confirmation.
+# Le clic detruit puis recree le bouton (rendu AngularJS) : une lecture
+# unique juste apres le clic peut tomber entre les deux, sur un bouton
+# absent ou pas encore a jour. On sonde donc a intervalle regulier jusqu'a
+# correspondance ou expiration de DELAI_CONFIRMATION_SESSION_MS.
+INTERVALLE_SONDAGE_CONFIRMATION_MS = 200
 
 # Delai maximal et intervalle de sondage accordes a la stabilisation du
 # compte d'options du panneau de sessions, une fois celui-ci ouvert.
@@ -398,7 +425,12 @@ class Ena:
             if MOTIF_LIBELLE_SESSION.match(texte.strip())
         }
         if not textes_valides:
-            return candidats.filter(has_text=MOTIF_LIBELLE_SESSION)
+            # Aucun candidat valide cote Python : rendre un Locator vide
+            # plutot que de confier MOTIF_LIBELLE_SESSION (ancre) a has_text.
+            # Un texte deja rejete par le controle Python n'a aucune raison
+            # de correspondre cote navigateur ; inutile de reprendre le
+            # risque d'un motif ancre sur un texte brut non nettoye.
+            return candidats.filter(has_text=AUCUNE_CORRESPONDANCE_POSSIBLE)
 
         motif_valides = re.compile("|".join(re.escape(texte) for texte in textes_valides))
         return candidats.filter(has_text=motif_valides)
@@ -455,42 +487,86 @@ class Ena:
         motif_cible = re.compile(re.escape(texte_cible))
 
         lien = options.filter(has_text=motif_cible).first
+
+        # Photographie de la liste des cours affichee avant le clic : second
+        # signal de confirmation si le texte du bouton ne peut etre lu a
+        # temps (voir _confirmer_session_selectionnee).
+        contenu_avant_clic = self.session.page.content()
         lien.click(timeout=5000)
 
-        self._confirmer_session_selectionnee(session)
+        self._confirmer_session_selectionnee(session, contenu_avant_clic)
 
-    def _confirmer_session_selectionnee(self, session: Session) -> None:
-        """Attend que le bouton du selecteur affiche exactement le libelle
-        de la session demandee, apres le clic sur son option.
+    def _confirmer_session_selectionnee(self, session: Session, contenu_avant_clic: str = "") -> None:
+        """Attend que le bouton du selecteur affiche le libelle de la
+        session demandee, apres le clic sur son option.
 
         Verifiee et non esperee : le bouton du selecteur rend sa valeur
         courante (constate en session reelle -- apres avoir clique "Hiver
         2023", le bouton rend exactement "Hiver 2023"). C'est une
         verification gratuite et decisive, qui distingue un vrai changement
         de session d'un clic tombe dans le vide sur une page pas encore
-        prete. Le clic recharge la liste (bouton detruit puis recree par
-        AngularJS) : le delai accorde ici est donc celui du rendu complet de
-        /portail/cours, mesure a 8 a 10 secondes en session reelle, pas celui
-        du seul changement de valeur affichee (voir DELAI_CONFIRMATION_SESSION_MS).
+        prete.
 
-        Leve SelecteurSessionsIndisponible si cette confirmation n'apparait
-        jamais dans ce delai.
+        Le texte du bouton est lu puis nettoye cote Python (espaces de tete
+        et de fin, espaces internes et sauts de ligne reduits a un seul
+        espace) avant d'etre compare au libelle attendu, nettoye de la meme
+        facon -- jamais via un motif ancre (^...$) confie a has_text.
+        Playwright ne normalise pas les espaces d'un texte compare a une
+        expression reguliere compilee : le bouton reel porte de
+        l'indentation et des sauts de ligne autour du libelle
+        (innerText.trim() donnait "Hiver 2023" sur le DOM reel), et un motif
+        ancre sur ce texte brut ne correspond alors jamais. C'est ce piege,
+        deja corrige une fois pour la lecture des options
+        (_options_sessions_par_forme), qui avait ete reintroduit ici : toutes
+        les sessions echouaient sur cette confirmation, pas seulement celles
+        reellement en cause.
+
+        On sonde le texte du bouton a intervalle regulier
+        (INTERVALLE_SONDAGE_CONFIRMATION_MS) jusqu'a correspondance ou
+        expiration de DELAI_CONFIRMATION_SESSION_MS : le clic recharge la
+        liste (bouton detruit puis recree par AngularJS), une lecture unique
+        immediatement apres le clic risquerait de tomber entre les deux.
+
+        Si le libelle ne finit jamais par correspondre, un second signal est
+        tente avant de declarer l'echec : la liste des cours affichee a-t-
+        elle change depuis avant le clic (contenu_avant_clic) ? Le bouton et
+        la liste sont rendus par le meme cycle Angular ; si le contenu de la
+        page a visiblement bouge alors que le bouton n'a pas encore ete relu
+        a temps, la selection a neanmoins bien eu lieu. Un contenu inchange
+        signale au contraire un clic tombe dans le vide sur une page pas
+        encore prete : lire les cours dans cet etat archiverait ceux d'une
+        autre session sous le nom demande, une corruption de donnees pire
+        qu'une session sautee.
+
+        Leve SelecteurSessionsIndisponible si ni le libelle ni le second
+        signal ne confirment le changement dans le delai accorde.
         """
-        libelle_attendu = session.libelle.strip()
-        motif_exact = re.compile(f"^{re.escape(libelle_attendu)}$")
-        bouton_confirme = self.session.page.locator(self.SELECTEUR_SESSIONS).filter(
-            has_text=motif_exact
+        libelle_attendu = _normaliser_espaces(session.libelle)
+        bouton = self.session.page.locator(self.SELECTEUR_SESSIONS)
+
+        temps_ecoule = 0
+        while True:
+            try:
+                texte_bouton = bouton.text_content(timeout=INTERVALLE_SONDAGE_CONFIRMATION_MS)
+            except (ErreurDelaiPlaywright, ErreurPlaywright):
+                texte_bouton = None
+            if texte_bouton is not None and _normaliser_espaces(texte_bouton) == libelle_attendu:
+                return
+            if temps_ecoule >= DELAI_CONFIRMATION_SESSION_MS:
+                break
+            self.session.page.wait_for_timeout(INTERVALLE_SONDAGE_CONFIRMATION_MS)
+            temps_ecoule += INTERVALLE_SONDAGE_CONFIRMATION_MS
+
+        if self.session.page.content() != contenu_avant_clic:
+            return
+
+        raise SelecteurSessionsIndisponible(
+            f"le bouton du selecteur de sessions n'a jamais confirme le "
+            f"passage a '{session.libelle}' apres le clic, dans le "
+            f"delai accorde ({DELAI_CONFIRMATION_SESSION_MS} ms). Le "
+            "clic est peut-etre tombe dans le vide sur une page pas "
+            "encore prete."
         )
-        try:
-            bouton_confirme.wait_for(timeout=DELAI_CONFIRMATION_SESSION_MS)
-        except (ErreurDelaiPlaywright, ErreurPlaywright) as erreur:
-            raise SelecteurSessionsIndisponible(
-                f"le bouton du selecteur de sessions n'a jamais confirme le "
-                f"passage a '{session.libelle}' apres le clic, dans le "
-                f"delai accorde ({DELAI_CONFIRMATION_SESSION_MS} ms). Le "
-                "clic est peut-etre tombe dans le vide sur une page pas "
-                "encore prete."
-            ) from erreur
 
     def sessions_disponibles(self) -> list[Session]:
         """Liste les sessions offertes par le selecteur de /portail/cours.
@@ -733,6 +809,19 @@ def _sans_accents(texte: str) -> str:
     """Retire les accents pour une comparaison de texte fiable."""
     forme = unicodedata.normalize("NFKD", texte)
     return "".join(caractere for caractere in forme if not unicodedata.combining(caractere))
+
+
+def _normaliser_espaces(texte: str) -> str:
+    """Nettoie un texte lu du DOM pour une comparaison fiable cote Python :
+    espaces de tete et de fin retires, espaces internes (y compris sauts de
+    ligne et indentation) reduits a un seul espace.
+
+    Utilise partout ou un texte de bouton ou d'option est compare a un
+    libelle attendu, plutot que de confier cette comparaison, ancree, a une
+    expression reguliere evaluee cote navigateur -- voir
+    _confirmer_session_selectionnee pour le piege que ce nettoyage evite.
+    """
+    return " ".join(texte.split())
 
 
 def _contient_marqueur_plan_de_cours(html: str) -> bool:
