@@ -112,10 +112,16 @@ CANDIDATS_DIAGNOSTIC_SESSIONS = ("[role=option]", ".mpo-deroulant-element", "li"
 DELAI_CHARGEMENT_SESSIONS_MS = 30_000
 
 # Delai accorde a la confirmation du changement de session par le bouton,
-# une fois son option cliquee. Le changement lui-meme est rapide -- mesure a
-# moins de 500 ms en session reelle -- mais reste asynchrone (AngularJS) ;
-# ce delai est nettement plus genereux que le temps observe.
-DELAI_CONFIRMATION_SESSION_MS = 5_000
+# une fois son option cliquee. Le clic recharge la liste des cours : le
+# bouton du selecteur est detruit puis recree par AngularJS, exactement le
+# meme rendu que le chargement initial de /portail/cours -- mesure a 8 a 10
+# secondes en session reelle (constat direct sur un plantage en conditions
+# reelles : "Hiver 2027" a echoue sur SelecteurSessionsIndisponible avec un
+# delai de 5000 ms, coupe court avant la fin du rendu). Aligne donc sur
+# DELAI_CHARGEMENT_SESSIONS_MS, avec la meme marge : une valeur reduite sans
+# connaitre cette mesure ferait a nouveau disparaitre des sessions en
+# silence, exactement le defaut que ce delai corrige.
+DELAI_CONFIRMATION_SESSION_MS = DELAI_CHARGEMENT_SESSIONS_MS
 
 # Delai maximal et intervalle de sondage accordes a la stabilisation du
 # compte d'options du panneau de sessions, une fois celui-ci ouvert.
@@ -462,8 +468,10 @@ class Ena:
         2023", le bouton rend exactement "Hiver 2023"). C'est une
         verification gratuite et decisive, qui distingue un vrai changement
         de session d'un clic tombe dans le vide sur une page pas encore
-        prete. Le changement lui-meme est rapide (moins de 500 ms mesures en
-        session reelle) ; le delai accorde ici est nettement plus genereux.
+        prete. Le clic recharge la liste (bouton detruit puis recree par
+        AngularJS) : le delai accorde ici est donc celui du rendu complet de
+        /portail/cours, mesure a 8 a 10 secondes en session reelle, pas celui
+        du seul changement de valeur affichee (voir DELAI_CONFIRMATION_SESSION_MS).
 
         Leve SelecteurSessionsIndisponible si cette confirmation n'apparait
         jamais dans ce delai.

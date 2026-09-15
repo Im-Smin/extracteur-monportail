@@ -23,7 +23,7 @@ from extracteur.__main__ import (
     _verifier_mode,
     _zip_mode,
 )
-from extracteur.ena import SelecteurSessionsIllisible
+from extracteur.ena import SelecteurSessionsIllisible, SelecteurSessionsIndisponible
 from extracteur.manifeste import Manifeste
 from extracteur.modele import Cours, Echec, Resultat, Session
 from extracteur.telechargement import SessionExpiree
@@ -31,6 +31,10 @@ from extracteur.telechargement import SessionExpiree
 SESSION_HIVER = Session(code="202601", libelle="Hiver 2026")
 SESSION_AUTOMNE = Session(code="202509", libelle="Automne 2025")
 SESSION_ETE = Session(code="202505", libelle="Été 2025")
+# Session future et vide, exactement celle qui a fait perdre l'inventaire
+# complet de douze sessions en conditions reelles (voir le rapport de bogue :
+# SelecteurSessionsIndisponible sur "Hiver 2027", premiere session traitee).
+SESSION_HIVER_2027 = Session(code="202701", libelle="Hiver 2027")
 
 COURS_HIVER = Cours(
     id_site="181216",
@@ -123,6 +127,40 @@ class _ReponseOk:
 
     def morceaux(self):
         yield b"contenu"
+
+
+class EnaAvecEchecSurUneSession(EnaDeTest):
+    """Doublure d'Ena : sites_de_session leve une exception pour la session
+    designee, comme SelecteurSessionsIndisponible en conditions reelles quand
+    le bouton du selecteur ne confirme jamais le changement de session --
+    sans emporter le reste de l'enumeration."""
+
+    def __init__(self, cours_par_session, session_qui_echoue, erreur=None):
+        super().__init__(cours_par_session)
+        self._session_qui_echoue = session_qui_echoue
+        self._erreur = erreur or SelecteurSessionsIndisponible(
+            "le bouton du selecteur de sessions n'a jamais confirme le passage"
+        )
+
+    def sites_de_session(self, session):
+        if session == self._session_qui_echoue:
+            raise self._erreur
+        return super().sites_de_session(session)
+
+
+class EnaExpireSurUneSession(EnaDeTest):
+    """Doublure d'Ena : sites_de_session leve SessionExpiree pour la session
+    designee -- a la difference de EnaAvecEchecSurUneSession, cette exception
+    ne doit jamais etre absorbee par l'isolation par session."""
+
+    def __init__(self, cours_par_session, session_qui_expire):
+        super().__init__(cours_par_session)
+        self._session_qui_expire = session_qui_expire
+
+    def sites_de_session(self, session):
+        if session == self._session_qui_expire:
+            raise SessionExpiree("expiree")
+        return super().sites_de_session(session)
 
 
 # --- _chercher_cours : selection du cours par identifiant ---
@@ -284,6 +322,44 @@ def test_afficher_sessions_sans_session_le_dit():
     _afficher_sessions(ena, imprimer=lignes.append)
 
     assert lignes == ["Aucune session trouvee."]
+
+
+def test_afficher_sessions_isole_une_session_en_echec_et_continue():
+    # Reproduit le defaut critique constate en conditions reelles :
+    # "Hiver 2027" (future, vraisemblablement vide) leve
+    # SelecteurSessionsIndisponible et ne doit pas emporter les onze autres
+    # sessions de l'historique.
+    ena = EnaAvecEchecSurUneSession(
+        {
+            SESSION_HIVER_2027: [],
+            SESSION_HIVER: [COURS_HIVER],
+            SESSION_AUTOMNE: [COURS_ANCIEN],
+        },
+        session_qui_echoue=SESSION_HIVER_2027,
+    )
+    lignes = []
+
+    sessions_en_echec = _afficher_sessions(ena, imprimer=lignes.append)
+
+    assert sessions_en_echec == ["Hiver 2027"]
+    texte = "\n".join(lignes)
+    assert "ECHEC" in texte
+    # Les deux sessions suivantes sont bien traitees malgre l'echec de la
+    # premiere.
+    assert "181216" in texte
+    assert "148734" in texte
+
+
+def test_afficher_sessions_ne_capture_jamais_sessionexpiree():
+    # SessionExpiree doit rester fatale : une session d'authentification
+    # morte ne se repare pas en passant a la session suivante.
+    ena = EnaExpireSurUneSession(
+        {SESSION_HIVER: [COURS_HIVER], SESSION_AUTOMNE: [COURS_ANCIEN]},
+        session_qui_expire=SESSION_HIVER,
+    )
+
+    with pytest.raises(SessionExpiree):
+        _afficher_sessions(ena)
 
 
 # --- _un_seul_cours : bout en bout avec des doublures, sans navigateur ---
@@ -501,6 +577,36 @@ def test_lister_connexion_non_detectee_rend_code_non_nul():
     code = _lister(session=session, fabrique_ena=lambda _session: EnaDeTest({}))
 
     assert code == 1
+    assert session.fermee is True
+
+
+def test_lister_rend_code_non_nul_si_une_session_echoue_mais_liste_le_reste(capsys):
+    # Le code de sortie doit refleter un inventaire partiel : --lister n'ecrit
+    # rien sur disque, mais un inventaire incomplet n'est pas un succes.
+    ena = EnaAvecEchecSurUneSession(
+        {SESSION_HIVER_2027: [], SESSION_HIVER: [COURS_HIVER]},
+        session_qui_echoue=SESSION_HIVER_2027,
+    )
+    session = SessionFactice()
+
+    code = _lister(session=session, fabrique_ena=lambda _s: ena)
+
+    assert code == 1
+    assert session.fermee is True
+    erreur = capsys.readouterr().err
+    assert "Hiver 2027" in erreur
+
+
+def test_lister_session_expiree_sur_une_session_interrompt_tout():
+    ena = EnaExpireSurUneSession(
+        {SESSION_HIVER: [COURS_HIVER], SESSION_AUTOMNE: [COURS_ANCIEN]},
+        session_qui_expire=SESSION_HIVER,
+    )
+    session = SessionFactice()
+
+    code = _lister(session=session, fabrique_ena=lambda _s: ena)
+
+    assert code == 3
     assert session.fermee is True
 
 
@@ -792,6 +898,104 @@ def test_tout_archive_toutes_les_sessions_de_la_plus_ancienne_a_la_plus_recente(
     sortie = capsys.readouterr().out
     # Automne 2025 (la plus ancienne) doit etre traitee avant Hiver 2026.
     assert sortie.index("Automne 2025") < sortie.index("Hiver 2026")
+
+
+# --- _tout / _session : isolation d'une session en echec (defaut critique) ---
+
+
+def test_tout_isole_une_session_en_echec_et_archive_les_autres(tmp_path):
+    # Reproduit le defaut critique constate en conditions reelles : une
+    # session (future, vraisemblablement vide) leve
+    # SelecteurSessionsIndisponible au moment de sa selection, et ne doit
+    # pas emporter les autres sessions de l'enchainement --tout.
+    cours_automne = Cours(
+        id_site="199999",
+        sigle="AAA-1000",
+        titre="Cours ancien avec plan",
+        session=SESSION_AUTOMNE,
+        url_plan_de_cours="/contenu/sitescours/x/plan.pdf?identifiant=automne",
+    )
+    ena = EnaAvecEchecSurUneSession(
+        {SESSION_AUTOMNE: [cours_automne], SESSION_HIVER_2027: []},
+        session_qui_echoue=SESSION_HIVER_2027,
+    )
+    session = SessionFactice()
+
+    code = _tout(tmp_path, session=session, fabrique_ena=lambda _s: ena)
+
+    # Archivage partiel : Automne 2025 a bien ete archivee, Hiver 2027 est en
+    # echec -- ni succes complet, ni echec total.
+    assert code == 4
+    assert session.fermee is True
+    assert (tmp_path / SESSION_AUTOMNE.dossier() / cours_automne.dossier()).exists()
+    assert not (tmp_path / SESSION_HIVER_2027.dossier()).exists()
+
+
+def test_tout_rapport_mentionne_le_libelle_de_la_session_en_echec(tmp_path):
+    ena = EnaAvecEchecSurUneSession(
+        {SESSION_HIVER_2027: [], SESSION_HIVER: [COURS_HIVER]},
+        session_qui_echoue=SESSION_HIVER_2027,
+    )
+    session = SessionFactice()
+
+    code = _tout(tmp_path, session=session, fabrique_ena=lambda _s: ena)
+
+    assert code == 4
+    contenu = (tmp_path / "_rapport.html").read_text(encoding="utf-8")
+    assert "Hiver 2027" in contenu
+    assert "jamais confirme" in contenu
+
+
+def test_session_en_echec_seule_rend_code_non_nul_sans_rien_ecrire(tmp_path):
+    # Une seule session visee (--session), et elle echoue : aucun fichier
+    # n'est ecrit, le code de sortie doit le refleter (echec, pas succes).
+    ena = EnaAvecEchecSurUneSession(
+        {SESSION_HIVER_2027: []}, session_qui_echoue=SESSION_HIVER_2027
+    )
+    session = SessionFactice()
+
+    code = _session("Hiver 2027", tmp_path, session=session, fabrique_ena=lambda _s: ena)
+
+    assert code == 1
+    assert (tmp_path / "_rapport.html").exists()
+    contenu = (tmp_path / "_rapport.html").read_text(encoding="utf-8")
+    assert "Hiver 2027" in contenu
+
+
+def test_tout_session_expiree_apres_echec_d_une_autre_session_interrompt_tout(tmp_path):
+    # SessionExpiree doit rester fatale, meme apres qu'une session
+    # precedente ait deja ete isolee en echec dans le meme enchainement :
+    # elle ne doit jamais etre absorbee par la nouvelle isolation.
+    class EnaAvecEchecPuisExpiration(EnaDeTest):
+        def __init__(self, cours_par_session, session_en_echec, session_qui_expire):
+            super().__init__(cours_par_session)
+            self._session_en_echec = session_en_echec
+            self._session_qui_expire = session_qui_expire
+
+        def sites_de_session(self, session):
+            if session == self._session_en_echec:
+                raise SelecteurSessionsIndisponible("jamais confirme")
+            if session == self._session_qui_expire:
+                raise SessionExpiree("expiree")
+            return super().sites_de_session(session)
+
+    # L'ordre chronologique de --tout place Automne 2025 avant Hiver 2026 :
+    # la session en echec (Automne) est donc bien traitee, et isolee, avant
+    # que la suivante (Hiver) n'expire.
+    ena = EnaAvecEchecPuisExpiration(
+        {SESSION_AUTOMNE: [], SESSION_HIVER: [COURS_HIVER]},
+        session_en_echec=SESSION_AUTOMNE,
+        session_qui_expire=SESSION_HIVER,
+    )
+    session = SessionFactice()
+
+    code = _tout(tmp_path, session=session, fabrique_ena=lambda _s: ena)
+
+    assert code == 3
+    assert session.fermee is True
+    contenu = (tmp_path / "_rapport.html").read_text(encoding="utf-8")
+    assert "Automne 2025" in contenu
+    assert "interrompu" in contenu.lower()
 
 
 class EnaAvecExpirationSurUnCours(EnaDeTest):
