@@ -22,11 +22,13 @@ NOM_PLAN_DE_COURS = "plan-de-cours.pdf"
 NOM_PAGE_EVALUATIONS = "evaluations.pdf"
 NOM_PAGE_RESULTATS = "sommaire-des-resultats.pdf"
 
-# PDF d'onglet d'une evaluation, ranges dans son dossier de depots existant
-# (voir chemin_du_cours et la boucle des evaluations) : la description porte
-# parfois l'enonce d'un travail, l'onglet Resultats une retroaction.
+# PDF d'onglet d'une evaluation, ranges dans son propre sous-dossier sous
+# Évaluations/ (voir chemin_du_cours et la boucle des evaluations) : la
+# description porte parfois l'enonce d'un travail, l'onglet Resultats une
+# retroaction, et la boite de depot les dates et conditions de remise.
 NOM_DESCRIPTION_EVALUATION = "description.pdf"
 NOM_RESULTATS_EVALUATION = "resultats.pdf"
+NOM_BOITE_DE_DEPOT = "boite-de-depot.pdf"
 
 
 def _segment(texte: str) -> str:
@@ -115,21 +117,20 @@ class Archiveur:
             )
 
         for evaluation in evaluations:
-            dossier = base / "Mes dépôts" / _segment(evaluation.titre or evaluation.id_evaluation)
-            depots = self.ena.fichiers_de_depot(evaluation)
-            for depot in depots:
-                self._recuperer(cours, Fichier(nom=depot.nom, url=depot.url), dossier)
-            if depots:
-                dossier.mkdir(parents=True, exist_ok=True)
-                ecrire_depots(dossier / "depots.csv", depots)
+            nom_evaluation = evaluation.titre or evaluation.id_evaluation
+            dossier = base / "Évaluations" / _segment(nom_evaluation)
 
             # La plateforme ferme le 1er novembre 2026 : les consignes d'un
-            # travail, redigees dans la description de son evaluation, et une
-            # eventuelle retroaction dans l'onglet Resultats disparaitraient
-            # sans laisser de trace si on ne les capturait pas ici. Range dans
-            # le meme dossier que les depots deja existants, sans le modifier :
-            # le manifeste indexe ces chemins, les reorganiser ferait
-            # retelecharger toute l'archive.
+            # travail, redigees dans la description de son evaluation, les
+            # conditions de remise de sa boite de depot, et une eventuelle
+            # retroaction dans l'onglet Resultats disparaitraient sans
+            # laisser de trace si on ne les capturait pas ici. La sortie
+            # console annonce chaque visite (voir _emettre "visite"), au
+            # meme titre que les fichiers telecharges : sans quoi rien ne
+            # distingue une consigne reellement absente d'une simplement non
+            # visitee. Ordre aligne sur celui des onglets reels de la page
+            # (Description, ..., Boite de depot, ..., Resultats).
+            self._emettre("visite", f"{nom_evaluation} : Description")
             self._archiver_page_evaluation(
                 cours,
                 evaluation,
@@ -138,6 +139,20 @@ class Archiveur:
                 URL.evaluation(evaluation.id_site, evaluation.id_evaluation),
                 NOM_DESCRIPTION_EVALUATION,
             )
+
+            self._emettre("visite", f"{nom_evaluation} : Boîte de dépôt")
+            depots = self.ena.fichiers_de_depot(evaluation)
+            for depot in depots:
+                self._recuperer(cours, Fichier(nom=depot.nom, url=depot.url), dossier)
+            if depots:
+                dossier.mkdir(parents=True, exist_ok=True)
+                ecrire_depots(dossier / "depots.csv", depots)
+            self._capturer_page_section(
+                cours,
+                URL.boite_depot(evaluation.id_site, evaluation.id_evaluation),
+                dossier / NOM_BOITE_DE_DEPOT,
+            )
+
             self._archiver_page_evaluation(
                 cours,
                 evaluation,

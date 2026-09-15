@@ -73,8 +73,15 @@ def nom_unique(dossier: Path, nom: str) -> str:
 
 
 def chemin_long(chemin: Path) -> str:
-    """Rend le chemin utilisable au-dela de la limite de 260 caracteres."""
-    texte = str(chemin)
+    """Rend le chemin utilisable au-dela de la limite de 260 caracteres.
+
+    Sur Windows, Path.resolve() pose lui-meme le prefixe \\\\?\\ des qu'il le
+    juge necessaire (selon la longueur du chemin et l'etat de
+    LongPathsEnabled). Verifier la presence du prefixe avant de resoudre ne
+    sert donc a rien : c'est apres resolution qu'il faut regarder, sous peine
+    de poser un second prefixe sur un chemin qui en porte deja un.
+    """
+    texte = str(chemin.resolve())
     if texte.startswith(PREFIXE_CHEMIN_LONG):
-        return texte
-    return PREFIXE_CHEMIN_LONG + str(chemin.resolve())
+        texte = texte[len(PREFIXE_CHEMIN_LONG):]
+    return PREFIXE_CHEMIN_LONG + texte
