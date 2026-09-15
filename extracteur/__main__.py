@@ -96,7 +96,12 @@ import unicodedata
 from pathlib import Path
 
 from extracteur.archiveur import Archiveur
-from extracteur.auth import HOTE_SITESCOURS, SessionNavigateur
+from extracteur.auth import (
+    HOTE_SITESCOURS,
+    PREFIXE_TITRE_FENETRE_PILOTEE,
+    TITRE_FENETRE_PILOTEE,
+    SessionNavigateur,
+)
 from extracteur.ena import Ena, SelecteurSessionsIllisible
 from extracteur.manifeste import ecrire_rapport
 from extracteur.modele import Echec, Resultat
@@ -112,6 +117,12 @@ NOM_RAPPORT = "_rapport.html"
 # la docstring du module et celle d'extracteur.auth.SessionNavigateur).
 MESSAGE_INVITATION_CONNEXION = (
     "Connectez-vous dans la fenetre du navigateur...\n"
+    f'Reconnaissez-la a son onglet, intitule "{TITRE_FENETRE_PILOTEE}" puis '
+    f'prefixe "{PREFIXE_TITRE_FENETRE_PILOTEE.strip()}" une fois sur la page '
+    "de connexion : cette fenetre-la, et seulement elle, tourne sur un profil "
+    "cree vierge a ce lancement -- sans barre de favoris ni avatar de compte "
+    "personnel. Se connecter dans une autre fenetre ou un autre navigateur ne "
+    "sert a rien : le programme ne peut lire que les cookies de celle-ci.\n"
     "(authentification demandee a chaque lancement : aucun profil de "
     "navigateur n'est conserve d'une execution a l'autre -- c'est voulu, "
     "pas un bug ; voir docs/api-monportail.md.)"

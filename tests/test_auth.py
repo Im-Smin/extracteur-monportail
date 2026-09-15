@@ -10,24 +10,44 @@ from extracteur.auth import (
     SessionNavigateur,
     HOTE_SITESCOURS,
     HOTE_PORTAIL,
+    PREFIXE_TITRE_FENETRE_PILOTEE,
+    TITRE_FENETRE_PILOTEE,
     URL_DEPART,
 )
 
 
 class PageFactice:
-    """Simule une page Playwright pour tester la detection de connexion."""
+    """Simule une page Playwright pour tester la detection de connexion.
 
-    def __init__(self, url):
+    `titre` simule Page.title() ; `titre_leve`, quand fourni, fait echouer
+    title() avec cette exception plutot que de rendre `titre` -- reproduit
+    une page en pleine navigation dont le titre est momentanement illisible.
+    """
+
+    def __init__(self, url, titre=None, titre_leve=None):
         self.url = url
         self._fermee = False
         # Appels a goto() : sert a verifier que la page adoptee est bien
         # renavigee vers la page des cours, sans supposer qu'elle y est deja.
         self.appels_goto = []
+        self._titre = titre
+        self._titre_leve = titre_leve
+        # Contenu passe a set_content(), et appels a bring_to_front() : sert
+        # a verifier que ouvrir() affiche bien la page d'identification et
+        # demande le focus, avant de naviguer vers monPortail.
+        self.contenu_html = None
+        self.appels_bring_to_front = 0
+        # Journal chronologique de set_content/bring_to_front/goto : seul
+        # moyen de verifier que la page d'identification est bien affichee
+        # AVANT le depart vers monPortail, pas seulement qu'elle l'a ete a un
+        # moment donne.
+        self.journal = []
 
     def goto(self, url, **_kwargs):
         """Simule Page.goto : met a jour l'url et enregistre l'appel."""
         self.url = url
         self.appels_goto.append(url)
+        self.journal.append(("goto", url))
 
     def is_closed(self):
         """Reflete l'etat reel de fermeture, comme Page.is_closed()."""
@@ -36,6 +56,22 @@ class PageFactice:
     def fermer(self):
         """Simule la fermeture reelle de la fenetre par l'utilisateur."""
         self._fermee = True
+
+    def title(self):
+        """Simule Page.title()."""
+        if self._titre_leve is not None:
+            raise self._titre_leve
+        return self._titre
+
+    def set_content(self, html):
+        """Simule Page.set_content() : retient le contenu recu."""
+        self.contenu_html = html
+        self.journal.append(("set_content", html))
+
+    def bring_to_front(self):
+        """Simule Page.bring_to_front() : compte les appels."""
+        self.appels_bring_to_front += 1
+        self.journal.append(("bring_to_front", None))
 
 
 class SessionNavigateurTestable(SessionNavigateur):
@@ -597,15 +633,21 @@ class ContextePersistantFactice:
     launch_persistent_context : conserve le chemin de profil recu, pour que
     les tests verifient qu'il correspond bien a self.dossier_profil."""
 
-    def __init__(self, user_data_dir, headless, accept_downloads):
+    def __init__(self, user_data_dir, headless, accept_downloads, leve_bring_to_front=None):
         self.user_data_dir = user_data_dir
         self.headless = headless
         self.accept_downloads = accept_downloads
         self.pages = []
         self._ferme = False
+        # Scripts recus par add_init_script() : sert a verifier que ouvrir()
+        # installe bien le prefixe de titre distinctif sur le contexte.
+        self.scripts_initiaux = []
+        self._leve_bring_to_front = leve_bring_to_front
 
     def new_page(self):
         page = PageFactice("about:blank")
+        if self._leve_bring_to_front is not None:
+            page.bring_to_front = _leve(self._leve_bring_to_front)
         self.pages.append(page)
         return page
 
@@ -615,14 +657,24 @@ class ContextePersistantFactice:
     def close(self):
         self._ferme = True
 
+    def add_init_script(self, script):
+        """Simule BrowserContext.add_init_script()."""
+        self.scripts_initiaux.append(script)
+
 
 class ChromiumFactice:
-    def __init__(self, leve_a_la_fermeture=None):
+    def __init__(self, leve_a_la_fermeture=None, leve_bring_to_front=None):
         self.appels_launch = []
         self._leve_a_la_fermeture = leve_a_la_fermeture
+        self._leve_bring_to_front = leve_bring_to_front
 
     def launch_persistent_context(self, user_data_dir, headless, accept_downloads):
-        contexte = ContextePersistantFactice(user_data_dir, headless, accept_downloads)
+        contexte = ContextePersistantFactice(
+            user_data_dir,
+            headless,
+            accept_downloads,
+            leve_bring_to_front=self._leve_bring_to_front,
+        )
         if self._leve_a_la_fermeture is not None:
             contexte.close = _leve(self._leve_a_la_fermeture)
         self.appels_launch.append(contexte)
@@ -678,9 +730,9 @@ def test_ouvrir_cree_un_dossier_de_profil_distinct_a_chaque_ouverture(monkeypatc
     _installer_playwright_factice(monkeypatch)
 
     session_un = SessionNavigateur()
-    session_un.ouvrir()
+    session_un.ouvrir(sommeil=_sommeil_factice)
     session_deux = SessionNavigateur()
-    session_deux.ouvrir()
+    session_deux.ouvrir(sommeil=_sommeil_factice)
 
     assert session_un.dossier_profil != session_deux.dossier_profil
     assert session_un.dossier_profil.is_dir()
@@ -697,7 +749,7 @@ def test_ouvrir_cree_le_profil_dans_le_dossier_temporaire_du_systeme(monkeypatch
     _installer_playwright_factice(monkeypatch)
 
     session = SessionNavigateur()
-    session.ouvrir()
+    session.ouvrir(sommeil=_sommeil_factice)
 
     dossier_temporaire_systeme = Path(tempfile.gettempdir()).resolve()
     assert session.dossier_profil.resolve().is_relative_to(dossier_temporaire_systeme)
@@ -711,7 +763,7 @@ def test_ouvrir_cree_le_profil_dans_le_dossier_temporaire_du_systeme(monkeypatch
 def test_fermer_supprime_le_dossier_de_profil(monkeypatch):
     _installer_playwright_factice(monkeypatch)
     session = SessionNavigateur()
-    session.ouvrir()
+    session.ouvrir(sommeil=_sommeil_factice)
     dossier_profil = session.dossier_profil
     assert dossier_profil.is_dir()
 
@@ -731,7 +783,7 @@ def test_fermer_supprime_le_profil_meme_si_la_fermeture_du_contexte_echoue(monke
     )
     _installer_playwright_factice(monkeypatch, instance)
     session = SessionNavigateur()
-    session.ouvrir()
+    session.ouvrir(sommeil=_sommeil_factice)
     dossier_profil = session.dossier_profil
 
     with pytest.raises(RuntimeError):
@@ -746,7 +798,7 @@ def test_fermer_supprime_le_profil_meme_si_l_arret_de_playwright_echoue(monkeypa
     instance = PlaywrightFactice(leve_a_l_arret=RuntimeError("playwright deja arrete"))
     _installer_playwright_factice(monkeypatch, instance)
     session = SessionNavigateur()
-    session.ouvrir()
+    session.ouvrir(sommeil=_sommeil_factice)
     dossier_profil = session.dossier_profil
 
     with pytest.raises(RuntimeError):
@@ -764,3 +816,160 @@ def test_fermer_deux_fois_de_suite_ne_leve_rien():
 
     session.fermer()
     session.fermer()
+
+
+# --- Fenetre pilotee reconnaissable : page d'identification, premier plan
+# --- et prefixe de titre (tache : rendre impossible la confusion entre la
+# --- fenetre pilotee et une autre fenetre de navigateur ouverte a cote) ---
+#
+# Incident de terrain qui motive cette section : l'utilisateur s'authentifiait
+# dans une fenetre qui n'etait pas celle pilotee par le programme (capture
+# montrant barre de favoris et avatar de compte Google, impossible sur le
+# profil temporaire et vierge cree par ouvrir()), pendant que la fenetre
+# reellement pilotee restait bloquee sur login.microsoftonline.com.
+
+
+def test_ouvrir_affiche_la_page_d_identification_avant_de_naviguer_vers_monportail(
+    monkeypatch,
+):
+    """ouvrir() affiche d'abord une page d'identification sans equivoque
+    (titre distinctif, contenu explicatif), et seulement ensuite navigue vers
+    monPortail -- jamais l'inverse."""
+    _installer_playwright_factice(monkeypatch)
+    session = SessionNavigateur()
+
+    session.ouvrir(sommeil=_sommeil_factice)
+
+    page = session.page
+    assert page.contenu_html is not None
+    assert TITRE_FENETRE_PILOTEE in page.contenu_html
+    assert "C'est ICI qu'il faut se connecter" in page.contenu_html
+    # L'ordre reel des appels, pas seulement leur presence : set_content()
+    # (page d'identification) doit precede goto() (depart vers monPortail).
+    types_appeles = [type_appel for type_appel, _valeur in page.journal]
+    assert types_appeles.index("set_content") < types_appeles.index("goto")
+    assert page.appels_goto == [URL_DEPART]
+
+    session.fermer()
+
+
+def test_ouvrir_amene_la_fenetre_au_premier_plan(monkeypatch):
+    """La fenetre pilotee est amenee au premier plan au moment ou l'on
+    affiche la page d'identification, l'invitation a se connecter."""
+    _installer_playwright_factice(monkeypatch)
+    session = SessionNavigateur()
+
+    session.ouvrir(sommeil=_sommeil_factice)
+
+    assert session.page.appels_bring_to_front >= 1
+    # Demandee apres l'affichage de la page d'identification, jamais avant :
+    # rien a mettre au premier plan avant que le contenu distinctif existe.
+    types_appeles = [type_appel for type_appel, _valeur in session.page.journal]
+    assert types_appeles.index("set_content") < types_appeles.index("bring_to_front")
+
+    session.fermer()
+
+
+def test_ouvrir_n_echoue_pas_si_bring_to_front_leve_une_erreur_playwright(monkeypatch):
+    """bring_to_front() n'est pas garanti par Playwright : une erreur ne doit
+    jamais empecher la suite de ouvrir() (affichage puis navigation vers
+    monPortail)."""
+    instance = PlaywrightFactice(
+        chromium=ChromiumFactice(
+            leve_bring_to_front=ErreurPlaywright("pas de gestionnaire de fenetres")
+        )
+    )
+    _installer_playwright_factice(monkeypatch, instance)
+    session = SessionNavigateur()
+
+    session.ouvrir(sommeil=_sommeil_factice)  # ne doit pas planter
+
+    assert session.page.appels_goto == [URL_DEPART]
+
+    session.fermer()
+
+
+def test_ouvrir_installe_le_prefixe_de_titre_sur_le_contexte(monkeypatch):
+    """Le script qui prefixe le titre de chaque page (voir
+    SCRIPT_PREFIXE_TITRE) est installe sur le contexte via add_init_script(),
+    pour survivre a la navigation vers la page de connexion et monPortail."""
+    _installer_playwright_factice(monkeypatch)
+    session = SessionNavigateur()
+
+    session.ouvrir(sommeil=_sommeil_factice)
+
+    assert len(session.contexte.scripts_initiaux) == 1
+    assert PREFIXE_TITRE_FENETRE_PILOTEE in session.contexte.scripts_initiaux[0]
+
+    session.fermer()
+
+
+def test_attendre_connexion_ligne_d_etat_inclut_le_titre_de_chaque_page():
+    """La ligne d'etat inclut le titre de chaque page, pas seulement son
+    hote : deux titres distincts rendent un ecart visible d'un coup d'oeil,
+    la ou deux noms de domaine ne disent rien.
+
+    Les deux pages restent volontairement sur des hotes de connexion
+    Microsoft (jamais authentifies) : une page sur ulaval.ca serait adoptee
+    des le premier sondage (voir est_page_authentifiee), avant meme qu'une
+    ligne d'etat n'ait eu la chance de s'afficher."""
+    page_connexion = PageFactice(
+        "https://login.microsoftonline.com/common/oauth2/authorize",
+        titre="Sign in to your account",
+    )
+    page_selecteur_compte = PageFactice(
+        "https://login.live.com/oauth20_authorize.srf",
+        titre="Choisissez un compte",
+    )
+
+    session = SessionContexteTestable([page_connexion, page_selecteur_compte])
+    messages = []
+
+    session.attendre_connexion(
+        delai=10,
+        imprimer=messages.append,
+        horloge=HorlogeFactice(pas=1.0),
+        sommeil=_sommeil_factice,
+    )
+
+    lignes_etat = [m for m in messages if m.startswith("en attente")]
+    assert lignes_etat
+    ligne = lignes_etat[0]
+    assert "login.microsoftonline.com [Sign in to your account]" in ligne
+    assert "login.live.com [Choisissez un compte]" in ligne
+
+
+def test_attendre_connexion_titre_inaccessible_n_interrompt_pas_les_autres_pages():
+    """Une page dont le titre est illisible (navigation en cours) ne doit ni
+    disparaitre de la ligne d'etat, ni empecher l'affichage du titre des
+    autres pages : seul son propre titre est omis."""
+    page_en_navigation = PageFactice(
+        "https://login.microsoftonline.com/common/oauth2/authorize",
+        titre_leve=ErreurPlaywright(
+            "Execution context was destroyed, most likely because of a navigation"
+        ),
+    )
+    page_avec_titre = PageFactice(
+        "https://login.live.com/oauth20_authorize.srf",
+        titre="Choisissez un compte",
+    )
+
+    session = SessionContexteTestable([page_en_navigation, page_avec_titre])
+    messages = []
+
+    resultat = session.attendre_connexion(
+        delai=10,
+        imprimer=messages.append,
+        horloge=HorlogeFactice(pas=1.0),
+        sommeil=_sommeil_factice,
+    )
+
+    assert resultat is False
+    lignes_etat = [m for m in messages if m.startswith("en attente")]
+    assert lignes_etat
+    ligne = lignes_etat[0]
+    # Le titre illisible n'empeche ni la mention du nom d'hote de sa page...
+    assert "login.microsoftonline.com" in ligne
+    assert "login.microsoftonline.com [" not in ligne
+    # ...ni l'affichage du titre de l'autre page.
+    assert "login.live.com [Choisissez un compte]" in ligne
