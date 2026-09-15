@@ -343,7 +343,7 @@ def _fusionner_verification(resultat: Resultat, controle: dict) -> None:
         )
 
 
-def _afficher_sessions(ena, imprimer=print) -> None:
+def _afficher_sessions(ena, imprimer=print) -> "list[str]":
     """Enumere sessions et cours sans rien telecharger ni rien ecrire sur
     disque : la sonde la moins risquee pour valider l'enumeration contre la
     vraie plateforme.
@@ -354,16 +354,34 @@ def _afficher_sessions(ena, imprimer=print) -> None:
     Ena._stabiliser_options). Aucun code ne peut deviner qu'il manque des
     sessions a un palier atteint trop tot ; l'utilisateur, qui connait son
     propre parcours, le peut d'un coup d'oeil.
+
+    Isolation par session, symetrique a celle d'Archiveur.archiver() par
+    cours : une session dont le selecteur ne confirme jamais la selection
+    (SelecteurSessionsIndisponible, entre autres) est signalee puis sautee,
+    sans emporter les sessions suivantes. Reproduit le defaut constate en
+    conditions reelles ou une session future et vide (« Hiver 2027 ») a fait
+    perdre l'inventaire complet des douze sessions. Rend la liste des
+    libelles de session en echec, vide si aucune -- SessionExpiree n'est
+    jamais absorbee ici : une session d'authentification morte ne se repare
+    pas en passant a la session suivante.
     """
     sessions = ena.sessions_disponibles()
     if not sessions:
         imprimer("Aucune session trouvee.")
-        return
+        return []
 
     imprimer(f"{len(sessions)} session(s) detectee(s).")
+    sessions_en_echec: "list[str]" = []
     for session in sessions:
         imprimer(f"\n=== {session.libelle} ({session.code}) ===")
-        cours_de_la_session = ena.sites_de_session(session)
+        try:
+            cours_de_la_session = ena.sites_de_session(session)
+        except SessionExpiree:
+            raise
+        except Exception as erreur:  # isolation stricte par session
+            sessions_en_echec.append(session.libelle)
+            imprimer(f"  ECHEC : session sautee - {erreur}")
+            continue
         if not cours_de_la_session:
             imprimer("  (aucun cours)")
             continue
@@ -375,6 +393,8 @@ def _afficher_sessions(ena, imprimer=print) -> None:
                 f"  [{cours.id_site}] {sigle} - {cours.titre}"
                 f"  (plan de cours officiel : {plan}, sommaire de resultats : {resultats})"
             )
+
+    return sessions_en_echec
 
 
 def _lister(session=None, fabrique_ena=Ena) -> int:
@@ -388,11 +408,22 @@ def _lister(session=None, fabrique_ena=Ena) -> int:
     que `session_ouverte` soit affecte, ce `finally` ne referme rien, mais
     rien ne reste ouvert non plus, puisque _connecter a deja ferme avant de
     relancer.
+
+    Rend 1 (inventaire partiel) si _afficher_sessions a du sauter au moins
+    une session : --lister n'ecrit rien sur disque, mais un inventaire
+    incomplet ne doit pas se faire passer pour un succes complet.
     """
     session_ouverte = None
     try:
         session_ouverte = _connecter(session=session)
-        _afficher_sessions(fabrique_ena(session_ouverte))
+        sessions_en_echec = _afficher_sessions(fabrique_ena(session_ouverte))
+        if sessions_en_echec:
+            print(
+                f"\nECHEC : {len(sessions_en_echec)} session(s) n'ont pas pu etre lues : "
+                f"{', '.join(sessions_en_echec)}.",
+                file=sys.stderr,
+            )
+            return 1
         return 0
     except ConnexionEchouee as erreur:
         print(f"ECHEC : {erreur}", file=sys.stderr)
@@ -641,6 +672,15 @@ def _archiver_plusieurs_sessions(
     meme facon ce qui ne l'a jamais ete, exactement comme pour
     --un-seul-cours.
 
+    L'enumeration des cours d'une session (ena.sites_de_session) est isolee
+    session par session, symetriquement a l'isolation par cours
+    d'Archiveur.archiver() : une session dont la selection echoue
+    (SelecteurSessionsIndisponible, entre autres) est consignee comme un
+    echec portant son libelle et sautee, l'enumeration continuant avec les
+    suivantes. SessionExpiree fait exception a cette isolation : elle
+    interrompt tout l'enchainement, comme avant, une session
+    d'authentification morte ne se reparant jamais en passant a la suivante.
+
     `session` et `fabrique_ena` sont injectables pour les tests, comme
     _un_seul_cours.
     """
@@ -680,11 +720,44 @@ def _archiver_plusieurs_sessions(
 
             total_sessions = len(sessions_a_traiter)
             tous_les_cours = []
+            sessions_en_echec: "list[str]" = []
+            contexte["sessions_en_echec"] = sessions_en_echec
             for indice, session_cible in enumerate(sessions_a_traiter, start=1):
                 evenements.put(
                     ("session", (indice, total_sessions, session_cible.libelle, "enumeration en cours..."))
                 )
-                cours_de_la_session = ena.sites_de_session(session_cible)
+                # Isolation par session, symetrique a celle d'Archiveur.archiver()
+                # par cours : une session dont le selecteur ne confirme jamais
+                # la selection (SelecteurSessionsIndisponible, entre autres) est
+                # consignee en echec et sautee, sans emporter les sessions
+                # suivantes. Reproduit le defaut constate en conditions reelles
+                # ou une session future et vide (« Hiver 2027 ») a fait perdre
+                # l'inventaire complet des douze sessions -- le reste de
+                # l'archivage doit survivre a une seule session illisible.
+                # SessionExpiree n'est jamais absorbee ici : une session
+                # d'authentification morte ne se repare pas en passant a la
+                # session suivante, elle doit interrompre tout l'enchainement.
+                try:
+                    cours_de_la_session = ena.sites_de_session(session_cible)
+                except SessionExpiree:
+                    raise
+                except Exception as erreur:  # isolation stricte par session
+                    contexte["sessions_enumerees"] = indice
+                    sessions_en_echec.append(session_cible.libelle)
+                    archiveur.resultat.echecs.append(
+                        Echec(
+                            cours=session_cible.libelle,
+                            element="(session entiere)",
+                            cause=str(erreur),
+                        )
+                    )
+                    evenements.put(
+                        (
+                            "session",
+                            (indice, total_sessions, session_cible.libelle, f"ECHEC - {erreur}"),
+                        )
+                    )
+                    continue
                 contexte["sessions_enumerees"] = indice
                 evenements.put(
                     (
