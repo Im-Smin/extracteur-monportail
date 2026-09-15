@@ -25,6 +25,14 @@ from playwright.sync_api import sync_playwright
 
 URL_DEPART = "https://sitescours.monportail.ulaval.ca/portail/cours"
 HOTE_SITESCOURS = "sitescours.monportail.ulaval.ca"
+# Second hote attendu cote portail (sans le sous-domaine sitescours) : une
+# authentification federee peut aboutir ici plutot que sur HOTE_SITESCOURS
+# selon l'endroit d'ou elle a demarre. Purement informatif : le critere reel
+# est plus large, voir est_page_authentifiee.
+HOTE_PORTAIL = "monportail.ulaval.ca"
+# Domaine dont l'appartenance suffit a considerer une page authentifiee, une
+# fois exclus les hotes de connexion (voir HOTES_CONNEXION_MICROSOFT).
+DOMAINE_ULAVAL = "ulaval.ca"
 TAILLE_MORCEAU = 65536
 
 # Plafond d'attente de la connexion manuelle (MFA compris). L'ancien reglage
@@ -46,41 +54,31 @@ SEUIL_FIN_IMMINENTE = 30
 # Sous-chaine suffisante pour reconnaitre un hote de connexion Microsoft
 # (login.microsoftonline.com, login.microsoft.com, etc.) sans faire de la
 # detection d'authentification (est_page_authentifiee) un lieu de decision
-# supplementaire.
+# supplementaire. Sert uniquement au rappel du selecteur de compte
+# (attendre_connexion) ; est_page_authentifiee applique son propre critere,
+# voir HOTES_CONNEXION_MICROSOFT.
 FRAGMENT_HOTE_MICROSOFT = "microsoft"
 
+# Suffixes d'hote d'une connexion federee Microsoft : jamais une page
+# authentifiee de monPortail, meme si son URL contient par ailleurs l'adresse
+# du portail en clair (voir est_page_authentifiee). En pratique aucun de ces
+# hotes n'appartient au domaine ulaval.ca, donc ce test est deja assure par
+# la verification de domaine qui precede -- il est garde explicite pour dire
+# noir sur blanc ce qu'exclut le critere, plutot que de laisser cette
+# exclusion implicite dans une simple difference de domaine.
+HOTES_CONNEXION_MICROSOFT = ("microsoftonline.com", "live.com")
 
-def _porte_marqueur_authentifie(page) -> bool:
-    """Marqueur de contenu propre a une page authentifiee de monPortail.
 
-    Detecte soit une page de site de cours (lien /ena/site/ ou texte
-    "Liste des cours"), soit la page /portail/cours apres connexion
-    (texte "Cours suivis" ou le lien du menu de compte personnel).
+def _est_hote_ulaval(hote: str) -> bool:
+    """Vrai si `hote` est ulaval.ca ou un de ses sous-domaines."""
+    return hote == DOMAINE_ULAVAL or hote.endswith("." + DOMAINE_ULAVAL)
 
-    Le menu de compte personnel (href contenant monportail.ulaval.ca/
-    mon-compte) est releve en session reelle sur une page authentifiee ;
-    il n'existe sur aucune page publique ni page d'erreur du domaine. Un
-    comptage de liens vers /portail (heuristique anterieure) a ete
-    abandonne au profit de ce marqueur unique, car rien ne garantit qu'une
-    page non authentifiee (page d'erreur, redirection intermediaire) ne
-    porte pas deja un menu statique de cinq liens ou plus, ce qui
-    produirait un faux positif silencieux.
-    """
-    # Signaux d'une page de site de cours authentifiee
-    if page.locator("a[href*='/ena/site/']").count() > 0:
-        return True
-    if page.get_by_text("Liste des cours").count() > 0:
-        return True
 
-    # Signaux de la page /portail/cours apres connexion
-    if page.get_by_text("Cours suivis").count() > 0:
-        return True
-
-    # Menu de compte personnel : n'existe que pour un utilisateur connecte.
-    if page.locator("a[href*='monportail.ulaval.ca/mon-compte']").count() > 0:
-        return True
-
-    return False
+def _est_hote_connexion_microsoft(hote: str) -> bool:
+    """Vrai si `hote` appartient a un domaine de connexion federee Microsoft."""
+    return any(
+        hote == suffixe or hote.endswith("." + suffixe) for suffixe in HOTES_CONNEXION_MICROSOFT
+    )
 
 
 def est_page_authentifiee(page) -> bool:
@@ -90,17 +88,35 @@ def est_page_authentifiee(page) -> bool:
     reutilise par SessionNavigateur.est_connecte et par extracteur.ena, qui
     verifie ainsi qu'une session n'a pas expire en cours de navigation.
 
-    Un simple test par sous-chaine sur l'URL est insuffisant : l'URL
-    d'autorisation Microsoft place le redirect_uri en clair dans ses
+    Ancienne version : verifiait le nom d'hote exact (sitescours.monportail.
+    ulaval.ca), puis un marqueur de contenu (lien /ena/site/, texte "Cours
+    suivis", etc.) propre a une page connectee. Trois correctifs successifs
+    sur ce marqueur n'ont pas suffi en usage reel -- une authentification
+    federee n'atterrit pas toujours au meme endroit, et le marqueur choisi
+    n'y est alors pas forcement present, quelle que soit la page. Le critere
+    est donc assoupli au strict necessaire : on considere authentifiee toute
+    page dont l'hote appartient au domaine ulaval.ca et qui n'est pas un hote
+    de connexion federee (voir HOTES_CONNEXION_MICROSOFT) ; plus aucun
+    marqueur de contenu n'est exige.
+
+    Etre plus permissif ici ne fait courir aucun risque de perte silencieuse :
+    la garantie s'est deplacee en aval. Si la page adoptee n'est pas la bonne
+    (mauvaise page du domaine), le selecteur de sessions (Ena.
+    _ouvrir_selecteur_sessions / sessions_disponibles) ne trouvera rien
+    d'exploitable et l'outil echoue bruyamment, plutot que de rendre une
+    liste vide en silence.
+
+    Un simple test par sous-chaine sur l'URL complete resterait insuffisant :
+    l'URL d'autorisation Microsoft place le redirect_uri en clair dans ses
     parametres (l'encodage pour cent ne touche que ':' et '/'), donc
-    "sitescours.monportail.ulaval.ca" y apparait avant toute connexion. Une
-    page d'erreur sur le bon domaine n'est pas davantage une preuve de
-    connexion. On verifie donc le nom d'hote exact, puis un marqueur tire du
-    contenu reel de la page.
+    "sitescours.monportail.ulaval.ca" y apparait avant toute connexion. On
+    verifie donc le nom d'hote seul (urlparse), jamais l'URL entiere.
     """
-    if urlparse(page.url).hostname != HOTE_SITESCOURS:
+    hote = urlparse(page.url).hostname
+    if hote is None:
         return False
-    return _porte_marqueur_authentifie(page)
+    hote = hote.lower()
+    return _est_hote_ulaval(hote) and not _est_hote_connexion_microsoft(hote)
 
 
 class Reponse:
@@ -231,11 +247,18 @@ class SessionNavigateur:
         et ena.py, qui lisent tous deux `session.page` sans jamais en
         garder de copie figee) se propage donc automatiquement sur la bonne
         page, plutot que sur celle capturee a l'ouverture du navigateur.
+
+        Le critere d'authentification (est_page_authentifiee) ne verifie
+        plus que le nom d'hote : la page adoptee peut donc se trouver
+        n'importe ou sur le domaine ulaval.ca (accueil, mon-compte, etc.),
+        pas forcement sur la page des cours. On n'a plus le choix de
+        supposer qu'elle y est deja -- on y navigue nous-memes.
         """
         page = self._trouver_page_authentifiee()
         if page is None:
             return False
         self.page = page
+        self.page.goto(URL_DEPART, wait_until="domcontentloaded")
         return True
 
     def attendre_connexion(
