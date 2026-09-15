@@ -42,12 +42,68 @@ INTERVALLE_VIDAGE_MS = 100
 # zone de texte.
 LIGNES_JOURNAL_MAX = 5000
 
-MESSAGE_NAVIGATEUR = (
-    "Une fenetre de navigateur separee va s'ouvrir : connectez-vous DEDANS, "
-    "MFA compris. C'est la seule dont le programme peut lire les cookies. "
-    "L'authentification est redemandee a chaque lancement -- c'est voulu, "
-    "aucun profil de navigateur n'est conserve."
-)
+# Texte d'accueil du journal. Il occupe la zone de progression tant que rien
+# n'a demarre, et sert de mode d'emploi complet : l'outil n'a ni menu ni aide,
+# et son utilisateur ne s'en servira qu'une poignee de fois avant la fermeture
+# de la plateforme. Il doit donc repondre d'avance aux trois questions qui
+# couteraient cher plus tard -- ce que le programme va faire, ce qu'on
+# retrouvera sur le disque, et surtout ce qu'il ne recupere PAS, seul moyen
+# d'aller chercher ce qui manque a la main pendant que la source existe encore.
+TEXTE_ACCUEIL = """ARCHIVEUR MONPORTAIL
+====================
+
+Ce programme copie sur votre disque tout ce que vous avez sur monPortail,
+avant la fermeture definitive de la plateforme le 1er novembre 2026. Passe
+cette date, plus rien n'y sera recuperable.
+
+CE QUI SE PASSE QUAND VOUS CLIQUEZ SUR « COMMENCER »
+
+  1. Une fenetre de navigateur SEPAREE s'ouvre. Connectez-vous DEDANS, MFA
+     compris : c'est la seule dont le programme peut lire les cookies. Se
+     connecter ailleurs ne sert a rien. L'authentification est redemandee a
+     chaque lancement -- c'est voulu, aucun mot de passe et aucun profil de
+     navigateur ne sont conserves.
+  2. Il dresse la liste de vos sessions et de vos cours.
+  3. Il visite chaque cours et telecharge son contenu, en affichant ici ce
+     qu'il fait. Comptez environ une minute par cours.
+  4. Il recompte ce qui est reellement sur le disque, face a l'inventaire de
+     ce qu'il dit avoir ecrit.
+  5. Il compresse le tout dans un fichier .zip, pose A COTE du dossier.
+
+CE QUE VOUS OBTIENDREZ  (un dossier par session, puis un par cours)
+
+  Plan de cours\\    le PDF officiel de l'Universite
+  Documents\\        les fichiers fournis par le professeur, ranges par module
+  Pages\\            une copie PDF de chaque page visitee. C'est la que se
+                    trouve le texte ecrit par le professeur, celui qui
+                    n'existe sous forme d'aucune piece jointe.
+  Évaluations\\      un dossier par evaluation : l'enonce, la boite de depot,
+                    VOS travaux remis, la retroaction et la note
+  notes.csv         vos resultats pour ce cours
+
+  Et a la racine de l'archive : notes-tous-cours.csv (tous vos resultats
+  reunis), manifeste.csv (l'inventaire de ce qui a ete ecrit) et
+  _rapport.html (la liste de ce qui a echoue, s'il y a lieu).
+
+CE QUI N'EST PAS ARCHIVE  -- a recuperer a la main si vous y tenez
+
+  - les annonces, les forums de discussion et les videos ;
+  - les « Autres activites » du tableau de bord (formations
+    institutionnelles) : seuls les cours sont traites ;
+  - les sections « Materiel didactique », « Mediagraphie et annexes » et
+    « Bibliographie », qui ne listent que des renvois vers des ouvrages.
+
+BON A SAVOIR
+
+  - Relancer ne recommence rien : ce qui est deja sur le disque n'est pas
+    retelecharge. Vous pouvez arreter et reprendre plus tard.
+  - Rien n'est jamais supprime ni modifie sur monPortail. Le programme ne
+    fait que lire.
+  - S'il manque quoi que ce soit a la fin, cette fenetre le dira. Elle
+    n'affichera jamais « TERMINE » tout court sur une archive incomplete.
+
+Choisissez un emplacement, ce que vous voulez archiver, puis Commencer.
+"""
 
 
 class ChampManquant(ValueError):
@@ -250,10 +306,17 @@ def executer_archivage(
     if etat["resultat"] is None:
         return etat
 
-    if annulation is not None and annulation.is_set():
+    # Sur ce qui a REELLEMENT ete laisse de cote, pas sur l'etat courant du
+    # drapeau d'annulation : celui-ci reste pose apres coup, et l'archiveur ne
+    # le lit qu'a la frontiere de chaque cours. Un clic sur Arreter pendant le
+    # dernier cours le laisse donc finir, l'archive est complete -- et lire le
+    # drapeau ferait sauter sa compression en annoncant une interruption qui
+    # n'a rien coute.
+    if etat["resultat"].cours_non_tentes:
         imprimer(
-            "Archivage interrompu : rien n'a ete compresse. Relancez pour reprendre "
-            "la ou vous en etiez, le ZIP sera produit a ce moment-la."
+            f"Archivage interrompu : {etat['resultat'].cours_non_tentes} cours n'ont pas "
+            "ete tentes, rien n'a ete compresse. Relancez pour reprendre la ou vous en "
+            "etiez, le ZIP sera produit a ce moment-la."
         )
         return etat
 
@@ -290,6 +353,7 @@ class Fenetre:
         self.evenements: queue.Queue = queue.Queue()
         self.annulation = threading.Event()
         self.fil = None
+        self.fermeture_demandee = False
 
         racine.title("Archiveur monPortail")
         racine.geometry("860x640")
@@ -305,9 +369,9 @@ class Fenetre:
         self._construire_commandes()
         self._construire_journal()
 
-        self._ecrire(MESSAGE_NAVIGATEUR)
-        self._ecrire("")
+        self._accueillir()
 
+        racine.protocol("WM_DELETE_WINDOW", self._fermer)
         racine.after(INTERVALLE_VIDAGE_MS, self._vider_la_file)
 
     # --- construction des zones ---
@@ -405,6 +469,24 @@ class Fenetre:
         if choisi:
             self.destination.set(str(Path(choisi)))
 
+    def _accueillir(self) -> None:
+        """Remplit le journal du mode d'emploi, cadre sur sa premiere ligne.
+
+        Pas de _ecrire ici : celui-ci fait defiler jusqu'en bas, ce qui
+        placerait l'utilisateur devant la derniere ligne d'un texte qui se lit
+        depuis le debut.
+        """
+        self.journal.configure(state="normal")
+        self.journal.delete("1.0", "end")
+        self.journal.insert("1.0", TEXTE_ACCUEIL)
+        self.journal.see("1.0")
+        self.journal.configure(state="disabled")
+
+    def _vider_le_journal(self) -> None:
+        self.journal.configure(state="normal")
+        self.journal.delete("1.0", "end")
+        self.journal.configure(state="disabled")
+
     def _ecrire(self, texte: str) -> None:
         self.journal.configure(state="normal")
         self.journal.insert("end", f"{texte}\n")
@@ -434,7 +516,18 @@ class Fenetre:
         self.bouton_commencer.configure(state="disabled")
         self.bouton_arreter.configure(state="normal")
         self.etat.configure(text="Archivage en cours -- connectez-vous dans le navigateur.")
+
+        # Le mode d'emploi cede la place a la progression : sur un archivage
+        # complet, la laisser enfouie sous cinquante lignes de texte rendrait
+        # illisible la seule chose a suivre pendant l'heure qui vient. Il
+        # revient au prochain lancement.
+        self._vider_le_journal()
         self._ecrire(f"=== Archivage vers {destination} ===")
+        self._ecrire(
+            "Une fenetre de navigateur separee va s'ouvrir : connectez-vous DEDANS, "
+            "MFA compris. C'est la seule dont le programme peut lire les cookies."
+        )
+        self._ecrire("")
 
         self.fil = threading.Thread(
             target=self._travailler,
@@ -452,8 +545,42 @@ class Fenetre:
         """
         self.annulation.set()
         self.bouton_arreter.configure(state="disabled")
-        self.etat.configure(text="Arret demande : fin du cours en cours, patientez...")
-        self._ecrire("Arret demande. L'archivage s'arretera a la fin du cours en cours.")
+        self.etat.configure(text="Arret demande : arret a la prochaine etape, patientez...")
+        self._ecrire(
+            "\nArret demande. Il prend effet a la prochaine etape verifiee : fin du cours "
+            "en cours, ou fin de la session en cours d'enumeration. Comptez une minute ou "
+            "deux. Rien de ce qui est deja sur le disque n'est perdu, et relancer reprendra "
+            "la ou l'archivage s'arrete."
+        )
+
+    def _fermer(self) -> None:
+        """Ferme la fenetre -- mais jamais au milieu d'un archivage.
+
+        Cliquer le X du systeme est un geste naturel, et Tkinter detruirait la
+        racine sur-le-champ : mainloop() rendrait la main, le processus se
+        terminerait, et le fil de travail serait tue avant d'avoir ecrit
+        _rapport.html. L'utilisateur se retrouverait avec une archive tronquee
+        et AUCUNE trace de ce qui manque -- precisement ce que tout ce projet
+        cherche a eviter. En console, le meme geste (Ctrl+C) est deja
+        intercepte pour attendre le fil et ecrire le rapport ; la fenetre doit
+        offrir le meme filet.
+
+        On demande donc l'arret, on laisse le fil finir proprement (il ferme
+        Chromium, supprime son profil temporaire et ecrit le rapport), et
+        c'est _vider_la_file qui detruira la fenetre une fois le fil mort.
+        """
+        if self.fil is not None and self.fil.is_alive():
+            self.fermeture_demandee = True
+            self.annulation.set()
+            self.bouton_arreter.configure(state="disabled")
+            self.etat.configure(text="Fermeture : fin propre en cours, patientez...")
+            self._ecrire(
+                "\nFermeture demandee. L'archivage s'arrete proprement : fermeture du "
+                "navigateur et ecriture du rapport. Comptez le temps de finir le cours "
+                "en cours, une minute ou deux. La fenetre se fermera toute seule."
+            )
+            return
+        self.racine.destroy()
 
     # --- fil de travail ---
 
@@ -461,6 +588,7 @@ class Fenetre:
         def publier(texte):
             self.evenements.put(("ligne", str(texte)))
 
+        etat = {"code": 1, "resultat": None, "controle": None, "chemin_zip": None}
         try:
             etat = executer_archivage(
                 portee,
@@ -470,10 +598,14 @@ class Fenetre:
                 imprimer_erreur=publier,
                 annulation=self.annulation,
             )
-        except Exception as erreur:  # filet ultime : jamais de fil muet
+        except BaseException as erreur:  # filet ultime : jamais de fil muet
             publier(f"ECHEC inattendu : {erreur}")
-            etat = {"code": 1, "resultat": None, "controle": None, "chemin_zip": None}
-        self.evenements.put(("fin", etat))
+            raise
+        finally:
+            # Dans un finally, et sur BaseException : sans cet evenement, la
+            # fenetre resterait figee pour toujours -- Commencer desactive,
+            # Arreter actif mais sans fil vivant pour lui repondre.
+            self.evenements.put(("fin", etat))
 
     # --- boucle d'affichage ---
 
@@ -487,6 +619,14 @@ class Fenetre:
                     self._ecrire(donnee)
         except queue.Empty:
             pass
+
+        if self.fermeture_demandee and (self.fil is None or not self.fil.is_alive()):
+            # Le fil est mort : son finally a ferme le navigateur et le rapport
+            # est ecrit. La file vient d'etre videe juste au-dessus, donc rien
+            # n'est perdu. On peut fermer.
+            self.racine.destroy()
+            return
+
         self.racine.after(INTERVALLE_VIDAGE_MS, self._vider_la_file)
 
     def _conclure(self, etat: dict) -> None:

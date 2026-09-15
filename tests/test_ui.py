@@ -19,6 +19,7 @@ from extracteur.ui import (
     PORTEE_COURS,
     PORTEE_SESSION,
     PORTEE_TOUT,
+    TEXTE_ACCUEIL,
     ChampManquant,
     Fenetre,
     _modes_par_defaut,
@@ -461,9 +462,75 @@ def test_la_fenetre_se_construit_et_journalise(tmp_path, fenetre_tk):
     fenetre._ecrire("bonjour")
 
     contenu = fenetre.journal.get("1.0", "end")
-    assert "connectez-vous DEDANS" in contenu  # l'avertissement sur le navigateur
+    assert contenu.startswith("ARCHIVEUR MONPORTAIL")  # le mode d'emploi, en tete
     assert "bonjour" in contenu
     assert fenetre.portee.get() == PORTEE_TOUT
+
+
+def test_le_texte_d_accueil_dit_ce_que_le_programme_ne_recupere_pas():
+    # Le point le plus couteux a decouvrir trop tard : ce qui n'est PAS
+    # archive doit etre recupere a la main pendant que la plateforme existe
+    # encore. Si cette liste disparaissait du texte, le manque ne serait
+    # constate qu'apres le 1er novembre 2026.
+    assert "N'EST PAS ARCHIVE" in TEXTE_ACCUEIL
+    for exclu in ("annonces", "forums", "videos", "Autres activites", "Bibliographie"):
+        assert exclu in TEXTE_ACCUEIL, exclu
+
+
+def test_le_texte_d_accueil_annonce_la_fenetre_de_navigateur_separee():
+    # La confusion qui a deja coute une soiree entiere : se connecter dans son
+    # propre Chrome au lieu de la fenetre ouverte par le programme.
+    assert "SEPAREE" in TEXTE_ACCUEIL
+    assert "DEDANS" in TEXTE_ACCUEIL
+    assert "chaque lancement" in TEXTE_ACCUEIL
+
+
+def test_le_texte_d_accueil_decrit_ce_qui_sera_cree(tmp_path):
+    for produit in (
+        "Plan de cours",
+        "Documents",
+        "Pages",
+        "Évaluations",
+        "notes.csv",
+        "notes-tous-cours.csv",
+        "manifeste.csv",
+        "_rapport.html",
+        ".zip",
+    ):
+        assert produit in TEXTE_ACCUEIL, produit
+
+
+def test_commencer_remplace_le_mode_d_emploi_par_la_progression(tmp_path, fenetre_tk, monkeypatch):
+    # Le mode d'emploi fait une cinquantaine de lignes : le laisser en place
+    # enfouirait la progression, seule chose a suivre pendant l'heure qui
+    # vient. Il revient au prochain lancement.
+    fenetre = fenetre_tk(tmp_path)
+    monkeypatch.setattr("extracteur.ui.threading.Thread", _FilFactice)
+
+    fenetre._commencer()
+
+    contenu = fenetre.journal.get("1.0", "end")
+    assert "ARCHIVEUR MONPORTAIL" not in contenu
+    assert "=== Archivage vers" in contenu
+    assert "DEDANS" in contenu  # l'essentiel de l'avertissement est redit ici
+
+
+class _FilFactice:
+    """Doublure de threading.Thread : retient l'appel, ne demarre rien.
+
+    Sans elle, tester le bouton Commencer ouvrirait un vrai navigateur.
+    """
+
+    def __init__(self, target=None, args=(), daemon=None, **reste):
+        self.target = target
+        self.args = args
+        self.demarre = False
+
+    def start(self):
+        self.demarre = True
+
+    def is_alive(self):
+        return False
 
 
 def test_la_fenetre_grise_les_champs_hors_portee(tmp_path, fenetre_tk):
@@ -558,3 +625,140 @@ def test_le_journal_ne_grossit_pas_sans_fin(tmp_path, monkeypatch, fenetre_tk):
     assert contenu.count("\n") <= 52  # le plafond, a une ligne de fin pres
     assert "ligne 299" in contenu  # ce sont bien les dernieres qui restent
     assert "ligne 0\n" not in contenu
+# --- constats de revue : ZIP, fermeture par le X, publication de « fin » ---
+
+
+def test_executer_compresse_quand_l_arret_arrive_trop_tard(tmp_path):
+    # L'archiveur ne lit le drapeau d'annulation qu'a la frontiere de chaque
+    # cours : cliquer Arreter pendant le DERNIER cours le laisse finir, et
+    # l'archive est complete. Lire le drapeau plutot que cours_non_tentes
+    # ferait sauter la compression en annoncant une interruption qui n'a rien
+    # coute.
+    annulation = threading.Event()
+    modes = ModesFactices(
+        code=0,
+        resultat=Resultat(fichiers_ecrits=278, cours_non_tentes=0),
+        effet=annulation.set,
+    )
+    compressions: list = []
+    lignes, ecrire = _sortie()
+
+    etat = executer_archivage(
+        PORTEE_TOUT,
+        "",
+        tmp_path / "Archive",
+        ecrire,
+        ecrire,
+        annulation=annulation,
+        modes=modes.dictionnaire(),
+        compresser=lambda racine, cible: compressions.append(cible) or cible,
+    )
+
+    assert annulation.is_set()  # le drapeau est bien reste pose
+    assert etat["chemin_zip"] == tmp_path / "Archive.zip"
+    assert compressions == [tmp_path / "Archive.zip"]
+    assert not any("interrompu" in ligne.lower() for ligne in lignes)
+
+
+def test_fin_est_publie_meme_quand_le_travail_explose(tmp_path, fenetre_tk):
+    # Sans cet evenement, la fenetre resterait figee pour toujours : Commencer
+    # desactive, Arreter actif, et aucun fil vivant pour lui repondre.
+    fenetre = fenetre_tk(tmp_path)
+
+    def exploser(*args, **reste):
+        raise KeyboardInterrupt("arret brutal")
+
+    import extracteur.ui
+
+    ancien = extracteur.ui.executer_archivage
+    extracteur.ui.executer_archivage = exploser
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            fenetre._travailler(PORTEE_TOUT, "", tmp_path)
+    finally:
+        extracteur.ui.executer_archivage = ancien
+
+    evenements = []
+    while not fenetre.evenements.empty():
+        evenements.append(fenetre.evenements.get_nowait())
+
+    assert evenements[-1][0] == "fin"
+    assert evenements[-1][1]["resultat"] is None
+
+
+def test_fermer_au_repos_detruit_la_fenetre_tout_de_suite(tmp_path, fenetre_tk):
+    fenetre = fenetre_tk(tmp_path)
+    detruites: list = []
+    fenetre.racine.destroy = lambda: detruites.append(True)
+
+    fenetre._fermer()
+
+    assert detruites == [True]
+    assert fenetre.fermeture_demandee is False
+
+
+def test_fermer_pendant_un_archivage_attend_le_fil(tmp_path, fenetre_tk):
+    # Le geste naturel -- le X du systeme -- ne doit jamais tuer le fil avant
+    # qu'il ait ferme Chromium et ecrit _rapport.html : sans quoi
+    # l'utilisateur garde une archive tronquee et aucune trace de ce qui
+    # manque.
+    fenetre = fenetre_tk(tmp_path)
+    detruites: list = []
+    fenetre.racine.destroy = lambda: detruites.append(True)
+
+    barriere = threading.Event()
+    fenetre.fil = threading.Thread(target=barriere.wait, daemon=True)
+    fenetre.fil.start()
+    try:
+        fenetre._fermer()
+
+        assert detruites == []  # rien n'est detruit tant que le fil vit
+        assert fenetre.fermeture_demandee is True
+        assert fenetre.annulation.is_set()  # l'arret a bien ete demande
+
+        fenetre._vider_la_file()
+        assert detruites == []  # toujours vivant, toujours pas de destruction
+    finally:
+        barriere.set()
+        fenetre.fil.join(timeout=5)
+
+    fenetre._vider_la_file()
+
+    assert detruites == [True]  # fil mort, file videe, fenetre fermee
+
+
+def test_le_cycle_complet_commencer_puis_conclure(tmp_path, fenetre_tk):
+    # Le seul test qui parcoure la chaine entiere : clic sur Commencer, vrai
+    # fil de travail, depot dans la file, vidage par la boucle d'affichage,
+    # verdict. Sans lui, une regression sur la livraison de « fin » passerait
+    # inapercue jusqu'au premier usage reel.
+    import extracteur.ui
+
+    def travail_factice(portee, argument, destination, imprimer, imprimer_erreur, **reste):
+        imprimer("deux fichiers recuperes")
+        return {
+            "code": 0,
+            "resultat": Resultat(fichiers_ecrits=2),
+            "controle": CONTROLE_PROPRE,
+            "chemin_rapport": None,
+            "chemin_zip": destination.parent / "Archive.zip",
+        }
+
+    fenetre = fenetre_tk(tmp_path)
+    ancien = extracteur.ui.executer_archivage
+    extracteur.ui.executer_archivage = travail_factice
+    try:
+        fenetre._commencer()
+        assert fenetre.fil is not None
+        fenetre.fil.join(timeout=5)
+        assert not fenetre.fil.is_alive()
+        fenetre._vider_la_file()
+    finally:
+        extracteur.ui.executer_archivage = ancien
+
+    contenu = fenetre.journal.get("1.0", "end")
+    assert "deux fichiers recuperes" in contenu
+    assert "=== TERMINE ===" in contenu
+    assert "Archive.zip" in contenu
+    assert str(fenetre.bouton_commencer["state"]) == "normal"
+    assert str(fenetre.bouton_arreter["state"]) == "disabled"
