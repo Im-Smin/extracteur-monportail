@@ -1641,3 +1641,69 @@ def test_tout_annulation_arretee_a_la_frontiere_du_deuxieme_cours(tmp_path):
     # html.escape, qui rend « l'utilisateur » sous la forme « l&#x27;utilisateur ».
     assert "interrompu par" in rapport
     assert "1 cours" in rapport
+def test_tout_annulation_pendant_l_enumeration_n_est_jamais_un_succes(tmp_path):
+    # L'archivage ne commence qu'une fois TOUTES les sessions enumerees. Un
+    # arret pendant cette phase ne doit ni faire attendre la fin des douze
+    # sessions, ni -- surtout -- rendre 0 : archiver([]) produirait un Resultat
+    # sans echec ni cours non tente, que _code_de_sortie traduirait en succes
+    # complet sur une archive inexistante.
+    import threading
+
+    annulation = threading.Event()
+
+    class EnaQuiAnnuleALaPremiereSession(EnaDeTest):
+        def sites_de_session(self, session):
+            annulation.set()
+            return super().sites_de_session(session)
+
+    ena = EnaQuiAnnuleALaPremiereSession(
+        {SESSION_AUTOMNE: [COURS_ANCIEN], SESSION_HIVER: [COURS_HIVER]}
+    )
+    session = SessionFactice()
+
+    code = _tout(tmp_path, session=session, fabrique_ena=lambda _s: ena, annulation=annulation)
+
+    assert code == 1
+    # Rien n'a ete archive : aucune des deux sessions n'a de dossier.
+    assert not (tmp_path / SESSION_AUTOMNE.dossier()).exists()
+    assert not (tmp_path / SESSION_HIVER.dossier()).exists()
+    # Et le rapport dit pourquoi, plutot que de laisser croire a une archive
+    # vide mais reguliere.
+    rapport = (tmp_path / "_rapport.html").read_text(encoding="utf-8")
+    assert "interrompu par" in rapport
+    assert "enumeration" in rapport
+
+
+def test_tout_sans_annulation_enumere_toutes_les_sessions(tmp_path):
+    # Contre-epreuve du test precedent : le garde d'annulation ne doit pas
+    # ecourter une enumeration ordinaire.
+    ena = EnaDeTest({SESSION_AUTOMNE: [COURS_ANCIEN], SESSION_HIVER: [COURS_HIVER]})
+    session = SessionFactice()
+
+    code = _tout(tmp_path, session=session, fabrique_ena=lambda _s: ena)
+
+    assert code == 0
+    assert (tmp_path / SESSION_AUTOMNE.dossier()).exists()
+    assert (tmp_path / SESSION_HIVER.dossier()).exists()
+
+
+def test_session_annulation_pendant_l_enumeration_n_ecrit_aucun_zip_possible(tmp_path):
+    # Meme garde pour --session : sur_fin ne doit pas etre appele, sans quoi
+    # l'interface graphique compresserait une archive qui n'existe pas.
+    import threading
+
+    annulation = threading.Event()
+    annulation.set()
+    recu: list = []
+
+    code = _session(
+        "Hiver 2026",
+        tmp_path,
+        session=SessionFactice(),
+        fabrique_ena=lambda _s: EnaDeTest({SESSION_HIVER: [COURS_HIVER]}),
+        annulation=annulation,
+        sur_fin=lambda *args: recu.append(args),
+    )
+
+    assert code == 1
+    assert recu == []

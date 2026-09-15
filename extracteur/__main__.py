@@ -808,6 +808,20 @@ def _archiver_plusieurs_sessions(
             sessions_en_echec: "list[str]" = []
             contexte["sessions_en_echec"] = sessions_en_echec
             for indice, session_cible in enumerate(sessions_a_traiter, start=1):
+                if annulation is not None and annulation.is_set():
+                    # Arret demande pendant l'enumeration, donc avant que le
+                    # moindre fichier ait ete ecrit -- l'archivage ne commence
+                    # qu'une fois TOUTES les sessions visees enumerees. Sans ce
+                    # point d'arret, l'interface graphique laisserait son
+                    # utilisateur attendre l'enumeration des douze sessions
+                    # apres qu'il a clique sur Arreter.
+                    #
+                    # On sort sans appeler archiver() : sur une liste de cours
+                    # vide il rendrait un Resultat sans echec ni cours non
+                    # tente, que _code_de_sortie traduirait en 0 -- un succes
+                    # complet annonce sur une archive inexistante.
+                    contexte["interrompu_a_l_enumeration"] = (indice - 1, total_sessions)
+                    return
                 evenements.put(
                     ("session", (indice, total_sessions, session_cible.libelle, "enumeration en cours..."))
                 )
@@ -906,6 +920,20 @@ def _archiver_plusieurs_sessions(
 
     erreur = contexte.get("erreur")
     archiveur = contexte.get("archiveur")
+
+    interrompu = contexte.get("interrompu_a_l_enumeration")
+    if interrompu is not None:
+        enumerees, prevues = interrompu
+        message_rapport = (
+            f"L'archivage a ete interrompu par l'utilisateur pendant l'enumeration : "
+            f"{enumerees} session(s) sur {prevues} avaient ete parcourues, et aucun "
+            "fichier n'avait encore ete telecharge. Relancer recommence l'enumeration "
+            "depuis le debut, sans retelecharger ce qui serait deja sur disque."
+        )
+        imprimer_erreur(f"\n{message_rapport}")
+        if archiveur is not None:
+            _ecrire_rapport_final(destination, archiveur.resultat, interruption=message_rapport)
+        return 1
 
     if isinstance(erreur, SessionIntrouvable):
         imprimer_erreur(f"ECHEC : {erreur}")
