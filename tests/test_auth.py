@@ -250,6 +250,46 @@ def test_attendre_connexion_ne_dit_rien_si_la_connexion_est_immediate():
     assert messages == []
 
 
+def test_attendre_connexion_annulation_posee_rend_false_sans_attendre_le_delai():
+    """Le bouton d'interruption de l'interface graphique pose un
+    threading.Event : le sondage suivant doit rendre False immediatement,
+    bien avant l'echeance du delai (jamais connectee ici)."""
+    import threading
+
+    page = PageFactice(f"https://{HOTE_SITESCOURS}/portail/cours")
+    session = SessionAttenteTestable(page, connectee_au_nieme_appel=None)
+    annulation = threading.Event()
+    annulation.set()
+
+    resultat = session.attendre_connexion(
+        delai=1000,
+        horloge=HorlogeFactice(pas=1.0),
+        sommeil=_sommeil_factice,
+        annulation=annulation,
+    )
+
+    assert resultat is False
+
+
+def test_attendre_connexion_sans_annulation_posee_continue_normalement():
+    """Contre-epreuve : un Event fourni mais jamais pose ne change rien au
+    comportement existant."""
+    import threading
+
+    page = PageFactice(f"https://{HOTE_SITESCOURS}/portail/cours")
+    session = SessionAttenteTestable(page, connectee_au_nieme_appel=1)
+    annulation = threading.Event()
+
+    resultat = session.attendre_connexion(
+        delai=1000,
+        horloge=HorlogeFactice(pas=1.0),
+        sommeil=_sommeil_factice,
+        annulation=annulation,
+    )
+
+    assert resultat is True
+
+
 def test_attendre_connexion_rappelle_le_selecteur_de_compte_sur_microsoft():
     """Quand la page reste sur le domaine de connexion Microsoft au-dela du
     seuil, un rappel invite a choisir le bon compte parmi ceux proposes."""

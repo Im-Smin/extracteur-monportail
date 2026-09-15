@@ -326,10 +326,20 @@ def _ecrire_rapport_final(
 
 
 def _code_de_sortie(resultat: Resultat) -> int:
-    """0 seulement si aucun echec n'a ete consigne : un cours ancien peut
-    produire des fichiers ET des echecs partiels, ce n'est pas un succes
-    complet. Voir la docstring du module pour le contrat des codes."""
-    if not resultat.echecs:
+    """0 seulement si aucun echec n'a ete consigne ET qu'aucun cours n'a ete
+    laisse de cote : un cours ancien peut produire des fichiers ET des
+    echecs partiels, ce n'est pas un succes complet -- et un archivage
+    interrompu par l'utilisateur (Archiveur.archiver(annulation=...)) sans
+    le moindre echec de telechargement n'en est pas un non plus. Voir la
+    docstring du module pour le contrat des codes.
+
+    `cours_non_tentes` n'est normalement jamais different de zero ici : une
+    SessionExpiree, seule autre source de cours non tentes, est interceptee
+    plus haut et rend 3 avant d'atteindre cette fonction. Le cas couvert ici
+    est l'annulation cooperative, qui ne leve pas d'exception (voir la
+    docstring de Archiveur.archiver).
+    """
+    if not resultat.echecs and not resultat.cours_non_tentes:
         return 0
     return 4 if resultat.fichiers_ecrits else 1
 
@@ -354,6 +364,24 @@ def _fusionner_verification(resultat: Resultat, controle: dict) -> None:
                 cause="taille sur disque differente du manifeste",
             )
         )
+
+
+def _message_interruption_annulation(resultat: Resultat) -> "str | None":
+    """Message du troisieme etat de ecrire_rapport quand l'arret vient d'une
+    annulation cooperative (Archiveur.archiver(annulation=...)), pas d'une
+    SessionExpiree -- celle-ci est deja interceptee plus haut et jamais
+    tentee ici (voir la docstring de _code_de_sortie).
+
+    None quand cours_non_tentes vaut zero : c'est ce qui garde le chemin
+    nominal, deja couvert par tous les tests existants, strictement inchange.
+    """
+    if not resultat.cours_non_tentes:
+        return None
+    return (
+        f"L'archivage a ete interrompu par l'utilisateur : {resultat.cours_non_tentes} "
+        "cours n'ont jamais ete tentes. Relancer reprend la ou l'archivage s'est arrete, "
+        "sans retelecharger ce qui est deja sur disque."
+    )
 
 
 def _afficher_sessions(ena, imprimer=print) -> "list[str]":
@@ -497,21 +525,50 @@ def _un_seul_cours(
     destination: Path,
     session=None,
     fabrique_ena=Ena,
+    imprimer=print,
+    imprimer_erreur=None,
+    annulation=None,
+    sur_fin=None,
 ) -> int:
-    """Archive un seul cours, en console, sans interface graphique.
+    """Archive un seul cours, en console ou depuis l'interface graphique.
 
     `session` et `fabrique_ena` sont injectables pour les tests ; en usage
     normal, une vraie SessionNavigateur et Ena sont utilisees, sur un profil
     de navigateur neuf (voir SessionNavigateur.ouvrir).
 
+    `imprimer` et `imprimer_erreur` recoivent respectivement ce qui irait sur
+    stdout et sur stderr en console : c'est le coeur commun evoque dans la
+    tache 12, appele tel quel par la console (valeurs par defaut) et par
+    l'interface graphique (callables qui alimentent sa file d'affichage au
+    lieu du vrai flux standard). `imprimer_erreur` vaut, par defaut, un print
+    sur stderr -- non exprimable directement en valeur par defaut d'argument
+    puisqu'elle doit fermer sur sys.stderr au moment de l'appel, pas a la
+    definition du module.
+
+    `annulation`, un threading.Event optionnel, est transmis a
+    l'attente de connexion et a l'archiveur : le poser interrompt proprement
+    le travail a la prochaine frontiere verifiee (sondage de connexion,
+    frontiere de cours), sans jamais toucher aux objets Playwright depuis un
+    autre fil que celui-ci.
+
+    `sur_fin`, quand fourni, est appele une seule fois avec
+    (resultat, controle, chemin_rapport) au moment ou l'archivage se termine
+    normalement (succes complet ou partiel) -- jamais sur les autres issues
+    (connexion non detectee, cours introuvable, session expiree, erreur
+    inattendue), deja entierement racontees par imprimer_erreur. Sert
+    l'interface graphique, qui a besoin des compteurs exacts pour son etat
+    final, sans avoir a les re-analyser depuis le texte affiche.
+
     La connexion et l'archivage tournent dans le meme fil : Playwright (API
     synchrone) exige que tous ses appels viennent du fil qui l'a demarre. Le
-    fil principal se contente de vider la file d'evenements pendant que ce
+    fil appelant se contente de vider la file d'evenements pendant que ce
     fil de travail avance, pour afficher la progression au fil de l'eau au
     lieu de rester muet jusqu'a la fin.
     """
     if session is None:
         session = SessionNavigateur()
+    if imprimer_erreur is None:
+        imprimer_erreur = lambda texte: print(texte, file=sys.stderr)  # noqa: E731
 
     evenements: "queue.Queue" = queue.Queue()
     contexte: dict = {}
@@ -519,11 +576,11 @@ def _un_seul_cours(
     def travailler() -> None:
         try:
             session.ouvrir()
-            print(MESSAGE_INVITATION_CONNEXION)
-            if not session.attendre_connexion():
+            imprimer(MESSAGE_INVITATION_CONNEXION)
+            if not session.attendre_connexion(annulation=annulation):
                 contexte["connexion_echouee"] = _message_echec_connexion(session)
                 return
-            print("Connexion detectee.")
+            imprimer("Connexion detectee.")
 
             ena = fabrique_ena(session)
             archiveur = Archiveur(ena, session.transport, destination, evenements)
@@ -546,7 +603,7 @@ def _un_seul_cours(
             # cours (rien de tente, l'enumeration recommencera a zero) d'une
             # expiration pendant l'archivage lui-meme (reprise idempotente).
             contexte["cours_localise"] = True
-            contexte["resultat"] = archiveur.archiver([cours])
+            contexte["resultat"] = archiveur.archiver([cours], annulation=annulation)
         except SessionExpiree as erreur:
             contexte["erreur"] = erreur
         except SelecteurSessionsIllisible as erreur:
@@ -567,38 +624,35 @@ def _un_seul_cours(
     fil.start()
     try:
         while fil.is_alive():
-            _drainer(evenements)
+            _drainer(evenements, imprimer=imprimer)
             fil.join(timeout=0.2)
     except KeyboardInterrupt:
         # On attend la fin du fil plutot que de couper court : c'est le
         # finally de travailler() qui ferme le navigateur, et un processus
         # Playwright orphelin est une nuisance concrete sur Windows.
-        print(
-            "\nInterruption demandee : fermeture du navigateur en cours, patientez...",
-            file=sys.stderr,
-        )
+        imprimer_erreur("\nInterruption demandee : fermeture du navigateur en cours, patientez...")
         fil.join()
-        _drainer(evenements)
+        _drainer(evenements, imprimer=imprimer)
         archiveur = contexte.get("archiveur")
         if archiveur is not None:
             _ecrire_rapport_final(destination, archiveur.resultat)
         return 130
 
-    _drainer(evenements)
+    _drainer(evenements, imprimer=imprimer)
 
     if contexte.get("connexion_echouee"):
-        print(f"ECHEC : {contexte['connexion_echouee']}", file=sys.stderr)
+        imprimer_erreur(f"ECHEC : {contexte['connexion_echouee']}")
         return 1
 
     erreur = contexte.get("erreur")
     archiveur = contexte.get("archiveur")
 
     if isinstance(erreur, CoursIntrouvable):
-        print(f"ECHEC : aucun cours ne correspond a idSite={id_site}.", file=sys.stderr)
+        imprimer_erreur(f"ECHEC : aucun cours ne correspond a idSite={id_site}.")
         return 2
 
     if isinstance(erreur, SelecteurSessionsIllisible):
-        print(f"ECHEC : {erreur}", file=sys.stderr)
+        imprimer_erreur(f"ECHEC : {erreur}")
         if archiveur is not None:
             _ecrire_rapport_final(destination, archiveur.resultat)
         return 1
@@ -607,11 +661,10 @@ def _un_seul_cours(
         if contexte.get("cours_localise"):
             # L'archivage avait deja commence : la reprise par manifeste ne
             # retelecharge jamais un fichier deja ecrit sur disque.
-            print(
+            imprimer_erreur(
                 "\nSession expiree pendant l'archivage. Reconnectez-vous puis "
                 "relancez la meme commande : la reprise est idempotente, elle "
-                "continue la ou elle s'est arretee.",
-                file=sys.stderr,
+                "continue la ou elle s'est arretee."
             )
             message_rapport = (
                 f"La session a expire pendant l'archivage du cours idSite={id_site} : "
@@ -620,12 +673,11 @@ def _un_seul_cours(
         else:
             # Rien n'a encore ete ecrit : le cours vise n'a meme pas ete
             # localise. Relancer ne "reprend" rien, ca recommence a zero.
-            print(
+            imprimer_erreur(
                 "\nSession expiree avant meme de localiser le cours vise. "
                 "Aucun fichier n'a encore ete traite : reconnectez-vous puis "
                 "relancez la meme commande, l'enumeration recommencera "
-                "entierement depuis le debut.",
-                file=sys.stderr,
+                "entierement depuis le debut."
             )
             message_rapport = (
                 f"La session a expire avant meme que le cours vise (idSite={id_site}) "
@@ -637,7 +689,7 @@ def _un_seul_cours(
         return 3
 
     if erreur is not None:
-        print(f"ECHEC inattendu : {erreur}", file=sys.stderr)
+        imprimer_erreur(f"ECHEC inattendu : {erreur}")
         if archiveur is not None:
             _ecrire_rapport_final(destination, archiveur.resultat)
         return 1
@@ -645,17 +697,21 @@ def _un_seul_cours(
     resultat = contexte["resultat"]
     controle = verifier(destination)
     _fusionner_verification(resultat, controle)
-    chemin_rapport = _ecrire_rapport_final(destination, resultat)
-    print(f"\nEcrits : {resultat.fichiers_ecrits}   Sautes : {resultat.fichiers_sautes}")
+    chemin_rapport = _ecrire_rapport_final(
+        destination, resultat, interruption=_message_interruption_annulation(resultat)
+    )
+    imprimer(f"\nEcrits : {resultat.fichiers_ecrits}   Sautes : {resultat.fichiers_sautes}")
     if chemin_rapport:
-        print(f"Echecs : {len(resultat.echecs)}  -> {chemin_rapport}")
+        imprimer(f"Echecs : {len(resultat.echecs)}  -> {chemin_rapport}")
     else:
-        print(f"Echecs : {len(resultat.echecs)}  (rapport non ecrit)")
-    print(
+        imprimer(f"Echecs : {len(resultat.echecs)}  (rapport non ecrit)")
+    imprimer(
         f"Verification : {controle['inscrits']} inscrits, "
         f"{len(controle['manquants'])} manquants, "
         f"{len(controle['taille_incorrecte'])} de taille incorrecte"
     )
+    if sur_fin is not None:
+        sur_fin(resultat, controle, chemin_rapport)
     return _code_de_sortie(resultat)
 
 
@@ -664,6 +720,10 @@ def _archiver_plusieurs_sessions(
     destination: Path,
     session=None,
     fabrique_ena=Ena,
+    imprimer=print,
+    imprimer_erreur=None,
+    annulation=None,
+    sur_fin=None,
 ) -> int:
     """Archive les cours d'une ou plusieurs sessions, en console.
 
@@ -701,10 +761,16 @@ def _archiver_plusieurs_sessions(
     d'authentification morte ne se reparant jamais en passant a la suivante.
 
     `session` et `fabrique_ena` sont injectables pour les tests, comme
-    _un_seul_cours.
+    _un_seul_cours. `imprimer`, `imprimer_erreur`, `annulation` et `sur_fin`
+    ont exactement le meme role et le meme contrat que dans _un_seul_cours --
+    voir sa docstring -- et sont ce qui permet a l'interface graphique de
+    reutiliser ce meme coeur pour --session et --tout, sans en dupliquer la
+    logique.
     """
     if session is None:
         session = SessionNavigateur()
+    if imprimer_erreur is None:
+        imprimer_erreur = lambda texte: print(texte, file=sys.stderr)  # noqa: E731
 
     evenements: "queue.Queue" = queue.Queue()
     contexte: dict = {}
@@ -712,11 +778,11 @@ def _archiver_plusieurs_sessions(
     def travailler() -> None:
         try:
             session.ouvrir()
-            print(MESSAGE_INVITATION_CONNEXION)
-            if not session.attendre_connexion():
+            imprimer(MESSAGE_INVITATION_CONNEXION)
+            if not session.attendre_connexion(annulation=annulation):
                 contexte["connexion_echouee"] = _message_echec_connexion(session)
                 return
-            print("Connexion detectee.")
+            imprimer("Connexion detectee.")
 
             ena = fabrique_ena(session)
             archiveur = Archiveur(ena, session.transport, destination, evenements)
@@ -798,7 +864,7 @@ def _archiver_plusieurs_sessions(
             # de tente, tout recommencera a zero) d'une expiration pendant
             # l'archivage lui-meme (reprise idempotente par manifeste).
             contexte["archivage_commence"] = True
-            contexte["resultat"] = archiveur.archiver(tous_les_cours)
+            contexte["resultat"] = archiveur.archiver(tous_les_cours, annulation=annulation)
         except SessionIntrouvable as erreur:
             contexte["erreur"] = erreur
         except SessionExpiree as erreur:
@@ -818,41 +884,38 @@ def _archiver_plusieurs_sessions(
     etat_progression: dict = {}
     try:
         while fil.is_alive():
-            _drainer_progression(evenements, etat_progression)
+            _drainer_progression(evenements, etat_progression, imprimer=imprimer)
             fil.join(timeout=0.2)
     except KeyboardInterrupt:
         # Meme raisonnement que _un_seul_cours : on attend la fin du fil,
         # dont le finally ferme le navigateur, plutot que de couper court et
         # laisser un processus Playwright orphelin sur Windows.
-        print(
-            "\nInterruption demandee : fermeture du navigateur en cours, patientez...",
-            file=sys.stderr,
-        )
+        imprimer_erreur("\nInterruption demandee : fermeture du navigateur en cours, patientez...")
         fil.join()
-        _drainer_progression(evenements, etat_progression)
+        _drainer_progression(evenements, etat_progression, imprimer=imprimer)
         archiveur = contexte.get("archiveur")
         if archiveur is not None:
             _ecrire_rapport_final(destination, archiveur.resultat)
         return 130
 
-    _drainer_progression(evenements, etat_progression)
+    _drainer_progression(evenements, etat_progression, imprimer=imprimer)
 
     if contexte.get("connexion_echouee"):
-        print(f"ECHEC : {contexte['connexion_echouee']}", file=sys.stderr)
+        imprimer_erreur(f"ECHEC : {contexte['connexion_echouee']}")
         return 1
 
     erreur = contexte.get("erreur")
     archiveur = contexte.get("archiveur")
 
     if isinstance(erreur, SessionIntrouvable):
-        print(f"ECHEC : {erreur}", file=sys.stderr)
-        print("Sessions disponibles :", file=sys.stderr)
+        imprimer_erreur(f"ECHEC : {erreur}")
+        imprimer_erreur("Sessions disponibles :")
         for session_disponible in erreur.sessions_disponibles:
-            print(f"  - {session_disponible.libelle}", file=sys.stderr)
+            imprimer_erreur(f"  - {session_disponible.libelle}")
         return 1
 
     if isinstance(erreur, SelecteurSessionsIllisible):
-        print(f"ECHEC : {erreur}", file=sys.stderr)
+        imprimer_erreur(f"ECHEC : {erreur}")
         if archiveur is not None:
             _ecrire_rapport_final(destination, archiveur.resultat)
         return 1
@@ -863,11 +926,10 @@ def _archiver_plusieurs_sessions(
             # Toutes les sessions visees ont ete enumerees, et archiver() a
             # deja commence a ecrire sur disque : la reprise par manifeste
             # ne retelecharge jamais ce qui est deja la.
-            print(
+            imprimer_erreur(
                 "\nSession expiree pendant l'archivage. Reconnectez-vous puis "
                 "relancez la meme commande : la reprise est idempotente, elle "
-                "continue la ou elle s'est arretee.",
-                file=sys.stderr,
+                "continue la ou elle s'est arretee."
             )
             cours_non_tentes = archiveur.resultat.cours_non_tentes if archiveur else 0
             cours_prevus = contexte.get("cours_enumeres", 0)
@@ -880,12 +942,11 @@ def _archiver_plusieurs_sessions(
             # La resolution meme des sessions visees a echoue (le tout
             # premier appel reseau) : on ne sait pas combien de sessions
             # sont concernees, encore moins combien de cours.
-            print(
+            imprimer_erreur(
                 "\nSession expiree avant meme de determiner les sessions visees. "
                 "Aucun fichier n'a encore ete traite : reconnectez-vous puis "
                 "relancez la meme commande, l'enumeration recommencera "
-                "entierement depuis le debut.",
-                file=sys.stderr,
+                "entierement depuis le debut."
             )
             message_rapport = (
                 "La session a expire avant meme de savoir combien de sessions sont "
@@ -899,12 +960,11 @@ def _archiver_plusieurs_sessions(
             # aucune des sessions visees, enumeree ou non.
             sessions_enumerees = contexte.get("sessions_enumerees", 0)
             cours_enumeres = contexte.get("cours_enumeres", 0)
-            print(
+            imprimer_erreur(
                 "\nSession expiree pendant l'enumeration des sessions. Aucun "
                 "fichier n'a encore ete traite : reconnectez-vous puis relancez "
                 "la meme commande, l'enumeration recommencera entierement "
-                "depuis le debut.",
-                file=sys.stderr,
+                "depuis le debut."
             )
             message_rapport = (
                 f"L'enumeration a ete interrompue : {sessions_enumerees} session(s) sur "
@@ -920,7 +980,7 @@ def _archiver_plusieurs_sessions(
         return 3
 
     if erreur is not None:
-        print(f"ECHEC inattendu : {erreur}", file=sys.stderr)
+        imprimer_erreur(f"ECHEC inattendu : {erreur}")
         if archiveur is not None:
             _ecrire_rapport_final(destination, archiveur.resultat)
         return 1
@@ -928,17 +988,21 @@ def _archiver_plusieurs_sessions(
     resultat = contexte["resultat"]
     controle = verifier(destination)
     _fusionner_verification(resultat, controle)
-    chemin_rapport = _ecrire_rapport_final(destination, resultat)
-    print(f"\nEcrits : {resultat.fichiers_ecrits}   Sautes : {resultat.fichiers_sautes}")
+    chemin_rapport = _ecrire_rapport_final(
+        destination, resultat, interruption=_message_interruption_annulation(resultat)
+    )
+    imprimer(f"\nEcrits : {resultat.fichiers_ecrits}   Sautes : {resultat.fichiers_sautes}")
     if chemin_rapport:
-        print(f"Echecs : {len(resultat.echecs)}  -> {chemin_rapport}")
+        imprimer(f"Echecs : {len(resultat.echecs)}  -> {chemin_rapport}")
     else:
-        print(f"Echecs : {len(resultat.echecs)}  (rapport non ecrit)")
-    print(
+        imprimer(f"Echecs : {len(resultat.echecs)}  (rapport non ecrit)")
+    imprimer(
         f"Verification : {controle['inscrits']} inscrits, "
         f"{len(controle['manquants'])} manquants, "
         f"{len(controle['taille_incorrecte'])} de taille incorrecte"
     )
+    if sur_fin is not None:
+        sur_fin(resultat, controle, chemin_rapport)
     return _code_de_sortie(resultat)
 
 
@@ -947,14 +1011,23 @@ def _session(
     destination: Path,
     session=None,
     fabrique_ena=Ena,
+    imprimer=print,
+    imprimer_erreur=None,
+    annulation=None,
+    sur_fin=None,
 ) -> int:
-    """Archive tous les cours d'une session, en console.
+    """Archive tous les cours d'une session, en console ou depuis l'interface
+    graphique.
 
     Le libelle demande est compare a ceux du selecteur avec une tolerance
     raisonnable sur la casse, les espaces de tete et de fin, et les accents
     (voir _normaliser_libelle_session) : il sera tape a la main. Si aucune
     session ne correspond, resoudre() leve SessionIntrouvable avec la liste
     reelle des sessions disponibles, affichee par _archiver_plusieurs_sessions.
+
+    `imprimer`, `imprimer_erreur`, `annulation` et `sur_fin` sont simplement
+    transmis a _archiver_plusieurs_sessions -- voir sa docstring et celle de
+    _un_seul_cours pour leur contrat complet.
     """
 
     def resoudre(ena):
@@ -965,25 +1038,52 @@ def _session(
                 return [candidate]
         raise SessionIntrouvable(libelle, disponibles)
 
-    return _archiver_plusieurs_sessions(resoudre, destination, session, fabrique_ena)
+    return _archiver_plusieurs_sessions(
+        resoudre,
+        destination,
+        session,
+        fabrique_ena,
+        imprimer=imprimer,
+        imprimer_erreur=imprimer_erreur,
+        annulation=annulation,
+        sur_fin=sur_fin,
+    )
 
 
 def _tout(
     destination: Path,
     session=None,
     fabrique_ena=Ena,
+    imprimer=print,
+    imprimer_erreur=None,
+    annulation=None,
+    sur_fin=None,
 ) -> int:
-    """Archive toutes les sessions, de la plus ancienne a la plus recente.
+    """Archive toutes les sessions, de la plus ancienne a la plus recente, en
+    console ou depuis l'interface graphique.
 
     Session.code est de la forme AAAASS (annee puis mois de debut) : trier
     dessus rend directement l'ordre chronologique, sans avoir a interpreter
     le libelle affiche.
+
+    `imprimer`, `imprimer_erreur`, `annulation` et `sur_fin` sont simplement
+    transmis a _archiver_plusieurs_sessions -- voir sa docstring et celle de
+    _un_seul_cours pour leur contrat complet.
     """
 
     def resoudre(ena):
         return sorted(ena.sessions_disponibles(), key=lambda s: s.code)
 
-    return _archiver_plusieurs_sessions(resoudre, destination, session, fabrique_ena)
+    return _archiver_plusieurs_sessions(
+        resoudre,
+        destination,
+        session,
+        fabrique_ena,
+        imprimer=imprimer,
+        imprimer_erreur=imprimer_erreur,
+        annulation=annulation,
+        sur_fin=sur_fin,
+    )
 
 
 def _verifier_mode(destination: Path, imprimer=print) -> int:
