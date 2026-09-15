@@ -320,7 +320,7 @@ def test_depot_telecharge_avec_metadonnees_et_csv(tmp_path):
     ena = EnaFactice(depots=[depot])
     resultat = Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
 
-    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Mes dépôts" / "TP1"
+    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Évaluations" / "TP1"
     assert (dossier / "travail.docx").exists()
 
     contenu = (dossier / "depots.csv").read_text(encoding="utf-8-sig")
@@ -509,16 +509,59 @@ def test_pages_de_la_section_evaluations_capturees(tmp_path):
     assert (base / "Pages" / "sommaire-des-resultats.pdf").exists()
 
 
-def test_description_et_resultats_d_evaluation_captures_dans_mes_depots(tmp_path):
+def test_description_et_resultats_d_evaluation_captures_dans_evaluations(tmp_path):
     # La description (consignes du travail) et l'onglet Resultats (retroaction
-    # possible) de chaque evaluation sont ranges dans le meme dossier que ses
-    # depots deja existants, sans creer de nouvelle arborescence.
+    # possible) de chaque evaluation sont ranges dans son sous-dossier sous
+    # Évaluations/.
     ena = EnaFactice()
     Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
 
-    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Mes dépôts" / "TP1"
+    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Évaluations" / "TP1"
     assert (dossier / "description.pdf").exists()
     assert (dossier / "resultats.pdf").exists()
+
+
+def test_page_boite_de_depot_capturee_en_pdf(tmp_path):
+    # La boite de depot elle-meme (dates, ponderation, fichiers a consulter)
+    # doit etre capturee en PDF au meme titre que la description : les
+    # fichiers deposes ne portent pas ces informations.
+    ena = EnaFactice()
+    Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
+
+    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Évaluations" / "TP1"
+    assert (dossier / "boite-de-depot.pdf").exists()
+
+
+def test_echec_capture_boite_de_depot_isole(tmp_path):
+    # Une capture ratee de la boite de depot ne doit couter que ce fichier,
+    # ni les depots deja telecharges, ni la description, ni le cours.
+    depot = Depot(nom="travail.docx", url="/contenu/sitescours/x/travail.docx?identifiant=a")
+    ena = EnaFactice(depots=[depot], erreur_capture_pdf_pour=("boite-de-depot.pdf",))
+    resultat = Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
+
+    assert any(e.element == "boite-de-depot.pdf" for e in resultat.echecs)
+    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Évaluations" / "TP1"
+    assert not (dossier / "boite-de-depot.pdf").exists()
+    assert (dossier / "travail.docx").exists()
+    assert (dossier / "description.pdf").exists()
+
+
+def test_visites_description_et_boite_de_depot_annoncees(tmp_path):
+    # L'utilisateur doit pouvoir constater, dans la console, que l'outil est
+    # bien alle sur la Description et la Boite de depot de chaque evaluation
+    # -- au meme titre que les fichiers telecharges.
+    evenements = queue.Queue()
+    ena = EnaFactice()
+    Archiveur(ena, transport_ok, tmp_path, evenements).archiver([COURS])
+
+    visites = []
+    while not evenements.empty():
+        type_evenement, texte = evenements.get()
+        if type_evenement == "visite":
+            visites.append(texte)
+
+    assert any("Description" in v and "TP1" in v for v in visites)
+    assert any("Boîte de dépôt" in v and "TP1" in v for v in visites)
 
 
 def test_fichiers_joints_description_recuperes(tmp_path):
@@ -529,7 +572,7 @@ def test_fichiers_joints_description_recuperes(tmp_path):
     ena = EnaFactice(fichiers_description=[enonce])
     resultat = Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
 
-    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Mes dépôts" / "TP1"
+    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Évaluations" / "TP1"
     assert (dossier / "enonce.pdf").exists()
     assert resultat.fichiers_ecrits >= 1
 
@@ -543,7 +586,7 @@ def test_fichiers_joints_resultats_evaluation_recuperes(tmp_path):
     ena = EnaFactice(fichiers_resultats_evaluation=[retroaction])
     Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
 
-    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Mes dépôts" / "TP1"
+    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Évaluations" / "TP1"
     assert (dossier / "retroaction.pdf").exists()
 
 
@@ -555,7 +598,7 @@ def test_capture_de_page_evaluation_en_echec_isolee(tmp_path):
     resultat = Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
 
     assert any(e.element == "description.pdf" for e in resultat.echecs)
-    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Mes dépôts" / "TP1"
+    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Évaluations" / "TP1"
     assert not (dossier / "description.pdf").exists()
     assert (dossier / "resultats.pdf").exists()
 
@@ -570,16 +613,18 @@ def test_cours_sans_evaluation_ne_produit_ni_dossier_ni_erreur(tmp_path):
     ).archiver([COURS])
 
     base = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique"
-    assert not (base / "Mes dépôts").exists()
+    assert not (base / "Évaluations").exists()
     assert not (base / "Pages" / "evaluations.pdf").exists()
     assert not (base / "Pages" / "sommaire-des-resultats.pdf").exists()
     assert resultat.echecs == []
 
 
 def test_arborescence_des_depots_existants_inchangee(tmp_path):
-    # Ajouter la capture des pages de description et de resultats ne doit pas
-    # deplacer les depots deja indexes par le manifeste : une reorganisation
-    # ferait retelecharger toute l'archive existante de l'utilisateur.
+    # Le dossier des evaluations porte desormais le nom "Evaluations" (decision
+    # de l'utilisateur, qui accepte le retelechargement ponctuel que ce
+    # renommage entraine sur les archives deja constituees) : chaque evaluation
+    # y garde son sous-dossier a son titre, avec ses depots, ses pieces
+    # jointes de description et le fichier de metadonnees des depots.
     depot = Depot(nom="travail.docx", url="/contenu/sitescours/x/travail.docx?identifiant=a")
     ena = EnaFactice(depots=[depot])
     Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
@@ -588,7 +633,7 @@ def test_arborescence_des_depots_existants_inchangee(tmp_path):
         tmp_path
         / "2026-1 Hiver"
         / "PHI-3900 Éthique"
-        / "Mes dépôts"
+        / "Évaluations"
         / "TP1"
         / "travail.docx"
     )

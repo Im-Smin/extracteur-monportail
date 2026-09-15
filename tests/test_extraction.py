@@ -858,3 +858,29 @@ def test_depots_depuis_html_html_reel_boite_de_depot_phi3900():
 
 def test_depots_depuis_html_page_sans_tableau():
     assert depots_depuis_html("<p>Aucun document</p>") == []
+
+
+def test_depots_depuis_html_travail_individuel_sans_colonne_depose_par():
+    # Sur un travail individuel, la boite de depot ne porte que trois
+    # colonnes ("Nom du document", "Taille", "Date de remise") : pas de
+    # "Depose par", puisque l'unique remise est forcement celle de
+    # l'utilisateur. L'association par en-tete doit absorber cette variation
+    # plutot que de planter ou de decaler les colonnes suivantes.
+    html = f"""
+    <table>
+      <tr><th>Nom du document</th><th>Taille</th><th>Date de remise</th></tr>
+      <tr>
+        <td><a href="{LIEN_DOCUMENT_DEPOSE}">Travail 3 (2025)</a></td>
+        <td>292,1 Ko</td>
+        <td>9 mars 2025</td>
+      </tr>
+    </table>
+    """
+    depots = depots_depuis_html(html)
+    assert len(depots) == 1
+    depot = depots[0]
+    assert depot.nom == "Z1-PHI3900-H2026-TP2 - Éthique et professionnalisme.docx"
+    assert depot.url == LIEN_DOCUMENT_DEPOSE
+    assert depot.taille == "292,1 Ko"
+    assert depot.depose_par == ""
+    assert depot.date_remise == "9 mars 2025"

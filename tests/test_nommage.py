@@ -91,3 +91,29 @@ def test_chemin_long_prefixe(tmp_path):
 def test_chemin_long_ne_double_pas_le_prefixe():
     deja = Path("\\\\?\\C:\\temp\\a.txt")
     assert chemin_long(deja).count("\\\\?\\") == 1
+
+
+def test_chemin_long_idempotent_quand_resolve_prefixe_deja(monkeypatch, tmp_path):
+    """Reproduit le cas reel : un titre de module long, tronque a 80
+    caracteres mais toujours long, sous une destination deja profonde. Sur
+    une machine ou LongPathsEnabled n'est pas active, Path.resolve() pose
+    lui-meme le prefixe \\\\?\\ pour un chemin qui depasse 260 caracteres --
+    chemin_long ne doit pas en reposer un second par-dessus.
+
+    Le chemin est construit en imbriquant des dossiers, comme les tests de
+    chemin long de test_stockage.py, pour depasser reellement la limite de
+    260 caracteres avant meme la resolution.
+    """
+    profond = tmp_path
+    for _ in range(15):
+        profond = profond / ("d" * 50)
+
+    cible = profond / "MQT2101_S09_P01.pdf.part"
+    assert len(str(cible)) > 260
+
+    resultat_resolu = "\\\\?\\" + str(cible)
+    monkeypatch.setattr(Path, "resolve", lambda self, *a, **k: Path(resultat_resolu))
+
+    resultat = chemin_long(cible)
+    assert resultat.count("\\\\?\\") == 1
+    assert not resultat.startswith("\\\\?\\\\\\?\\")
