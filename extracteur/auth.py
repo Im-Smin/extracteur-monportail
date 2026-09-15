@@ -90,6 +90,113 @@ FRAGMENT_HOTE_MICROSOFT = "microsoft"
 # exclusion implicite dans une simple difference de domaine.
 HOTES_CONNEXION_MICROSOFT = ("microsoftonline.com", "live.com")
 
+# Titre d'onglet distinctif de la fenetre pilotee, et prefixe applique a tout
+# titre ulterieur (page de connexion Microsoft, monPortail) pour que la
+# fenetre reste reconnaissable meme apres la navigation initiale. Introduits
+# a la suite d'un incident de terrain : l'utilisateur s'authentifiait dans
+# une fenetre de navigateur qui n'etait pas celle pilotee par le programme
+# (capture montrant une barre de favoris et un avatar de compte Google,
+# impossible sur le profil temporaire et vierge cree par ouvrir()), pendant
+# que la fenetre reellement pilotee restait indefiniment bloquee sur
+# login.microsoftonline.com. Rien ne distinguait alors les deux fenetres a
+# l'oeil ; ces constantes servent a rendre cette confusion impossible plutot
+# que de formuler une nouvelle hypothese de diagnostic.
+TITRE_FENETRE_PILOTEE = "ARCHIVEUR MONPORTAIL - CONNECTEZ-VOUS ICI"
+PREFIXE_TITRE_FENETRE_PILOTEE = "[Archiveur monPortail] "
+
+# Page affichee par ouvrir() avant toute navigation vers monPortail, le temps
+# que l'utilisateur la lise (voir DUREE_AFFICHAGE_PAGE_IDENTIFICATION). Batie
+# sans fichier externe ni dependance nouvelle : une simple chaine HTML passee
+# a Page.set_content(). Le texte evite les caracteres accentues, comme le
+# reste des messages de ce projet.
+PAGE_IDENTIFICATION = f"""<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>{TITRE_FENETRE_PILOTEE}</title>
+</head>
+<body style="font-family: sans-serif; padding: 3em; font-size: 1.4em; line-height: 1.5;">
+<h1>Fenetre ouverte par l'outil d'archivage monPortail</h1>
+<p><strong>C'est ICI qu'il faut se connecter, dans cette fenetre.</strong></p>
+<p>Cette fenetre est pilotee par le programme d'archivage. Son profil de
+navigateur est cree vierge a chaque lancement : ni favoris, ni compte
+personnel enregistre, ni historique de navigation.</p>
+<p>Se connecter dans une autre fenetre ou un autre navigateur ne servira a
+rien : le programme ne peut lire que les cookies de <em>cette</em>
+fenetre-ci, celle dont l'onglet porte le titre ci-dessus.</p>
+<p>Redirection automatique vers la page de connexion dans quelques
+secondes...</p>
+</body>
+</html>
+"""
+
+# Temps d'affichage de PAGE_IDENTIFICATION avant de naviguer vers monPortail :
+# assez long pour que l'utilisateur la remarque et la lise, assez court pour
+# ne pas retarder inutilement chaque lancement.
+DUREE_AFFICHAGE_PAGE_IDENTIFICATION = 3
+
+# Injecte dans chaque document charge par le contexte (page d'identification
+# comprise, puis toute navigation ulterieure -- page de connexion Microsoft,
+# monPortail) : reecrit le texte de l'element <title> avec le prefixe
+# distinctif des qu'il apparait ou change, pour que l'onglet reste
+# reconnaissable meme une fois sorti de PAGE_IDENTIFICATION. Un
+# MutationObserver sur l'element <title> plutot qu'une simple redefinition de
+# la propriete document.title : un titre pose par le HTML statique du serveur
+# (cas courant de la page de connexion Microsoft) ne passe jamais par cette
+# propriete, seul le contenu de l'element change reellement. add_init_script
+# s'execute avant tout script de la page chargee, contrairement a un simple
+# page.evaluate() ponctuel qui ne survivrait pas a une navigation.
+#
+# Non verifie contre le vrai site (hors de portee de cette tache : aucune
+# connexion reelle a monPortail). Limite connue et acceptee : une page qui
+# afficherait un titre sans jamais passer par l'element <title> du document
+# (mecanisme non standard) contournerait ce prefixe.
+SCRIPT_PREFIXE_TITRE = (
+    """
+(() => {
+  const prefixe = %r;
+  function appliquer(element) {
+    if (!element.textContent.startsWith(prefixe)) {
+      element.textContent = prefixe + element.textContent;
+    }
+  }
+  function surveiller() {
+    const existant = document.querySelector("title");
+    if (existant) {
+      appliquer(existant);
+      new MutationObserver(() => appliquer(existant)).observe(existant, {
+        childList: true,
+        characterData: true,
+        subtree: true,
+      });
+      return;
+    }
+    const attenteApparition = new MutationObserver(() => {
+      const element = document.querySelector("title");
+      if (!element) { return; }
+      attenteApparition.disconnect();
+      appliquer(element);
+      new MutationObserver(() => appliquer(element)).observe(element, {
+        childList: true,
+        characterData: true,
+        subtree: true,
+      });
+    });
+    attenteApparition.observe(document.documentElement || document, {
+      childList: true,
+      subtree: true,
+    });
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", surveiller, { once: true });
+  } else {
+    surveiller();
+  }
+})();
+"""
+    % (PREFIXE_TITRE_FENETRE_PILOTEE,)
+)
+
 
 def _est_hote_ulaval(hote: str) -> bool:
     """Vrai si `hote` est ulaval.ca ou un de ses sous-domaines."""
@@ -101,6 +208,23 @@ def _est_hote_connexion_microsoft(hote: str) -> bool:
     return any(
         hote == suffixe or hote.endswith("." + suffixe) for suffixe in HOTES_CONNEXION_MICROSOFT
     )
+
+
+def _decrire_page_ouverte(hote, titre) -> str:
+    """Description d'une page pour la ligne d'etat d'attendre_connexion.
+
+    Le titre seul ("Sign in to your account" contre "Cours - monPortail")
+    rend un ecart visible d'un coup d'oeil, la ou deux noms de domaine ne
+    disaient rien. `titre` peut etre None (page pas encore chargee, ou
+    lecture du titre inaccessible pendant une navigation) : on retombe alors
+    sur le seul nom d'hote, sans faire disparaitre la page de la ligne
+    d'etat pour autant.
+    """
+    if hote is None:
+        return "page pas encore chargee"
+    if titre:
+        return f"{hote} [{titre}]"
+    return hote
 
 
 def est_page_authentifiee(page) -> bool:
@@ -190,7 +314,7 @@ class SessionNavigateur:
         # apres un echec) : sert a batir un message d'echec informatif.
         self.dernier_domaine_observe = None
 
-    def ouvrir(self) -> None:
+    def ouvrir(self, sommeil=time.sleep) -> None:
         """Ouvre le navigateur sur un profil neuf, cree pour cette seule
         execution.
 
@@ -202,6 +326,17 @@ class SessionNavigateur:
         disque au fil des executions. fermer() est responsable de le
         supprimer, garantie qui doit tenir meme sur interruption ou erreur --
         voir sa docstring.
+
+        Affiche d'abord PAGE_IDENTIFICATION, le temps que l'utilisateur la
+        remarque, avant de naviguer vers monPortail : voir la docstring de
+        cette constante pour l'incident de terrain qui motive cette etape
+        (une fenetre non pilotee prise a tort pour celle du programme). La
+        fenetre est amenee au premier plan pendant que cette page est
+        affichee -- c'est le moment ou l'on invite a se connecter.
+
+        `sommeil` est injectable pour les tests, comme dans
+        attendre_connexion : aucun test ne doit faire dormir la suite pour de
+        vrai en attendant que l'utilisateur ait le temps de lire la page.
         """
         self.dossier_profil = Path(
             tempfile.mkdtemp(prefix=PREFIXE_DOSSIER_PROFIL_TEMPORAIRE)
@@ -212,8 +347,30 @@ class SessionNavigateur:
             headless=self.sans_fenetre,
             accept_downloads=True,
         )
+        self.contexte.add_init_script(SCRIPT_PREFIXE_TITRE)
         self.page = self.contexte.pages[0] if self.contexte.pages else self.contexte.new_page()
+        self.page.set_content(PAGE_IDENTIFICATION)
+        self._amener_au_premier_plan()
+        sommeil(DUREE_AFFICHAGE_PAGE_IDENTIFICATION)
         self.page.goto(URL_DEPART, wait_until="domcontentloaded")
+
+    def _amener_au_premier_plan(self) -> None:
+        """Demande le focus sur la fenetre pilotee, au moment ou l'on invite
+        a se connecter.
+
+        Page.bring_to_front() n'est pas garanti de reussir a voler le focus
+        selon le gestionnaire de fenetres du systeme -- Playwright ne le
+        promet pas. Non verifie sur cette plateforme (hors de portee de
+        cette tache : aucune connexion reelle a monPortail, et aucun test ne
+        peut ouvrir un vrai navigateur). Une erreur ici ne doit jamais
+        empecher la suite : au pire, l'utilisateur doit cliquer lui-meme sur
+        la fenetre, ce que le titre d'onglet distinctif et le contenu de
+        PAGE_IDENTIFICATION permettent de reconnaitre sans ambiguite.
+        """
+        try:
+            self.page.bring_to_front()
+        except ErreurPlaywright:
+            pass
 
     def _pages_du_contexte(self) -> list:
         """Pages a examiner : toutes celles connues du contexte, ou a
@@ -252,22 +409,35 @@ class SessionNavigateur:
                 continue
         return None
 
-    def _hostnames_pages_ouvertes(self) -> list:
-        """Nom d'hote de chaque page actuellement ouverte et exploitable.
+    def _informations_pages_ouvertes(self) -> list:
+        """Nom d'hote et titre de chaque page actuellement ouverte et
+        exploitable : un couple (hote, titre) par page.
 
-        `None` est conserve pour une page ouverte mais pas encore chargee
-        (about:blank) ; une page fermee ou dont l'examen echoue (navigation
-        en cours) est simplement omise, sans interrompre les autres.
+        `hote` est None pour une page ouverte mais pas encore chargee (about:
+        blank), comme dans l'ancienne version de cette methode qui ne portait
+        que le nom d'hote. Une page fermee, ou dont meme le nom d'hote est
+        illisible (navigation en cours), est omise sans interrompre l'examen
+        des autres -- meme garantie que _trouver_page_authentifiee.
+
+        `titre` est lu separement, et vaut None des que page.title() echoue :
+        une page en pleine navigation peut repondre a l'un et pas a l'autre.
+        Cet echec ne doit jamais faire disparaitre la page elle-meme de la
+        ligne d'etat, seulement le titre affiche a cote de son nom d'hote.
         """
-        hostnames = []
+        informations = []
         for page in self._pages_du_contexte():
             try:
                 if page.is_closed():
                     continue
-                hostnames.append(urlparse(page.url).hostname)
+                hote = urlparse(page.url).hostname
             except ErreurPlaywright:
                 continue
-        return hostnames
+            try:
+                titre = page.title()
+            except ErreurPlaywright:
+                titre = None
+            informations.append((hote, titre))
+        return informations
 
     def _toutes_pages_fermees(self) -> bool:
         """Vrai si plus aucune page exploitable ne subsiste (contexte
@@ -375,8 +545,9 @@ class SessionNavigateur:
             if self._toutes_pages_fermees():
                 return False
 
-            hostnames = self._hostnames_pages_ouvertes()
-            domaines_connus = [nom for nom in hostnames if nom is not None]
+            informations = self._informations_pages_ouvertes()
+            hotes = [hote for hote, _titre in informations]
+            domaines_connus = [nom for nom in hotes if nom is not None]
             self.dernier_domaine_observe = domaines_connus[0] if domaines_connus else None
 
             sur_microsoft = any(FRAGMENT_HOTE_MICROSOFT in nom for nom in domaines_connus)
@@ -390,15 +561,14 @@ class SessionNavigateur:
             if maintenant >= prochain_statut:
                 ecoule = int(maintenant - debut)
                 restant = int(limite - maintenant)
-                if not hostnames:
+                if not informations:
                     imprimer(f"en attente ({ecoule}s) - page pas encore chargee")
                 else:
                     descriptif = ", ".join(
-                        nom if nom is not None else "page pas encore chargee"
-                        for nom in hostnames
+                        _decrire_page_ouverte(hote, titre) for hote, titre in informations
                     )
                     imprimer(
-                        f"en attente ({ecoule}s) - {len(hostnames)} page(s) ouverte(s) : "
+                        f"en attente ({ecoule}s) - {len(informations)} page(s) ouverte(s) : "
                         f"{descriptif}"
                     )
 
