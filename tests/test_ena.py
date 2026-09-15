@@ -1,19 +1,29 @@
 import pytest
+from playwright.sync_api import Error as ErreurPlaywright
 from playwright.sync_api import TimeoutError as ErreurDelaiPlaywright
 
-from extracteur.ena import URL, Ena, SelecteurSessionsIllisible
+from extracteur.ena import URL, Ena, SelecteurSessionsIllisible, SelecteurSessionsIndisponible
 from extracteur.modele import Cours, Evaluation, Module, Session
 from extracteur.telechargement import SessionExpiree
 
 
 class LocatorFactice:
-    """Simule un locator Playwright avec une methode count()."""
+    """Simule un locator Playwright avec une methode count() et wait_for().
+
+    wait_for() reussit si le locator a deja au moins un element (nombre > 0),
+    leve un depassement de delai sinon -- comme le ferait un vrai Locator
+    Playwright interroge sur un element absent du DOM.
+    """
 
     def __init__(self, nombre):
         self._nombre = nombre
 
     def count(self):
         return self._nombre
+
+    def wait_for(self, timeout=None):
+        if self._nombre <= 0:
+            raise ErreurDelaiPlaywright(f"Timeout {timeout}ms exceeded.")
 
 
 class PageFactice:
@@ -510,6 +520,40 @@ class LienNonCliquable(LienFactice):
         raise ErreurDelaiPlaywright("Timeout 5000ms exceeded.")
 
 
+class LocatorBoutonSessionFactice:
+    """Simule le Locator du bouton du selecteur de sessions
+    (Ena.SELECTEUR_SESSIONS) : sa presence (wait_for), et le filtrage par
+    texte exact utilise pour confirmer, apres un clic sur une option, que le
+    bouton affiche bien la session demandee.
+
+    Lit sa valeur courante directement sur la page factice
+    (`page.session_selectionnee`), mise a jour par le clic sur une option
+    (voir LocatorOptionsSessionsFactice.first) -- exactement le mecanisme de
+    confirmation reel : le bouton porte la session choisie.
+    """
+
+    def __init__(self, page, present=True, texte_impose=None):
+        self.page = page
+        self.present = present
+        self._texte_impose = texte_impose
+
+    def _texte(self):
+        if self._texte_impose is not None:
+            return self._texte_impose
+        return self.page.session_selectionnee or ""
+
+    def count(self):
+        return 1 if self.present else 0
+
+    def wait_for(self, timeout=None):
+        if not self.present:
+            raise ErreurDelaiPlaywright(f"Timeout {timeout}ms exceeded.")
+
+    def filter(self, has_text=None):
+        correspond = self.present and (has_text is None or bool(has_text.search(self._texte())))
+        return LocatorBoutonSessionFactice(self.page, present=correspond, texte_impose=self._texte())
+
+
 class LocatorOptionsSessionsFactice:
     """Simule le Locator Playwright rendu par page.locator("a") (toute la
     page, pas seulement le bouton) puis filtre par la forme du libelle.
@@ -563,7 +607,9 @@ class PageAvecSelecteurSessions(PageFactice):
     la structure reelle constatee en session (menu deroulant AngularJS). Les
     options ne sont donc exposees que par SELECTEUR_OPTIONS_SESSIONS -- toute
     la page, sauf l'interieur du bouton -- jamais par un selecteur imbrique
-    dans le bouton.
+    dans le bouton. Le bouton lui-meme (SELECTEUR_SESSIONS) est present des
+    le depart et confirme, via LocatorBoutonSessionFactice, la session
+    reellement selectionnee apres un clic.
     """
 
     def __init__(self, libelles_sessions, html_par_session=None):
@@ -580,12 +626,51 @@ class PageAvecSelecteurSessions(PageFactice):
     def locator(self, selecteur):
         if selecteur == "a[href*='/ena/site/']":
             return LocatorFactice(1)
+        if selecteur == Ena.SELECTEUR_SESSIONS:
+            return LocatorBoutonSessionFactice(self)
         if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS:
             return LocatorOptionsSessionsFactice(self, self.libelles_sessions)
         return LocatorFactice(0)
 
     def content(self):
         return self.html_par_session.get(self.session_selectionnee, "<html></html>")
+
+
+class LocatorOptionsSessionsSansConfirmationFactice(LocatorOptionsSessionsFactice):
+    """Simule un clic perdu : l'option est bien cliquee, mais la valeur du
+    bouton ne change jamais -- reproduit un clic tombe dans le vide sur une
+    page pas encore prete (le DOM ne s'est pas encore mis a jour)."""
+
+    def filter(self, has_text=None):
+        correspondants = self.libelles
+        if has_text is not None:
+            correspondants = [libelle for libelle in self.libelles if has_text.search(libelle)]
+        return LocatorOptionsSessionsSansConfirmationFactice(self.page, correspondants)
+
+    @property
+    def first(self):
+        libelles = self.libelles
+
+        class Lien:
+            def click(self, **_kwargs):
+                if not libelles:
+                    raise ErreurDelaiPlaywright("Timeout 5000ms exceeded.")
+                # Ne met jamais a jour page.session_selectionnee : le bouton
+                # ne confirmera donc jamais le changement demande.
+
+        return Lien()
+
+
+class PageAvecClicPerdu(PageAvecSelecteurSessions):
+    """Le clic sur l'option de session ne fait jamais bouger la valeur
+    affichee par le bouton -- reproduit un clic tombe dans le vide sur une
+    page pas encore rendue. Lire la page dans cet etat rendrait les cours
+    d'une autre session (celle encore affichee) sous le nom demande."""
+
+    def locator(self, selecteur):
+        if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS:
+            return LocatorOptionsSessionsSansConfirmationFactice(self, self.libelles_sessions)
+        return super().locator(selecteur)
 
 
 def test_sessions_disponibles_leve_session_expiree_si_page_non_authentifiee():
@@ -673,6 +758,21 @@ def test_sites_de_session_sans_cours_rend_une_liste_vide():
     assert cours == []
 
 
+def test_sites_de_session_leve_si_le_clic_ne_confirme_jamais_le_changement():
+    # Le clic sur l'option est tombe dans le vide (page pas encore prete) :
+    # le bouton continue d'afficher l'ancienne valeur (ou aucune). Lire la
+    # page dans cet etat rendrait les cours d'une autre session sous le nom
+    # demande -- une corruption de donnees pire qu'une liste vide. On leve
+    # donc bruyamment plutot que de deviner.
+    page = PageAvecClicPerdu(["Hiver 2023"], {"Hiver 2023": "<html></html>"})
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+    session = Session(code="202301", libelle="Hiver 2023")
+
+    with pytest.raises(SelecteurSessionsIndisponible):
+        ena.sites_de_session(session)
+
+
 class PageNonAuthentifieeAvecSelecteurSessions(PageNonAuthentifiee):
     """Simule une page non authentifiee (login) avec le selecteur des sessions,
     pour tester que sessions_disponibles() et sites_de_session() levent
@@ -717,6 +817,8 @@ class PageAvecPanneauFrere(PageFactice):
 
     def locator(self, selecteur):
         if selecteur == "a[href*='/ena/site/']":
+            return LocatorFactice(1)
+        if selecteur == Ena.SELECTEUR_SESSIONS:
             return LocatorFactice(1)
         # L'ancien mecanisme, imbrique dans le bouton : ne doit plus jamais
         # etre interroge, et ne trouverait de toute facon rien ici.
@@ -764,6 +866,8 @@ class PageAvecBoutonPortantLaValeurCourante(PageFactice):
     def locator(self, selecteur):
         if selecteur == "a[href*='/ena/site/']":
             return LocatorFactice(1)
+        if selecteur == Ena.SELECTEUR_SESSIONS:
+            return LocatorFactice(1)
         if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS:
             return LocatorOptionsSessionsFactice(self, self.libelles_options)
         if selecteur == "a":
@@ -807,6 +911,8 @@ class PageSelecteurOuvertSansOptions(PageFactice):
     def locator(self, selecteur):
         if selecteur == "a[href*='/ena/site/']":
             return LocatorFactice(1)
+        if selecteur == Ena.SELECTEUR_SESSIONS:
+            return LocatorFactice(1)
         return LocatorOptionsSessionsFactice(self, [])
 
 
@@ -823,8 +929,11 @@ def test_sessions_disponibles_leve_si_le_panneau_ouvert_ne_rend_aucune_option():
 
 
 class PageSelecteurSessionsIntrouvable(PageFactice):
-    """Le clic sur le selecteur echoue (site pas encore charge, DOM change) :
-    aucune option n'est donc rendue. Ne doit pas faire echouer l'extraction."""
+    """Le bouton du selecteur est bien present dans le DOM (wait_for reussit),
+    mais le clic dessus echoue (DOM change entre l'attente et le clic, ou
+    element non actionnable). Ne doit plus jamais rendre une liste vide en
+    silence : une session ainsi ratee disparaitrait de l'enumeration sans le
+    moindre signe."""
 
     def click(self, *_args, **_kwargs):
         raise ErreurDelaiPlaywright("Timeout 5000ms exceeded.")
@@ -832,14 +941,120 @@ class PageSelecteurSessionsIntrouvable(PageFactice):
     def locator(self, selecteur):
         if selecteur == "a[href*='/ena/site/']":
             return LocatorFactice(1)
+        if selecteur == Ena.SELECTEUR_SESSIONS:
+            return LocatorFactice(1)
         return LocatorOptionsSessionsFactice(self, [])
 
 
-def test_sessions_disponibles_tolere_un_selecteur_qui_ne_s_ouvre_pas():
+def test_sessions_disponibles_leve_si_le_clic_sur_le_bouton_echoue_malgre_sa_presence():
+    # Symptome reel corrige ici : une session vide et un echec de chargement
+    # etaient indiscernables. Le bouton est present (wait_for reussit) mais
+    # le clic echoue : ce n'est plus tolere, on leve une exception explicite
+    # plutot que de rendre [] et laisser croire a une enumeration reussie.
     ena = Ena(SessionFactice({}))
     ena.session.page = PageSelecteurSessionsIntrouvable({})
 
-    assert ena.sessions_disponibles() == []
+    with pytest.raises(SelecteurSessionsIndisponible):
+        ena.sessions_disponibles()
+
+
+class LocatorBoutonJamaisPretFactice:
+    """Le bouton du selecteur n'est jamais trouve, quel que soit le delai
+    accorde -- un vrai probleme de chargement, distinct d'une session sans
+    cours."""
+
+    def wait_for(self, timeout=None):
+        raise ErreurDelaiPlaywright(f"Timeout {timeout}ms exceeded.")
+
+
+class PageSelecteurJamaisRendu(PageFactice):
+    """Le bouton du selecteur de sessions n'apparait jamais dans le DOM.
+    Reproduit un vrai probleme de chargement (page cassee, contenu jamais
+    rendu). Ne doit jamais rendre une liste vide."""
+
+    def locator(self, selecteur):
+        if selecteur == "a[href*='/ena/site/']":
+            return LocatorFactice(1)
+        if selecteur == Ena.SELECTEUR_SESSIONS:
+            return LocatorBoutonJamaisPretFactice()
+        return LocatorFactice(0)
+
+
+def test_sessions_disponibles_leve_si_le_bouton_du_selecteur_n_apparait_jamais():
+    # Le pire mode de defaillance du projet : une liste de sessions vide
+    # signifie que l'outil n'archive plus rien du tout, en silence. Si le
+    # bouton du selecteur n'apparait jamais, meme avec un delai genereux, il
+    # faut le dire bruyamment plutot que de rendre [].
+    ena = Ena(SessionFactice({}))
+    ena.session.page = PageSelecteurJamaisRendu({})
+
+    with pytest.raises(SelecteurSessionsIndisponible):
+        ena.sessions_disponibles()
+
+
+class LocatorBoutonRenduLentFactice:
+    """Simule un bouton qui ne repond a wait_for que si on lui laisse un
+    delai au moins aussi genereux que celui observe en session reelle (8 a 9
+    secondes de rendu AngularJS). Une fois ce delai atteint, marque la page
+    factice comme rendue -- exactement ce que ferait un vrai Locator
+    Playwright qui sonde le DOM jusqu'a trouver l'element ou expirer."""
+
+    def __init__(self, page):
+        self.page = page
+
+    def wait_for(self, timeout=None):
+        if timeout is None or timeout < self.page.delai_rendu_ms:
+            raise ErreurDelaiPlaywright(f"Timeout {timeout}ms exceeded.")
+        self.page.rendu = True
+
+
+class PageAuRenduLent(PageFactice):
+    """Reproduit fidelement le defaut constate en session reelle :
+    /portail/cours (application AngularJS) ne rend son contenu qu'apres un
+    delai (8 a 9 secondes en pratique), largement au-dela du signal reseau
+    "networkidle" qu'attendait l'ancien code. Tant que ce delai n'est pas
+    couvert par l'attente, le bouton du selecteur est introuvable et la page
+    ne contient aucune option -- exactement ce que verrait une lecture
+    prematuree.
+    """
+
+    def __init__(self, libelles_sessions, delai_rendu_ms):
+        super().__init__({})
+        self.libelles_sessions = libelles_sessions
+        self.delai_rendu_ms = delai_rendu_ms
+        self.rendu = False
+        self.selecteur_ouvert = False
+
+    def click(self, selecteur, **_kwargs):
+        if selecteur == Ena.SELECTEUR_SESSIONS:
+            self.selecteur_ouvert = True
+
+    def locator(self, selecteur):
+        if selecteur == "a[href*='/ena/site/']":
+            # Marqueur d'authentification : distinct du rendu Angular du
+            # selecteur de sessions, il ne depend donc pas de self.rendu.
+            return LocatorFactice(1)
+        if selecteur == Ena.SELECTEUR_SESSIONS:
+            return LocatorBoutonRenduLentFactice(self)
+        if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS:
+            return LocatorOptionsSessionsFactice(self, self.libelles_sessions if self.rendu else [])
+        return LocatorFactice(0)
+
+
+def test_sessions_disponibles_attend_un_rendu_lent_du_bouton_du_selecteur():
+    # /portail/cours (application AngularJS) met 8 a 9 secondes a se rendre
+    # en usage reel : "networkidle" se declenche bien avant que le bouton
+    # n'existe dans le DOM. Le delai transmis a l'attente doit etre assez
+    # genereux pour couvrir ce rendu, sinon la session semble a tort "sans
+    # cours" -- exactement le defaut qui a fait disparaitre deux sessions
+    # entieres d'une enumeration reelle.
+    page = PageAuRenduLent(["Hiver 2023", "Été 2023"], delai_rendu_ms=9000)
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+
+    sessions = ena.sessions_disponibles()
+
+    assert [s.libelle for s in sessions] == ["Hiver 2023", "Été 2023"]
 
 
 class LocatorTextesFactice(LocatorFactice):
@@ -876,6 +1091,8 @@ class PageDiagnostic(PageFactice):
 
     def locator(self, selecteur):
         if selecteur == "a[href*='/ena/site/']":
+            return LocatorFactice(1)
+        if selecteur == Ena.SELECTEUR_SESSIONS:
             return LocatorFactice(1)
         if selecteur == "a[href*='idSite=']":
             return LocatorFactice(self.nombre_liens_id_site)
@@ -928,6 +1145,8 @@ class PageAvecClasseOptionSession(PageFactice):
     def locator(self, selecteur):
         if selecteur == "a[href*='/ena/site/']":
             return LocatorFactice(1)
+        if selecteur == Ena.SELECTEUR_SESSIONS:
+            return LocatorFactice(1)
         if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS_CLASSE:
             return LocatorOptionsSessionsFactice(self, self.libelles_sessions)
         # Le repli par forme de libelle ne doit jamais etre interroge quand
@@ -967,6 +1186,8 @@ class PageAvecEspacesAutourDuLibelle(PageFactice):
 
     def locator(self, selecteur):
         if selecteur == "a[href*='/ena/site/']":
+            return LocatorFactice(1)
+        if selecteur == Ena.SELECTEUR_SESSIONS:
             return LocatorFactice(1)
         if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS_CLASSE:
             # La classe canonique ne trouve plus rien : force le repli.
