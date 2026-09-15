@@ -2,7 +2,13 @@ import pytest
 from playwright.sync_api import Error as ErreurPlaywright
 from playwright.sync_api import TimeoutError as ErreurDelaiPlaywright
 
-from extracteur.ena import URL, Ena, SelecteurSessionsIllisible, SelecteurSessionsIndisponible
+from extracteur.ena import (
+    CANDIDATS_DIAGNOSTIC_SESSIONS,
+    URL,
+    Ena,
+    SelecteurSessionsIllisible,
+    SelecteurSessionsIndisponible,
+)
 from extracteur.modele import Cours, Evaluation, Module, Session
 from extracteur.telechargement import SessionExpiree
 
@@ -24,6 +30,19 @@ class LocatorFactice:
     def wait_for(self, timeout=None):
         if self._nombre <= 0:
             raise ErreurDelaiPlaywright(f"Timeout {timeout}ms exceeded.")
+
+    def all_text_contents(self):
+        # Aucun appelant reel ne demande le texte d'un locator construit
+        # avec un nombre > 0 dans les tests actuels ; [] est le seul
+        # comportement coherent avec un locator qui ne represente rien de
+        # concret (utilise ici surtout comme repli "rien trouve").
+        return []
+
+    def filter(self, has_text=None):
+        # Meme rationnel que all_text_contents() : ce doublure ne represente
+        # jamais un ensemble d'options reelles, filtrer ne peut donc rien
+        # trouver de plus.
+        return LocatorFactice(0)
 
 
 class PageFactice:
@@ -1260,6 +1279,85 @@ def test_sites_de_session_tolere_les_espaces_autour_du_libelle():
     # trouvee (apres nettoyage), cliquee, et la page a ete reloadee.
     assert page.session_selectionnee == "Hiver 2026"
     assert [c.id_site for c in cours] == ["181216"]
+
+
+class PageAvecPanneauProgressif(PageFactice):
+    """Reproduit un panneau de sessions qui se peuple en differe (Angular) :
+    le premier sondage du compte d'options n'en voit que trois sur douze ;
+    tous les sondages suivants en voient les douze. La liste n'est jamais
+    vide, donc aucune exception ne serait levee par une lecture immediate --
+    c'est exactement le mode de defaillance partiel que la stabilisation du
+    compte doit prevenir."""
+
+    def __init__(self, libelles_partiels, libelles_complets):
+        super().__init__({})
+        self.libelles_partiels = libelles_partiels
+        self.libelles_complets = libelles_complets
+        self.nombre_sondages = 0
+        self.selecteur_ouvert = False
+
+    def click(self, selecteur, **_kwargs):
+        if selecteur == Ena.SELECTEUR_SESSIONS:
+            self.selecteur_ouvert = True
+
+    def locator(self, selecteur):
+        if selecteur == "a[href*='/ena/site/']":
+            return LocatorFactice(1)
+        if selecteur == Ena.SELECTEUR_SESSIONS:
+            return LocatorFactice(1)
+        if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS_CLASSE:
+            self.nombre_sondages += 1
+            libelles = (
+                self.libelles_partiels if self.nombre_sondages == 1 else self.libelles_complets
+            )
+            return LocatorOptionsSessionsFactice(self, libelles)
+        return LocatorFactice(0)
+
+
+def test_sessions_disponibles_attend_la_stabilisation_d_un_panneau_qui_se_peuple_progressivement():
+    # AngularJS peut peupler le panneau des sessions en differe : le premier
+    # sondage du compte d'options peut tomber sur un etat partiel (neuf sur
+    # douze en session reelle, ici trois sur douze). La liste n'est pas
+    # vide, donc .count() et .all_text_contents() ne levent rien -- trois
+    # sessions disparaitraient en silence sans une attente explicite de la
+    # stabilisation du compte.
+    douze_sessions = [
+        "Hiver 2027", "Automne 2026", "Hiver 2026", "Automne 2025", "Été 2025",
+        "Hiver 2025", "Automne 2024", "Été 2024", "Hiver 2024", "Automne 2023",
+        "Été 2023", "Hiver 2023",
+    ]
+    page = PageAvecPanneauProgressif(
+        libelles_partiels=douze_sessions[:3],
+        libelles_complets=douze_sessions,
+    )
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+
+    sessions = ena.sessions_disponibles()
+
+    assert len(sessions) == 12
+    assert [s.libelle for s in sessions] == douze_sessions
+
+
+def test_diagnostiquer_sessions_survit_a_un_bouton_qui_n_apparait_jamais():
+    # Le pire scenario pour ce mode : bouton absent, panne totale. C'est
+    # precisement pour ce cas que le diagnostic existe ; il ne doit jamais
+    # planter avant d'avoir rien examine.
+    ena = Ena(SessionFactice({}))
+    ena.session.page = PageSelecteurJamaisRendu({})
+
+    rapport = ena.diagnostiquer_sessions()
+
+    assert rapport["echec_ouverture_selecteur"] is not None
+    assert "selecteur de sessions" in rapport["echec_ouverture_selecteur"]
+    # Tous les selecteurs candidats ont neanmoins ete interroges, plus la
+    # forme du libelle : probablement tous a zero, ce qui est en soi une
+    # information utile.
+    assert len(rapport["candidats"]) == len(CANDIDATS_DIAGNOSTIC_SESSIONS) + 1
+    for _selecteur, nombre, echantillon in rapport["candidats"]:
+        assert nombre == 0
+        assert echantillon == []
+    assert rapport["liens_id_site"] == 0
 
 
 def test_sites_de_session_leve_si_la_session_est_introuvable():

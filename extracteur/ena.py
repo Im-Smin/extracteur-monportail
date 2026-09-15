@@ -117,6 +117,19 @@ DELAI_CHARGEMENT_SESSIONS_MS = 30_000
 # ce delai est nettement plus genereux que le temps observe.
 DELAI_CONFIRMATION_SESSION_MS = 5_000
 
+# Delai maximal et intervalle de sondage accordes a la stabilisation du
+# compte d'options du panneau de sessions, une fois celui-ci ouvert.
+# .count() et .all_text_contents() de Playwright n'attendent rien : ils
+# interrogent le DOM a l'instant precis ou on les appelle. Si AngularJS
+# peuple le panneau en differe, une lecture immediate peut tomber sur un
+# compte partiel (par exemple neuf options sur douze) sans qu'aucune
+# exception ne le signale -- la liste n'est pas vide. On sonde donc
+# plusieurs fois, et on ne lit le contenu final que lorsque le compte cesse
+# de varier entre deux sondages consecutifs, symetriquement a l'attente deja
+# appliquee au bouton et a sa confirmation.
+DELAI_STABILISATION_OPTIONS_SESSIONS_MS = 2_000
+INTERVALLE_SONDAGE_STABILISATION_MS = 100
+
 
 class SelecteurSessionsIndisponible(Exception):
     """Le mecanisme du selecteur de sessions n'a pas repondu comme attendu :
@@ -227,6 +240,32 @@ class Ena:
                 "session sans cours."
             ) from erreur
 
+    def _stabiliser_options(self, obtenir_options):
+        """Sonde obtenir_options() a repetition jusqu'a ce que son .count()
+        cesse de varier entre deux sondages consecutifs, ou que le delai
+        maximal soit ecoule ; rend le dernier Locator sonde.
+
+        .count() et .all_text_contents() de Playwright interrogent le DOM a
+        l'instant precis de l'appel, sans le moindre reessai. Un panneau
+        AngularJS peuple en differe peut donc etre lu a mi-chemin : le compte
+        n'est pas nul, alors qu'il grossit encore. Aucune exception n'est
+        levee dans ce cas -- la liste n'est simplement pas complete. On
+        sonde donc a nouveau plutot que de faire confiance a la premiere
+        lecture.
+        """
+        options = obtenir_options()
+        compte_precedent = options.count()
+        temps_ecoule = 0
+        while temps_ecoule < DELAI_STABILISATION_OPTIONS_SESSIONS_MS:
+            self.session.page.wait_for_timeout(INTERVALLE_SONDAGE_STABILISATION_MS)
+            temps_ecoule += INTERVALLE_SONDAGE_STABILISATION_MS
+            options = obtenir_options()
+            compte_actuel = options.count()
+            if compte_actuel == compte_precedent:
+                break
+            compte_precedent = compte_actuel
+        return options
+
     def _options_sessions(self):
         """Localisateur des options du selecteur, mecanisme partage par
         sessions_disponibles et sites_de_session.
@@ -250,8 +289,14 @@ class Ena:
         interieur au bouton lui-meme : sa valeur courante partage la meme
         forme de libelle que les options (ex. "Automne 2025"), et un <a> qui
         y apparaitrait un jour produirait un doublon.
+
+        Le compte est stabilise (voir _stabiliser_options) avant toute
+        decision : AngularJS peut peupler ce panneau en differe, et une
+        lecture immediate ne leve aucune exception sur un compte partiel.
         """
-        par_classe = self.session.page.locator(self.SELECTEUR_OPTIONS_SESSIONS_CLASSE)
+        par_classe = self._stabiliser_options(
+            lambda: self.session.page.locator(self.SELECTEUR_OPTIONS_SESSIONS_CLASSE)
+        )
         if par_classe.count() > 0:
             return par_classe
         return self._options_sessions_par_forme()
@@ -271,8 +316,15 @@ class Ena:
         le Locator n'est lui-meme jamais ancre : construit a partir des
         libelles deja valides cote Python, une simple recherche de
         sous-chaine tolere donc naturellement les espaces autour du texte.
+
+        Le compte est lui aussi stabilise (voir _stabiliser_options) avant
+        toute lecture : ce repli est interroge exactement au meme instant,
+        juste apres le clic d'ouverture, et court le meme risque de lire un
+        panneau AngularJS encore en cours de peuplement.
         """
-        candidats = self.session.page.locator(self.SELECTEUR_OPTIONS_SESSIONS)
+        candidats = self._stabiliser_options(
+            lambda: self.session.page.locator(self.SELECTEUR_OPTIONS_SESSIONS)
+        )
         textes_valides = {
             texte
             for texte in candidats.all_text_contents()
@@ -406,10 +458,25 @@ class Ena:
         de selecteurs candidats, le nombre d'elements trouves et leurs
         premiers textes une fois le panneau ouvert -- de quoi trancher sur
         des faits plutot que de deviner une nouvelle fois la structure reelle.
+
+        L'ouverture du selecteur (_ouvrir_selecteur_sessions) peut echouer et
+        lever SelecteurSessionsIndisponible : le bouton attendu par les
+        fonctions d'archivage est precisement le pire scenario que ce mode
+        diagnostic doit pouvoir examiner (panne totale, bouton jamais
+        apparu). Une exception non geree ici empecherait tout diagnostic --
+        on l'intercepte donc, on la consigne dans le rapport, et on
+        interroge quand meme tous les selecteurs candidats : des comptes a
+        zero sont eux-memes une information utile pour trancher sur des
+        faits.
         """
         self._visiter(URL.cours())
         self._assurer_authentifie()
-        self._ouvrir_selecteur_sessions()
+
+        echec_ouverture_selecteur = None
+        try:
+            self._ouvrir_selecteur_sessions()
+        except SelecteurSessionsIndisponible as erreur:
+            echec_ouverture_selecteur = str(erreur)
 
         candidats = []
         for selecteur in CANDIDATS_DIAGNOSTIC_SESSIONS:
@@ -423,7 +490,11 @@ class Ena:
 
         liens_id_site = self.session.page.locator("a[href*='idSite=']").count()
 
-        return {"candidats": candidats, "liens_id_site": liens_id_site}
+        return {
+            "candidats": candidats,
+            "liens_id_site": liens_id_site,
+            "echec_ouverture_selecteur": echec_ouverture_selecteur,
+        }
 
     def sites_de_session(self, session: Session) -> list[Cours]:
         """Selectionne une session puis rend ses cours.
