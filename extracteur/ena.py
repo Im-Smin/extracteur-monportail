@@ -124,11 +124,23 @@ DELAI_CONFIRMATION_SESSION_MS = 5_000
 # peuple le panneau en differe, une lecture immediate peut tomber sur un
 # compte partiel (par exemple neuf options sur douze) sans qu'aucune
 # exception ne le signale -- la liste n'est pas vide. On sonde donc
-# plusieurs fois, et on ne lit le contenu final que lorsque le compte cesse
-# de varier entre deux sondages consecutifs, symetriquement a l'attente deja
-# appliquee au bouton et a sa confirmation.
+# plusieurs fois, et on ne lit le contenu final que lorsque le compte se
+# maintient sur NOMBRE_SONDAGES_CONSECUTIFS_STABILISATION sondages
+# consecutifs, sur une fenetre d'observation d'au moins
+# DELAI_OBSERVATION_MINIMALE_STABILISATION_MS -- symetriquement a l'attente
+# deja appliquee au bouton et a sa confirmation.
+#
+# Deux sondages consecutifs egaux (version anterieure) s'est revele
+# insuffisant : rejoue contre des sequences de comptes programmees, ce
+# critere concluait "stable" sur un palier permanent a neuf options (au lieu
+# de douze), en silence, et sur une oscillation entre deux comptes, il
+# rendait la derniere valeur sondee -- tronquee -- sans lever la moindre
+# exception. Voir la docstring de _stabiliser_options pour ce que ce
+# durcissement garantit reellement, et ce qu'il ne peut pas garantir.
 DELAI_STABILISATION_OPTIONS_SESSIONS_MS = 2_000
 INTERVALLE_SONDAGE_STABILISATION_MS = 100
+NOMBRE_SONDAGES_CONSECUTIFS_STABILISATION = 3
+DELAI_OBSERVATION_MINIMALE_STABILISATION_MS = 600
 
 
 class SelecteurSessionsIndisponible(Exception):
@@ -156,6 +168,20 @@ class SelecteurSessionsIllisible(Exception):
     enumeration reussie. On leve donc bruyamment plutot que de rendre [].
     Lancer `python -m extracteur --diagnostic` pour un etat des lieux du DOM
     reel avant de deviner une nouvelle correction.
+    """
+
+
+class SelecteurSessionsInstable(Exception):
+    """Le compte d'options du panneau de sessions n'a jamais tenu
+    NOMBRE_SONDAGES_CONSECUTIFS_STABILISATION sondages consecutifs avant
+    l'ecoulement du delai maximal accorde a sa stabilisation.
+
+    Rejoue contre des sequences de comptes programmees, une oscillation
+    permanente (par exemple 3, 9, 3, 9, ...) ne se stabilise jamais : rendre
+    la derniere valeur sondee produirait une liste de sessions tronquee, sans
+    qu'aucun signe ne le trahisse. C'est pire qu'un arret franc. On leve donc
+    cette exception plutot que de deviner laquelle des valeurs sondees serait
+    la bonne.
     """
 
 
@@ -242,27 +268,62 @@ class Ena:
 
     def _stabiliser_options(self, obtenir_options):
         """Sonde obtenir_options() a repetition jusqu'a ce que son .count()
-        cesse de varier entre deux sondages consecutifs, ou que le delai
-        maximal soit ecoule ; rend le dernier Locator sonde.
+        se maintienne sur NOMBRE_SONDAGES_CONSECUTIFS_STABILISATION sondages
+        consecutifs, sur une fenetre d'observation d'au moins
+        DELAI_OBSERVATION_MINIMALE_STABILISATION_MS ; rend alors le dernier
+        Locator sonde.
 
         .count() et .all_text_contents() de Playwright interrogent le DOM a
         l'instant precis de l'appel, sans le moindre reessai. Un panneau
         AngularJS peuple en differe peut donc etre lu a mi-chemin : le compte
         n'est pas nul, alors qu'il grossit encore. Aucune exception n'est
-        levee dans ce cas -- la liste n'est simplement pas complete. On
-        sonde donc a nouveau plutot que de faire confiance a la premiere
-        lecture.
+        levee dans ce cas par Playwright lui-meme -- la liste n'est
+        simplement pas complete. On sonde donc a nouveau plutot que de faire
+        confiance a la premiere lecture.
+
+        Ce que ce durcissement garantit : un panneau qui se peuple
+        progressivement (par exemple trois options, puis douze) est attendu
+        jusqu'a ce qu'il cesse reellement de grossir, et non plus jusqu'a la
+        premiere coincidence entre deux sondages qui pourrait n'etre qu'une
+        pause passagere. Si le compte oscille sans jamais trouver de palier
+        avant le delai maximal, on leve SelecteurSessionsInstable plutot que
+        de rendre la derniere valeur sondee, tronquee.
+
+        Ce que ce durcissement NE garantit PAS : un panneau qui plafonne
+        durablement a un compte incomplet (par exemple neuf options qui ne
+        deviennent jamais douze) est indiscernable d'un panneau complet. Rien
+        dans le DOM ne distingue les deux cas, et aucun sondage supplementaire
+        ne peut trancher a la place de l'utilisateur. C'est pour cette raison
+        que le nombre de sessions trouvees est annonce explicitement par
+        --lister (voir _afficher_sessions) : seul l'utilisateur, qui connait
+        son propre parcours, peut remarquer qu'il en manque.
         """
         options = obtenir_options()
         compte_precedent = options.count()
+        sondages_consecutifs_egaux = 1
         temps_ecoule = 0
-        while temps_ecoule < DELAI_STABILISATION_OPTIONS_SESSIONS_MS:
+        while not (
+            sondages_consecutifs_egaux >= NOMBRE_SONDAGES_CONSECUTIFS_STABILISATION
+            and temps_ecoule >= DELAI_OBSERVATION_MINIMALE_STABILISATION_MS
+        ):
+            if temps_ecoule >= DELAI_STABILISATION_OPTIONS_SESSIONS_MS:
+                raise SelecteurSessionsInstable(
+                    "le compte d'options du panneau de sessions n'a jamais "
+                    f"tenu {NOMBRE_SONDAGES_CONSECUTIFS_STABILISATION} "
+                    "sondages consecutifs apres "
+                    f"{DELAI_STABILISATION_OPTIONS_SESSIONS_MS} ms d'attente "
+                    f"(dernier compte sonde : {compte_precedent}). Rendre "
+                    "cette derniere valeur risquerait de tronquer la liste "
+                    "des sessions en silence."
+                )
             self.session.page.wait_for_timeout(INTERVALLE_SONDAGE_STABILISATION_MS)
             temps_ecoule += INTERVALLE_SONDAGE_STABILISATION_MS
             options = obtenir_options()
             compte_actuel = options.count()
             if compte_actuel == compte_precedent:
-                break
+                sondages_consecutifs_egaux += 1
+            else:
+                sondages_consecutifs_egaux = 1
             compte_precedent = compte_actuel
         return options
 

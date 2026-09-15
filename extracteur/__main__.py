@@ -147,12 +147,21 @@ def _code_de_sortie(resultat: Resultat) -> int:
 def _afficher_sessions(ena, imprimer=print) -> None:
     """Enumere sessions et cours sans rien telecharger ni rien ecrire sur
     disque : la sonde la moins risquee pour valider l'enumeration contre la
-    vraie plateforme."""
+    vraie plateforme.
+
+    Le nombre de sessions trouvees est annonce en tete, avant la liste
+    elle-meme : c'est la seule protection reelle contre un panneau qui
+    plafonne durablement sur un compte incomplet (voir la docstring de
+    Ena._stabiliser_options). Aucun code ne peut deviner qu'il manque des
+    sessions a un palier atteint trop tot ; l'utilisateur, qui connait son
+    propre parcours, le peut d'un coup d'oeil.
+    """
     sessions = ena.sessions_disponibles()
     if not sessions:
         imprimer("Aucune session trouvee.")
         return
 
+    imprimer(f"{len(sessions)} session(s) detectee(s).")
     for session in sessions:
         imprimer(f"\n=== {session.libelle} ({session.code}) ===")
         cours_de_la_session = ena.sites_de_session(session)
