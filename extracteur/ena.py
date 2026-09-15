@@ -236,6 +236,53 @@ class Ena:
         motif_valides = re.compile("|".join(re.escape(texte) for texte in textes_valides))
         return candidats.filter(has_text=motif_valides)
 
+    def _selectionner_session(self, session: Session) -> None:
+        """Selectionne une session en cliquant son option dans le selecteur.
+
+        Repere l'option par le meme mecanisme que la lecture :
+        classe canonique d'abord, repli par forme de libelle. Tolere les
+        espaces parasites autour du libelle en comparant les textes nettoyes
+        cote Python, puis cherche le texte brut correspondant dans le DOM pour
+        le cliquer.
+
+        Leve SelecteurSessionsIllisible si le selecteur s'est bien ouvert mais
+        que la session n'y est introuvable : attendre les cours d'une autre
+        session et les archiver sous le nom demande est une corruption de
+        donnees pire qu'une liste vide. On garantit donc bruyamment que la
+        session demandee existe bien avant de laisser l'extraction se
+        poursuivre en silence avec des cours faux.
+        """
+        options = self._options_sessions()
+
+        # Charger tous les textes bruts des options et construire une
+        # correspondance entre libelle nettoye et texte brut. Cela permet
+        # de trouver l'option meme si elle porte des espaces parasites.
+        textes_bruts = options.all_text_contents()
+        correspondance = {}  # libelle_nettoye -> texte_brut
+        for texte in textes_bruts:
+            libelle_nettoye = texte.strip()
+            # Garder seulement la premiere occurrence (bien qu'il ne devrait
+            # y en avoir qu'une).
+            if libelle_nettoye not in correspondance:
+                correspondance[libelle_nettoye] = texte
+
+        # Chercher la session demandee.
+        libelle_demande = session.libelle.strip()
+        if libelle_demande not in correspondance:
+            sessions_trouvees = sorted(correspondance.keys())
+            raise SelecteurSessionsIllisible(
+                f"session '{session.libelle}' introuvable dans le selecteur. "
+                f"Sessions disponibles: {sessions_trouvees}"
+            )
+
+        # Construire un motif pour chercher le texte brut correspondant
+        # (non ancre, pour tolerer les espaces parasites).
+        texte_cible = correspondance[libelle_demande]
+        motif_cible = re.compile(re.escape(texte_cible))
+
+        lien = options.filter(has_text=motif_cible).first
+        lien.click(timeout=5000)
+
     def sessions_disponibles(self) -> list[Session]:
         """Liste les sessions offertes par le selecteur de /portail/cours.
 
@@ -297,15 +344,18 @@ class Ena:
         attend avant de lire le DOM. Une session sans cours (par exemple la
         session courante de l'utilisateur) est normale : elle rend une liste
         vide, pas une erreur.
+
+        Leve SelecteurSessionsIllisible si la session demandee n'est pas
+        presente dans le selecteur : attendre les cours d'une autre session
+        et les archiver sous le nom demande est une corruption de donnees
+        pire qu'une liste vide.
         """
         self._visiter(URL.cours())
         self._assurer_authentifie()
         self._ouvrir_selecteur_sessions()
 
         try:
-            motif_exact = re.compile(rf"^{re.escape(session.libelle)}$")
-            lien = self._options_sessions().filter(has_text=motif_exact).first
-            lien.click(timeout=5000)
+            self._selectionner_session(session)
             self.session.page.wait_for_timeout(1500)
         except (ErreurDelaiPlaywright, ErreurPlaywright):
             pass
