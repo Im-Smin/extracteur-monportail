@@ -133,8 +133,19 @@ def ecrire_depots(destination: Path, depots) -> None:
             redacteur.writerow([depot.nom, depot.taille, depot.depose_par, depot.date_remise])
 
 
-def ecrire_rapport(destination: Path, echecs, resume: dict) -> None:
-    """Le document qui dit ce qu'il reste a recuperer a la main."""
+def ecrire_rapport(destination: Path, echecs, resume: dict, interruption: str | None = None) -> None:
+    """Le document qui dit ce qu'il reste a recuperer a la main.
+
+    `interruption`, quand fourni, decrit en clair ce qu'une SessionExpiree a
+    empeche de tenter (nombre de sessions et de cours jamais atteints). Sa
+    seule presence fait basculer le rapport dans un troisieme etat, distinct
+    d'un succes complet ou d'un echec partiel : le travail a ete interrompu,
+    et l'archive est incomplete independamment du nombre d'echecs deja
+    consignes. C'est le cas le plus dangereux a mal representer -- un
+    utilisateur qui n'ouvre que ce fichier doit voir cette phrase, jamais lire
+    "tout le contenu vise a ete recupere" alors que l'enumeration ou
+    l'archivage se sont arretes en cours de route.
+    """
     lignes = []
     for echec in echecs:
         if echec.url and (echec.url.startswith("http://") or echec.url.startswith("https://")):
@@ -152,13 +163,25 @@ def ecrire_rapport(destination: Path, echecs, resume: dict) -> None:
             "</tr>"
         )
 
-    corps = (
-        "<p><strong>Aucun échec.</strong> Tout le contenu visé a été récupéré.</p>"
-        if not echecs
-        else "<table><tr><th>Cours</th><th>Élément</th><th>Cause</th><th>URL</th></tr>"
-        + "".join(lignes)
-        + "</table>"
+    bandeau_interruption = (
+        "<p><strong>Travail interrompu : l'archive est incomplète.</strong> "
+        f"{escape(interruption)}</p>"
+        if interruption
+        else ""
     )
+
+    if echecs:
+        tableau = (
+            "<table><tr><th>Cours</th><th>Élément</th><th>Cause</th><th>URL</th></tr>"
+            + "".join(lignes)
+            + "</table>"
+        )
+    elif interruption:
+        tableau = "<p>Aucun échec consigné parmi les éléments tentés avant l'interruption.</p>"
+    else:
+        tableau = "<p><strong>Aucun échec.</strong> Tout le contenu visé a été récupéré.</p>"
+
+    corps = bandeau_interruption + tableau
 
     resume_html = "".join(f"<li>{escape(str(k))} : {escape(str(v))}</li>" for k, v in resume.items())
 

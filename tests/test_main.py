@@ -329,6 +329,33 @@ def test_un_seul_cours_session_expiree_ecrit_le_rapport_partiel(tmp_path):
     assert (tmp_path / "_rapport.html").exists()
 
 
+def test_un_seul_cours_sessions_disponibles_expire_avant_toute_enumeration_ecrit_un_rapport(
+    tmp_path,
+):
+    # Reproduit le defaut critique : le tout premier appel reseau
+    # (sessions_disponibles, via _chercher_cours) leve SessionExpiree avant
+    # qu'aucun cours ne soit localise -- et, dans l'ancienne version, avant
+    # que l'archiveur n'existe. Un rapport doit malgre tout etre ecrit : ce
+    # document dit ce qu'il reste a recuperer a la main, et doit exister
+    # meme quand rien n'a ete tente.
+    class EnaExpireAvantEnumeration(EnaDeTest):
+        def sessions_disponibles(self):
+            raise SessionExpiree("expiree")
+
+    session = SessionFactice()
+
+    code = _un_seul_cours(
+        "181216", tmp_path, session=session, fabrique_ena=lambda _s: EnaExpireAvantEnumeration()
+    )
+
+    assert code == 3
+    chemin_rapport = tmp_path / "_rapport.html"
+    assert chemin_rapport.exists()
+    contenu = chemin_rapport.read_text(encoding="utf-8")
+    assert "interrompu" in contenu.lower()
+    assert "Tout le contenu visé a été récupéré" not in contenu
+
+
 def test_un_seul_cours_ferme_toujours_la_session_meme_sur_erreur_inattendue(tmp_path):
     class EnaCassee(EnaDeTest):
         def sessions_disponibles(self):
@@ -748,6 +775,130 @@ def test_tout_session_expiree_au_milieu_ecrit_le_rapport_de_ce_qui_est_fait(tmp_
     # Hiver n'expire) reste comptabilise : le rapport couvre l'ensemble de
     # ce qui a ete tente, pas seulement la derniere session.
     assert "<li>fichiers ecrits : 2</li>" in contenu
+
+
+def test_tout_sessions_disponibles_expire_avant_toute_enumeration_ecrit_rapport_interrompu(
+    tmp_path,
+):
+    # Reproduit le defaut critique : sessions_disponibles() (le tout premier
+    # appel reseau de resoudre_sessions) leve SessionExpiree avant meme de
+    # savoir combien de sessions sont visees. Un rapport doit malgre tout
+    # etre ecrit, et dire que le travail a ete interrompu.
+    class EnaExpireAvantEnumeration(EnaDeTest):
+        def sessions_disponibles(self):
+            raise SessionExpiree("expiree")
+
+    session = SessionFactice()
+
+    code = _tout(tmp_path, session=session, fabrique_ena=lambda _s: EnaExpireAvantEnumeration())
+
+    assert code == 3
+    chemin_rapport = tmp_path / "_rapport.html"
+    assert chemin_rapport.exists()
+    contenu = chemin_rapport.read_text(encoding="utf-8")
+    assert "interrompu" in contenu.lower()
+    assert "Tout le contenu visé a été récupéré" not in contenu
+
+
+def test_tout_sites_de_session_expire_apres_session_vide_rapport_ne_dit_jamais_tout_recupere(
+    tmp_path,
+):
+    # Reproduit le defaut critique : la session Automne (la plus ancienne,
+    # traitee en premier par --tout) est legitimement vide, puis
+    # l'enumeration de la session Hiver qui suit leve SessionExpiree.
+    # L'archiveur existe deja, mais archiver() n'a jamais ete appele : zero
+    # succes, zero echec. Le rapport ne doit jamais affirmer que tout le
+    # contenu vise a ete recupere.
+    class EnaExpireSurDeuxiemeSession(EnaDeTest):
+        def __init__(self):
+            super().__init__({SESSION_AUTOMNE: [], SESSION_HIVER: [COURS_HIVER]})
+
+        def sites_de_session(self, session):
+            if session == SESSION_HIVER:
+                raise SessionExpiree("expiree")
+            return super().sites_de_session(session)
+
+    session = SessionFactice()
+
+    code = _tout(tmp_path, session=session, fabrique_ena=lambda _s: EnaExpireSurDeuxiemeSession())
+
+    assert code == 3
+    chemin_rapport = tmp_path / "_rapport.html"
+    assert chemin_rapport.exists()
+    contenu = chemin_rapport.read_text(encoding="utf-8")
+    assert "Tout le contenu visé a été récupéré" not in contenu
+    assert "interrompu" in contenu.lower()
+
+
+def test_tout_interruption_apres_echec_partiel_liste_echecs_et_non_tentes(tmp_path):
+    # Un cours produit un echec ordinaire (pas une expiration), puis la
+    # session expire sur le cours suivant, laissant un troisieme cours
+    # jamais tente. Le rapport doit lister l'echec ordinaire ET signaler,
+    # dans la meme page, ce qui n'a jamais ete tente.
+    cours_echec = Cours(
+        id_site="300001", sigle="ECH-1000", titre="Cours en echec", session=SESSION_AUTOMNE
+    )
+    cours_jamais_tente = Cours(
+        id_site="300002", sigle="JAM-1000", titre="Cours jamais tente", session=SESSION_HIVER
+    )
+
+    class EnaAvecEchecPuisExpiration(EnaDeTest):
+        def __init__(self):
+            super().__init__(
+                {
+                    SESSION_AUTOMNE: [cours_echec],
+                    SESSION_HIVER: [COURS_HIVER, cours_jamais_tente],
+                }
+            )
+
+        def modules(self, cours):
+            if cours == cours_echec:
+                raise RuntimeError("panne simulee")
+            if cours == COURS_HIVER:
+                raise SessionExpiree("expiree")
+            return super().modules(cours)
+
+    session = SessionFactice()
+
+    code = _tout(tmp_path, session=session, fabrique_ena=lambda _s: EnaAvecEchecPuisExpiration())
+
+    assert code == 3
+    contenu = (tmp_path / "_rapport.html").read_text(encoding="utf-8")
+    assert "panne simulee" in contenu
+    assert "interrompu" in contenu.lower()
+    assert "jamais ete tentes" in contenu.lower()
+
+
+def test_message_console_distingue_rien_telecharge_de_reprise_possible(tmp_path, capsys):
+    # Le message d'expiration ne doit jamais affirmer une reprise idempotente
+    # quand rien n'a encore ete telecharge (expiration pendant l'enumeration).
+    class EnaExpireAvantEnumeration(EnaDeTest):
+        def sessions_disponibles(self):
+            raise SessionExpiree("expiree")
+
+    session_rien_telecharge = SessionFactice()
+    _tout(
+        tmp_path / "cas-rien-telecharge",
+        session=session_rien_telecharge,
+        fabrique_ena=lambda _s: EnaExpireAvantEnumeration(),
+    )
+    erreur_rien_telecharge = capsys.readouterr().err.lower()
+    assert "aucun fichier n'a encore ete traite" in erreur_rien_telecharge
+    assert "idempotente" not in erreur_rien_telecharge
+
+    ena_reprise_possible = EnaAvecExpirationSurUnCours(
+        {SESSION_AUTOMNE: [COURS_ANCIEN], SESSION_HIVER: [COURS_HIVER]},
+        cours_qui_expire=COURS_HIVER,
+    )
+    session_reprise_possible = SessionFactice()
+    _tout(
+        tmp_path / "cas-reprise-possible",
+        session=session_reprise_possible,
+        fabrique_ena=lambda _s: ena_reprise_possible,
+    )
+    erreur_reprise_possible = capsys.readouterr().err.lower()
+    assert "idempotente" in erreur_reprise_possible
+    assert "aucun fichier n'a encore ete traite" not in erreur_reprise_possible
 
 
 def test_session_et_tout_connexion_non_detectee_rend_code_non_nul():

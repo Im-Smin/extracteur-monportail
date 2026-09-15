@@ -57,12 +57,18 @@ class Archiveur:
 
     def archiver(self, cours_choisis) -> Resultat:
         notes_consolidees: list[tuple[str, str, object]] = []
+        total = len(cours_choisis)
 
-        for cours in cours_choisis:
+        for indice, cours in enumerate(cours_choisis):
             self._emettre("cours", cours.dossier())
             try:
                 self._archiver_un_cours(cours, notes_consolidees)
             except SessionExpiree:
+                # Le cours en cours (indice inclus) et tous ceux qui le
+                # suivaient dans cette liste n'ont jamais ete tentes : ni
+                # succes, ni echec consigne. Le rapport final doit pouvoir le
+                # dire, sans quoi une archive tronquee semble complete.
+                self.resultat.cours_non_tentes = total - indice
                 self._emettre("pause", "Session expiree - reconnectez-vous puis reprenez.")
                 raise
             except Exception as erreur:  # isolation stricte par cours

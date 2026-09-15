@@ -204,7 +204,42 @@ def test_rapport_liste_les_echecs(tmp_path):
 def test_rapport_sans_echec_le_dit(tmp_path):
     destination = tmp_path / "_rapport.html"
     ecrire_rapport(destination, [], {"fichiers": 12, "cours": 3})
-    assert "Aucun échec" in destination.read_text(encoding="utf-8")
+    contenu = destination.read_text(encoding="utf-8")
+    assert "Aucun échec" in contenu
+    assert "interrompu" not in contenu.lower()
+
+
+def test_rapport_interruption_sans_echec_ne_dit_jamais_tout_recupere(tmp_path):
+    # Reproduit le defaut critique : un archivage interrompu avant tout echec
+    # consigne (zero echec, zero fichier ecrit) ne doit jamais laisser croire
+    # a un succes total. Voir ecrire_rapport pour le troisieme etat.
+    destination = tmp_path / "_rapport.html"
+    ecrire_rapport(
+        destination,
+        [],
+        {"fichiers ecrits": 0, "fichiers sautes": 0},
+        interruption="La session a expire avant meme de savoir combien de sessions sont visees.",
+    )
+
+    contenu = destination.read_text(encoding="utf-8")
+    assert "Tout le contenu visé a été récupéré" not in contenu
+    assert "interrompu" in contenu.lower()
+    assert "expire avant meme" in contenu.lower()
+
+
+def test_rapport_interruption_avec_echecs_liste_les_deux(tmp_path):
+    destination = tmp_path / "_rapport.html"
+    ecrire_rapport(
+        destination,
+        [Echec(cours="PHI-3900", element="a.pdf", cause="HTTP 403")],
+        {"fichiers ecrits": 1, "fichiers sautes": 0},
+        interruption="2 cours sur 5 n'ont jamais ete tentes.",
+    )
+
+    contenu = destination.read_text(encoding="utf-8")
+    assert "HTTP 403" in contenu
+    assert "interrompu" in contenu.lower()
+    assert "2 cours sur 5" in contenu
 
 
 def test_rapport_echappe_le_html():

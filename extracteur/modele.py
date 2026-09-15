@@ -108,3 +108,10 @@ class Resultat:
     fichiers_ecrits: int = 0
     fichiers_sautes: int = 0
     echecs: list[Echec] = field(default_factory=list)
+    # Nombre de cours soumis a Archiveur.archiver() qui n'ont jamais ete
+    # tentes du tout, parce qu'une SessionExpiree a interrompu la boucle
+    # avant de les atteindre (le cours en cours au moment de l'interruption
+    # est compte lui aussi : ni succes ni echec consigne, son sort est
+    # indetermine). Zero dans tous les cas ou archiver() se termine sans
+    # etre interrompu.
+    cours_non_tentes: int = 0
