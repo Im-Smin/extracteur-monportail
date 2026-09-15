@@ -68,6 +68,18 @@ class URL:
         return f"/ena/site/resultats?idSite={id_site}"
 
     @staticmethod
+    def evaluation(id_site: str, id_evaluation: str) -> str:
+        """Onglet Description (par defaut) d'une evaluation."""
+        return f"/ena/site/evaluation?idSite={id_site}&idEvaluation={id_evaluation}"
+
+    @staticmethod
+    def evaluation_resultats(id_site: str, id_evaluation: str) -> str:
+        return (
+            f"/ena/site/evaluation?idSite={id_site}"
+            f"&idEvaluation={id_evaluation}&onglet=resultats"
+        )
+
+    @staticmethod
     def redirection(id_site: str, section: str) -> str:
         """Routeur a URL stables de l'ENA, verifie en phase 0 sur liste_modules."""
         return f"/lieninterne/redirection/{id_site}/{section}"
@@ -730,6 +742,27 @@ class Ena:
         html = self._visiter(URL.resultats(cours.id_site))
         self._assurer_authentifie()
         return resultats_depuis_html(html)
+
+    def fichiers_de_description(self, evaluation) -> list:
+        """Pieces jointes de l'onglet Description (par defaut) d'une evaluation.
+
+        Une description d'evaluation peut porter l'enonce d'un travail en
+        piece jointe : la plateforme fermant le 1er novembre 2026, ces
+        consignes disparaitraient sans laisser de trace si on ne les
+        recuperait pas ici, au meme titre que les documents deposes.
+        """
+        html = self._visiter(URL.evaluation(evaluation.id_site, evaluation.id_evaluation))
+        self._assurer_authentifie()
+        return fichiers_depuis_html(html)
+
+    def fichiers_de_resultats_evaluation(self, evaluation) -> list:
+        """Pieces jointes de l'onglet Resultats d'une evaluation : peut porter
+        une retroaction du professeur, au meme titre qu'un enonce en
+        description.
+        """
+        html = self._visiter(URL.evaluation_resultats(evaluation.id_site, evaluation.id_evaluation))
+        self._assurer_authentifie()
+        return fichiers_depuis_html(html)
 
     def parcourir_menu(self, cours, action) -> int:
         """Repli pour les sites sans modules ni evaluations.
