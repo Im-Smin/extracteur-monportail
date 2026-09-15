@@ -326,6 +326,35 @@ def test_cours_extrait_le_sigle_quand_il_est_present():
     assert cours[0].titre == "Analyse et modélisation des données"
 
 
+def test_cours_sigle_ignore_un_faux_positif_hors_forme_carte():
+    # Reproduit par relecture : le motif "[A-Z]{3}-\\d{4}" cherche n'importe
+    # ou dans le texte matchait aussi un numero de dossier sans rapport,
+    # produisant un sigle invente sans la moindre alerte. Le vrai sigle est
+    # toujours immediatement suivi d'une virgule (et generalement de la
+    # mention NRC) : un numero de dossier au milieu d'une phrase ne l'est pas.
+    html = """
+    <article class="mpo-boite">
+      <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=1">Cours X</a>
+      Reference dossier NRC-4567 pour ce cours
+    </article>
+    """
+    cours = cours_depuis_html(html, Session(code="202601", libelle="Hiver 2026"))
+    assert cours[0].sigle is None
+
+
+def test_cours_extrait_le_sigle_meme_sans_mention_nrc():
+    # Repli tolerant : la virgule apres le sigle suffit, meme sans "NRC" a la
+    # suite (forme non confirmee en session reelle, mais a ne pas perdre).
+    html = """
+    <article class="mpo-boite">
+      <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=1">Cours X</a>
+      MQT-2101, (sect. H1)
+    </article>
+    """
+    cours = cours_depuis_html(html, Session(code="202601", libelle="Hiver 2026"))
+    assert cours[0].sigle == "MQT-2101"
+
+
 def test_cours_deux_cartes_gardent_chacune_leur_propre_sigle():
     # Deuxieme carte relevee, meme session : verifie que le sigle de chaque
     # carte reste bien le sien, sans fuite d'une carte a l'autre.
@@ -371,6 +400,38 @@ def test_cours_associe_le_plan_de_cours_a_la_bonne_carte_sans_idsite_global():
     assert par_id["178960"].url_plan_de_cours is None
     assert par_id["181216"].url_plan_de_cours is not None
     assert "PHI-3900_H26_17541.pdf" in par_id["181216"].url_plan_de_cours
+
+
+def test_carte_avec_deux_liens_vers_le_meme_cours_ne_perd_pas_son_contenu():
+    # Motif deja documente ailleurs sur ce site pour les modules (icone puis
+    # titre) : deux liens de site vers LE MEME cours dans une carte. Compter
+    # les balises de lien (et non les identifiants de site distincts) fait
+    # croire a _carte_du_lien que l'ancetre commun contient deja "plus d'un"
+    # cours, et la remontee s'arrete aussitot -- la carte se reduit au lien
+    # lui-meme, sigle et plan de cours perdus en silence. La carte voisine ne
+    # doit pas non plus etre polluee par cette correction.
+    html = f"""
+    <div class="page">
+      <article class="mpo-boite">
+        <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=178960"></a>
+        <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=178960">Analyse et modélisation des données</a>
+        MQT-2101, NRC : 86582 (sect. H1)
+        <a href="https://sitescours.monportail.ulaval.ca{LIEN_PLANCOURS}">Plan de cours</a>
+      </article>
+      <article class="mpo-boite">
+        <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=178785">Aspects administratifs et humains de la gestion</a>
+        RLT-1700, NRC : 88184 (sect. Z3)
+      </article>
+    </div>
+    """
+    cours = cours_depuis_html(html, Session(code="202509", libelle="Automne 2025"))
+    par_id = {c.id_site: c for c in cours}
+
+    assert par_id["178960"].sigle == "MQT-2101"
+    assert par_id["178960"].titre == "Analyse et modélisation des données"
+    assert par_id["178960"].url_plan_de_cours is not None
+    # La carte voisine garde son propre sigle, sans fuite.
+    assert par_id["178785"].sigle == "RLT-1700"
 
 
 def test_cours_sans_sigle():

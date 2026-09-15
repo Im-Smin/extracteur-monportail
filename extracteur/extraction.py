@@ -195,10 +195,15 @@ def _scinder_note(texte: str) -> tuple[str, str]:
 
 
 # Sigle d'un cours tel qu'affiche sur la carte (jamais dans le texte du
-# lien) : "MQT-2101, NRC : 86582 (sect. H1)". Trois lettres majuscules, un
-# tiret, quatre chiffres -- une forme stable, distincte du reste du texte
-# de la carte (dates, modalites, etc.).
-MOTIF_SIGLE_CARTE = re.compile(r"[A-Z]{3}-\d{4}")
+# lien) : "MQT-2101, NRC : 86582 (sect. H1)". Chercher "trois lettres, un
+# tiret, quatre chiffres" n'importe ou dans le texte produit des faux
+# positifs : une carte mentionnant "Reference dossier NRC-4567 pour ce
+# cours" donnerait un sigle invente, sans la moindre alerte (releve par
+# relecture). Le sigle reel est toujours immediatement suivi d'une virgule,
+# generalement avant la mention NRC : on ancre dessus. Un repli tolerant
+# accepte la seule virgule si la mention NRC venait a manquer.
+MOTIF_SIGLE_CARTE = re.compile(r"[A-Z]{3}-\d{4}(?=\s*,\s*NRC\b)")
+MOTIF_SIGLE_CARTE_REPLI = re.compile(r"[A-Z]{3}-\d{4}(?=\s*,)")
 
 # Correspondance saison -> mois pour construire le code AAAASS attendu par
 # Session, a partir du libelle textuel affiche par le selecteur de sessions.
@@ -247,11 +252,31 @@ def _accueils_dans(ancetre, liens_accueil: list) -> list:
     return [lien for lien in liens_accueil if any(lien is present for present in presents)]
 
 
+def _ids_site_distincts(liens: list) -> set[str]:
+    """Identifiants de site distincts portes par une liste de liens d'accueil.
+
+    Un meme cours porte parfois deux liens vers son propre site (icone puis
+    titre, motif deja documente pour les modules -- voir
+    modules_depuis_html) : compter les balises plutot que les identifiants
+    ferait croire a _carte_du_lien qu'un ancetre contient deja "plus d'un"
+    cours des qu'il en contient deux liens du meme, et la remontee
+    s'arreterait aussitot, la carte se reduisant au lien lui-meme.
+    """
+    return {
+        id_site
+        for lien in liens
+        if (id_site := _id_site_depuis_href(lien["href"], "/ena/site/accueil"))
+    }
+
+
 def _carte_du_lien(lien, liens_accueil: list):
     """Remonte du lien de site vers son conteneur de carte, tolerant a la
-    classe CSS : le plus grand ancetre qui ne contient QUE ce lien de site
-    parmi tous ceux de la page. Un ancetre qui en contiendrait un second
-    fusionnerait deux cartes voisines -- on s'arrete juste avant.
+    classe CSS : le plus grand ancetre qui ne contient QUE l'identifiant de
+    site de ce lien, parmi tous ceux de la page. Un ancetre qui en
+    contiendrait un second fusionnerait deux cartes voisines -- on s'arrete
+    juste avant. Deux liens du meme cours (icone puis titre) ne comptent que
+    pour un seul identifiant : ils ne doivent jamais faire s'arreter la
+    remontee prematurement.
 
     Si aucun ancetre distinct n'existe (les liens de site sont freres, sans
     balise propre a chacun), la carte se limite au lien lui-meme : mieux vaut
@@ -260,7 +285,7 @@ def _carte_du_lien(lien, liens_accueil: list):
     candidat = lien
     ancetre = lien.parent
     while ancetre is not None:
-        if len(_accueils_dans(ancetre, liens_accueil)) != 1:
+        if len(_ids_site_distincts(_accueils_dans(ancetre, liens_accueil))) != 1:
             break
         candidat = ancetre
         ancetre = ancetre.parent
@@ -294,7 +319,10 @@ def cours_depuis_html(html: str, session: Session) -> list[Cours]:
         carte = _carte_du_lien(lien, liens_accueil)
 
         titre = lien.get_text(strip=True)
-        correspondance_sigle = MOTIF_SIGLE_CARTE.search(carte.get_text(" ", strip=True))
+        texte_carte = carte.get_text(" ", strip=True)
+        correspondance_sigle = (
+            MOTIF_SIGLE_CARTE.search(texte_carte) or MOTIF_SIGLE_CARTE_REPLI.search(texte_carte)
+        )
         sigle = correspondance_sigle.group(0) if correspondance_sigle else None
 
         url_plan_de_cours = None
