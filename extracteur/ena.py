@@ -133,6 +133,15 @@ class Ena:
     # sessions au lieu de douze.
     SELECTEUR_OPTIONS_SESSIONS = f'a:not({SELECTEUR_SESSIONS} a)'
 
+    # Classe portee par chaque option, constatee sur le DOM reel d'un panneau
+    # ouvert : <a class="mpo-deroulant-elem ng-binding premier" ...>. Marqueur
+    # canonique de ce composant, nettement plus stable qu'un motif de
+    # libelle -- et qui ne peut pas capter par erreur un lien du menu global
+    # du portail. Repere en premier ; MOTIF_LIBELLE_SESSION ne sert plus que
+    # de repli si cette classe venait a changer.
+    CLASSE_OPTION_SESSION = "mpo-deroulant-elem"
+    SELECTEUR_OPTIONS_SESSIONS_CLASSE = f'a.{CLASSE_OPTION_SESSION}:not({SELECTEUR_SESSIONS} a)'
+
     def __init__(self, session):
         self.session = session
 
@@ -177,21 +186,55 @@ class Ena:
         Le panneau ouvert par le clic sur SELECTEUR_SESSIONS n'est pas un
         descendant du bouton : c'est un conteneur frere, rendu ailleurs dans
         la page (menu deroulant AngularJS). Chercher un descendant du bouton
-        ne trouve donc jamais rien. On repere plutot les options sur toute la
-        page, par la forme stable de leur libelle (MOTIF_LIBELLE_SESSION) :
-        un nom de saison suivi d'une annee sur quatre chiffres, une forme qui
-        ne peut pas entrer en collision avec le menu global du portail.
-        Ce meme mecanisme sert a lire les options et a les cliquer : aucune
-        divergence entre lecture et clic.
+        ne trouve donc jamais rien ; on repere plutot les options sur toute
+        la page.
 
-        SELECTEUR_OPTIONS_SESSIONS exclut aussi explicitement tout <a>
+        Mecanisme repere en premier : la classe `mpo-deroulant-elem`,
+        constatee sur le DOM reel d'un panneau ouvert. Elle designe
+        canoniquement une option de ce composant -- nettement plus stable
+        qu'un motif de libelle, et elle ne peut pas capter par erreur un lien
+        du menu global du portail. Si elle ne trouve rien (marquage change),
+        _options_sessions_par_forme() prend le relai. Ce meme mecanisme sert
+        a lire les options et a les cliquer : aucune divergence entre lecture
+        et clic.
+
+        SELECTEUR_OPTIONS_SESSIONS_CLASSE exclut aussi explicitement tout <a>
         interieur au bouton lui-meme : sa valeur courante partage la meme
         forme de libelle que les options (ex. "Automne 2025"), et un <a> qui
         y apparaitrait un jour produirait un doublon.
         """
-        return self.session.page.locator(self.SELECTEUR_OPTIONS_SESSIONS).filter(
-            has_text=MOTIF_LIBELLE_SESSION
-        )
+        par_classe = self.session.page.locator(self.SELECTEUR_OPTIONS_SESSIONS_CLASSE)
+        if par_classe.count() > 0:
+            return par_classe
+        return self._options_sessions_par_forme()
+
+    def _options_sessions_par_forme(self):
+        """Repli de _options_sessions() si la classe mpo-deroulant-elem a
+        disparu ou change : options reperees par la forme stable de leur
+        libelle (MOTIF_LIBELLE_SESSION), un nom de saison suivi d'une annee
+        sur quatre chiffres.
+
+        Le texte brut de chaque candidat est lu puis nettoye (espaces de tete
+        et de fin retires) cote Python avant d'etre compare a
+        MOTIF_LIBELLE_SESSION -- plus sur que de confier cette comparaison,
+        ancree, telle quelle a une expression reguliere evaluee par le
+        navigateur sur un texte non nettoye, qui echouerait alors purement et
+        simplement. Le motif finalement transmis au navigateur pour filtrer
+        le Locator n'est lui-meme jamais ancre : construit a partir des
+        libelles deja valides cote Python, une simple recherche de
+        sous-chaine tolere donc naturellement les espaces autour du texte.
+        """
+        candidats = self.session.page.locator(self.SELECTEUR_OPTIONS_SESSIONS)
+        textes_valides = {
+            texte
+            for texte in candidats.all_text_contents()
+            if MOTIF_LIBELLE_SESSION.match(texte.strip())
+        }
+        if not textes_valides:
+            return candidats.filter(has_text=MOTIF_LIBELLE_SESSION)
+
+        motif_valides = re.compile("|".join(re.escape(texte) for texte in textes_valides))
+        return candidats.filter(has_text=motif_valides)
 
     def sessions_disponibles(self) -> list[Session]:
         """Liste les sessions offertes par le selecteur de /portail/cours.

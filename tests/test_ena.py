@@ -526,6 +526,9 @@ class LocatorOptionsSessionsFactice:
         self.page = page
         self.libelles = libelles
 
+    def count(self):
+        return len(self.libelles)
+
     def all_text_contents(self):
         return list(self.libelles)
 
@@ -902,6 +905,86 @@ def test_diagnostiquer_sessions_rend_le_compte_et_l_echantillon_par_candidat():
     # La forme du libelle, mecanisme reellement utilise, exclut "Profil".
     assert candidats["forme du libelle (saison + annee)"] == (2, ["Hiver 2026", "Automne 2025"])
     assert rapport["liens_id_site"] == 9
+
+
+class PageAvecClasseOptionSession(PageFactice):
+    """Simule le DOM reel constate a l'inspection : les options portent la
+    classe canonique `mpo-deroulant-elem`. Ce mecanisme est repere en premier,
+    avant tout recours a la forme du libelle."""
+
+    def __init__(self, libelles_sessions):
+        super().__init__({})
+        self.libelles_sessions = libelles_sessions
+        self.selecteur_ouvert = False
+        self.session_selectionnee = None
+
+    def click(self, selecteur, **_kwargs):
+        if selecteur == Ena.SELECTEUR_SESSIONS:
+            self.selecteur_ouvert = True
+
+    def locator(self, selecteur):
+        if selecteur == "a[href*='/ena/site/']":
+            return LocatorFactice(1)
+        if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS_CLASSE:
+            return LocatorOptionsSessionsFactice(self, self.libelles_sessions)
+        # Le repli par forme de libelle ne doit jamais etre interroge quand
+        # la classe canonique a deja tout trouve.
+        if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS:
+            raise AssertionError("le repli par forme de libelle a ete interroge alors que la classe canonique suffisait")
+        return LocatorFactice(0)
+
+
+def test_sessions_disponibles_repere_les_options_par_la_classe_canonique():
+    # Inspection du DOM reel : chaque option porte la classe
+    # `mpo-deroulant-elem`. C'est nettement plus stable qu'un motif de
+    # libelle, et ca ne peut pas capter par erreur un lien du menu global.
+    page = PageAvecClasseOptionSession(["Hiver 2027", "Automne 2026"])
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+
+    sessions = ena.sessions_disponibles()
+
+    assert [s.libelle for s in sessions] == ["Hiver 2027", "Automne 2026"]
+
+
+class PageAvecEspacesAutourDuLibelle(PageFactice):
+    """Simule un panneau ou la classe canonique a disparu (marquage change),
+    forcant le repli par forme de libelle -- et ou le texte brut porte des
+    espaces de mise en forme en tete et en fin, comme le redoutait la revue.
+    """
+
+    def __init__(self, libelles_bruts):
+        super().__init__({})
+        self.libelles_bruts = libelles_bruts
+        self.selecteur_ouvert = False
+
+    def click(self, selecteur, **_kwargs):
+        if selecteur == Ena.SELECTEUR_SESSIONS:
+            self.selecteur_ouvert = True
+
+    def locator(self, selecteur):
+        if selecteur == "a[href*='/ena/site/']":
+            return LocatorFactice(1)
+        if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS_CLASSE:
+            # La classe canonique ne trouve plus rien : force le repli.
+            return LocatorFactice(0)
+        if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS:
+            return LocatorOptionsSessionsFactice(self, self.libelles_bruts)
+        return LocatorFactice(0)
+
+
+def test_sessions_disponibles_repli_tolere_les_espaces_de_tete_et_de_fin():
+    # Meme si la classe canonique venait a disparaitre, le repli par forme de
+    # libelle ne doit pas s'effondrer face a des espaces de mise en forme
+    # autour du texte : un motif ancre confie tel quel au navigateur (donc
+    # applique au texte brut, non nettoye) les manquerait completement.
+    page = PageAvecEspacesAutourDuLibelle([" Hiver 2027 ", "\nAutomne 2026\n"])
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+
+    sessions = ena.sessions_disponibles()
+
+    assert [s.libelle for s in sessions] == ["Hiver 2027", "Automne 2026"]
 
 
 def test_parcourir_menu_tolere_un_lien_non_cliquable():
