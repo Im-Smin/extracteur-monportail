@@ -1229,12 +1229,16 @@ def main() -> int:
 
     try:
         from extracteur.ui import lancer
-    except ModuleNotFoundError as erreur:
-        if erreur.name != "extracteur.ui":
-            raise
+    except ImportError as erreur:
+        # Tkinter fait partie de la bibliotheque standard mais reste un paquet
+        # separe sur plusieurs distributions Linux (python3-tk). Sans lui, la
+        # fenetre est indisponible, mais tous les modes console restent
+        # parfaitement utilisables : on le dit plutot que de deverser une
+        # trace d'appels.
         print(
-            "Interface graphique non disponible : extracteur/ui.py n'existe pas "
-            "encore. Utilisez --lister ou --un-seul-cours <idSite> en attendant.",
+            f"Interface graphique indisponible ({erreur}).\n"
+            "Les modes console restent utilisables : --tout, "
+            '--session "Automne 2022", --un-seul-cours <idSite>, --lister.',
             file=sys.stderr,
         )
         return 1
