@@ -15,11 +15,23 @@ COURS = Cours(id_site="181216", sigle="PHI-3900", titre="Éthique", session=SESS
 
 
 class EnaFactice:
-    def __init__(self, fichiers=None, depots=None, notes=None, erreur=None):
+    def __init__(
+        self,
+        fichiers=None,
+        depots=None,
+        notes=None,
+        erreur=None,
+        fichiers_description=None,
+        fichiers_resultats_evaluation=None,
+        erreur_capture_pdf_pour=(),
+    ):
         self._fichiers = fichiers or []
         self._depots = depots if depots is not None else []
         self._notes = notes or []
         self._erreur = erreur
+        self._fichiers_description = fichiers_description or []
+        self._fichiers_resultats_evaluation = fichiers_resultats_evaluation or []
+        self._erreur_capture_pdf_pour = erreur_capture_pdf_pour
         self.pdf_captures = []
         self.plans_captures = []
 
@@ -37,6 +49,12 @@ class EnaFactice:
     def fichiers_de_depot(self, evaluation):
         return self._depots
 
+    def fichiers_de_description(self, evaluation):
+        return self._fichiers_description
+
+    def fichiers_de_resultats_evaluation(self, evaluation):
+        return self._fichiers_resultats_evaluation
+
     def resultats(self, cours):
         return self._notes
 
@@ -45,6 +63,8 @@ class EnaFactice:
 
     def capturer_pdf(self, chemin, destination):
         self.pdf_captures.append(destination)
+        if destination.name in self._erreur_capture_pdf_pour:
+            raise ErreurPlaywright(f"impression impossible : {destination.name}")
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(b"%PDF-1.4 factice")
 
@@ -474,3 +494,102 @@ def test_notes_consolidees_a_la_racine(tmp_path):
     assert "2026-1 Hiver" in contenu
     assert "PHI-3900 Éthique" in contenu
     assert "Examen 1" in contenu
+
+
+def test_pages_de_la_section_evaluations_capturees(tmp_path):
+    # La liste des evaluations et le sommaire des resultats sont des pages a
+    # part entiere de la section, pas seulement les fichiers deposes et le
+    # tableau des notes : elles doivent etre capturees comme les pages de
+    # module, dans Pages/.
+    ena = EnaFactice(notes=[Note(evaluation="Examen 1", note="18", sur="20")])
+    Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
+
+    base = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique"
+    assert (base / "Pages" / "evaluations.pdf").exists()
+    assert (base / "Pages" / "sommaire-des-resultats.pdf").exists()
+
+
+def test_description_et_resultats_d_evaluation_captures_dans_mes_depots(tmp_path):
+    # La description (consignes du travail) et l'onglet Resultats (retroaction
+    # possible) de chaque evaluation sont ranges dans le meme dossier que ses
+    # depots deja existants, sans creer de nouvelle arborescence.
+    ena = EnaFactice()
+    Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
+
+    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Mes dépôts" / "TP1"
+    assert (dossier / "description.pdf").exists()
+    assert (dossier / "resultats.pdf").exists()
+
+
+def test_fichiers_joints_description_recuperes(tmp_path):
+    # Une description d'evaluation peut porter l'enonce d'un travail en piece
+    # jointe : sans cette recuperation, ces consignes disparaitraient sans
+    # laisser de trace a la fermeture de la plateforme.
+    enonce = Fichier(nom="enonce.pdf", url="/contenu/sitescours/x/enonce.pdf?identifiant=a")
+    ena = EnaFactice(fichiers_description=[enonce])
+    resultat = Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
+
+    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Mes dépôts" / "TP1"
+    assert (dossier / "enonce.pdf").exists()
+    assert resultat.fichiers_ecrits >= 1
+
+
+def test_fichiers_joints_resultats_evaluation_recuperes(tmp_path):
+    # L'onglet Resultats d'une evaluation peut porter une retroaction en
+    # piece jointe, au meme titre qu'un enonce en description.
+    retroaction = Fichier(
+        nom="retroaction.pdf", url="/contenu/sitescours/x/retroaction.pdf?identifiant=a"
+    )
+    ena = EnaFactice(fichiers_resultats_evaluation=[retroaction])
+    Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
+
+    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Mes dépôts" / "TP1"
+    assert (dossier / "retroaction.pdf").exists()
+
+
+def test_capture_de_page_evaluation_en_echec_isolee(tmp_path):
+    # Une capture ratee (ici la description) ne doit couter que ce fichier,
+    # jamais l'evaluation ni le cours : l'onglet Resultats de la meme
+    # evaluation doit quand meme etre capture.
+    ena = EnaFactice(erreur_capture_pdf_pour=("description.pdf",))
+    resultat = Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
+
+    assert any(e.element == "description.pdf" for e in resultat.echecs)
+    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Mes dépôts" / "TP1"
+    assert not (dossier / "description.pdf").exists()
+    assert (dossier / "resultats.pdf").exists()
+
+
+def test_cours_sans_evaluation_ne_produit_ni_dossier_ni_erreur(tmp_path):
+    class EnaSansEvaluations(EnaFactice):
+        def evaluations(self, cours):
+            return []
+
+    resultat = Archiveur(
+        EnaSansEvaluations(), transport_ok, tmp_path, queue.Queue()
+    ).archiver([COURS])
+
+    base = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique"
+    assert not (base / "Mes dépôts").exists()
+    assert not (base / "Pages" / "evaluations.pdf").exists()
+    assert not (base / "Pages" / "sommaire-des-resultats.pdf").exists()
+    assert resultat.echecs == []
+
+
+def test_arborescence_des_depots_existants_inchangee(tmp_path):
+    # Ajouter la capture des pages de description et de resultats ne doit pas
+    # deplacer les depots deja indexes par le manifeste : une reorganisation
+    # ferait retelecharger toute l'archive existante de l'utilisateur.
+    depot = Depot(nom="travail.docx", url="/contenu/sitescours/x/travail.docx?identifiant=a")
+    ena = EnaFactice(depots=[depot])
+    Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
+
+    attendu = (
+        tmp_path
+        / "2026-1 Hiver"
+        / "PHI-3900 Éthique"
+        / "Mes dépôts"
+        / "TP1"
+        / "travail.docx"
+    )
+    assert attendu.exists()

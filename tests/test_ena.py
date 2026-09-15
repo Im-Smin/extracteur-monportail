@@ -155,6 +155,22 @@ def test_resultats_leve_session_expiree_si_page_non_authentifiee():
         ena.resultats(COURS_QUELCONQUE)
 
 
+def test_fichiers_de_description_leve_session_expiree_si_page_non_authentifiee():
+    ena = Ena(SessionFactice({}))
+    ena.session.page = PageNonAuthentifiee({})
+
+    with pytest.raises(SessionExpiree):
+        ena.fichiers_de_description(Evaluation(id_site="1", id_evaluation="1", titre="T"))
+
+
+def test_fichiers_de_resultats_evaluation_leve_session_expiree_si_page_non_authentifiee():
+    ena = Ena(SessionFactice({}))
+    ena.session.page = PageNonAuthentifiee({})
+
+    with pytest.raises(SessionExpiree):
+        ena.fichiers_de_resultats_evaluation(Evaluation(id_site="1", id_evaluation="1", titre="T"))
+
+
 def test_parcourir_menu_leve_session_expiree_si_page_non_authentifiee():
     ena = Ena(SessionFactice({}))
     ena.session.page = PageNonAuthentifiee({})
@@ -199,6 +215,12 @@ def test_urls_canoniques_sont_bien_formees():
     )
     assert URL.redirection("181216", "liste_modules") == (
         "/lieninterne/redirection/181216/liste_modules"
+    )
+    assert URL.evaluation("181216", "1035434") == (
+        "/ena/site/evaluation?idSite=181216&idEvaluation=1035434"
+    )
+    assert URL.evaluation_resultats("181216", "1035434") == (
+        "/ena/site/evaluation?idSite=181216&idEvaluation=1035434&onglet=resultats"
     )
 
 
@@ -427,6 +449,47 @@ def test_fichiers_de_depot_rend_des_depots_complets():
     assert depots[0].taille == "3,25 Mo"
     assert depots[0].depose_par == "Buteau, Laurent"
     assert depots[0].date_remise == "12 avr. 2026 18h43"
+
+
+def test_fichiers_de_description_visitent_l_onglet_par_defaut():
+    ena = Ena(SessionFactice({}))
+    ena.fichiers_de_description(Evaluation(id_site="183033", id_evaluation="1035434", titre="T"))
+    visitee = ena.session.page.visitees[0]
+    assert "idEvaluation=1035434" in visitee
+    assert "onglet" not in visitee
+
+
+def test_fichiers_de_description_extrait_les_pieces_jointes():
+    # Une description d'evaluation peut porter l'enonce d'un travail en piece
+    # jointe : reutilise fichiers_depuis_html, deja fiable pour les modules.
+    html = '<a href="/contenu/sitescours/x/enonce.pdf?identifiant=a">Énoncé</a>'
+    ena = Ena(SessionFactice({"idEvaluation=1035434": html}))
+
+    fichiers = ena.fichiers_de_description(
+        Evaluation(id_site="183033", id_evaluation="1035434", titre="T")
+    )
+
+    assert [f.nom for f in fichiers] == ["enonce.pdf"]
+
+
+def test_fichiers_de_resultats_evaluation_visitent_l_onglet_resultats():
+    ena = Ena(SessionFactice({}))
+    ena.fichiers_de_resultats_evaluation(
+        Evaluation(id_site="183033", id_evaluation="1035434", titre="T")
+    )
+    assert "onglet=resultats" in ena.session.page.visitees[0]
+
+
+def test_fichiers_de_resultats_evaluation_extrait_les_pieces_jointes():
+    # L'onglet Resultats peut porter une retroaction en piece jointe.
+    html = '<a href="/contenu/sitescours/x/retroaction.pdf?identifiant=a">Rétroaction</a>'
+    ena = Ena(SessionFactice({"onglet=resultats": html}))
+
+    fichiers = ena.fichiers_de_resultats_evaluation(
+        Evaluation(id_site="183033", id_evaluation="1035434", titre="T")
+    )
+
+    assert [f.nom for f in fichiers] == ["retroaction.pdf"]
 
 
 def test_fichiers_du_module_visitent_l_url_du_module():

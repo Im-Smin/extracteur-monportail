@@ -17,6 +17,17 @@ from extracteur.telechargement import ErreurPermanente, SessionExpiree, telechar
 
 NOM_PLAN_DE_COURS = "plan-de-cours.pdf"
 
+# Pages de synthese de la section Evaluations et resultats, capturees une
+# seule fois par cours dans Pages/, au meme titre que les pages de module.
+NOM_PAGE_EVALUATIONS = "evaluations.pdf"
+NOM_PAGE_RESULTATS = "sommaire-des-resultats.pdf"
+
+# PDF d'onglet d'une evaluation, ranges dans son dossier de depots existant
+# (voir chemin_du_cours et la boucle des evaluations) : la description porte
+# parfois l'enonce d'un travail, l'onglet Resultats une retroaction.
+NOM_DESCRIPTION_EVALUATION = "description.pdf"
+NOM_RESULTATS_EVALUATION = "resultats.pdf"
+
 
 def _segment(texte: str) -> str:
     return tronquer(nom_sur(texte))
@@ -82,6 +93,8 @@ class Archiveur:
         return self.resultat
 
     def _archiver_un_cours(self, cours, notes_consolidees) -> None:
+        from extracteur.ena import URL
+
         base = self.chemin_du_cours(cours)
 
         self._archiver_plan_de_cours(cours, base)
@@ -96,6 +109,11 @@ class Archiveur:
             self._capturer(cours, module, cible_pdf)
 
         evaluations = self.ena.evaluations(cours)
+        if evaluations:
+            self._capturer_page_section(
+                cours, URL.evaluations(cours.id_site), base / "Pages" / NOM_PAGE_EVALUATIONS
+            )
+
         for evaluation in evaluations:
             dossier = base / "Mes dépôts" / _segment(evaluation.titre or evaluation.id_evaluation)
             depots = self.ena.fichiers_de_depot(evaluation)
@@ -105,11 +123,38 @@ class Archiveur:
                 dossier.mkdir(parents=True, exist_ok=True)
                 ecrire_depots(dossier / "depots.csv", depots)
 
+            # La plateforme ferme le 1er novembre 2026 : les consignes d'un
+            # travail, redigees dans la description de son evaluation, et une
+            # eventuelle retroaction dans l'onglet Resultats disparaitraient
+            # sans laisser de trace si on ne les capturait pas ici. Range dans
+            # le meme dossier que les depots deja existants, sans le modifier :
+            # le manifeste indexe ces chemins, les reorganiser ferait
+            # retelecharger toute l'archive.
+            self._archiver_page_evaluation(
+                cours,
+                evaluation,
+                dossier,
+                self.ena.fichiers_de_description,
+                URL.evaluation(evaluation.id_site, evaluation.id_evaluation),
+                NOM_DESCRIPTION_EVALUATION,
+            )
+            self._archiver_page_evaluation(
+                cours,
+                evaluation,
+                dossier,
+                self.ena.fichiers_de_resultats_evaluation,
+                URL.evaluation_resultats(evaluation.id_site, evaluation.id_evaluation),
+                NOM_RESULTATS_EVALUATION,
+            )
+
         notes = self.ena.resultats(cours)
         if notes:
             ecrire_notes(base / "notes.csv", notes)
             for note in notes:
                 notes_consolidees.append((cours.session.dossier(), cours.dossier(), note))
+            self._capturer_page_section(
+                cours, URL.resultats(cours.id_site), base / "Pages" / NOM_PAGE_RESULTATS
+            )
 
         # Repli. Certains sites n'ont ni modules ni evaluations : leur contenu
         # n'est atteignable qu'en cliquant les entrees de leur propre menu. Sans
@@ -188,6 +233,56 @@ class Archiveur:
             self.ena.capturer_pdf(URL.module(module.id_site, module.id_module), destination)
         # Meme isolation que pour le plan de cours : une capture de page ratee
         # ne doit pas emporter les autres modules ni le reste du cours.
+        except (ErreurPlaywright, OSError) as erreur:
+            self.resultat.echecs.append(
+                Echec(cours=cours.dossier(), element=destination.name, cause=f"PDF : {erreur}")
+            )
+
+    def _capturer_page_section(self, cours, chemin: str, destination: Path) -> None:
+        """Capture en PDF une page de synthese de la section evaluations
+        (liste des evaluations, ou sommaire des resultats).
+
+        Isolee comme _capturer : une impression ratee ne doit couter que
+        cette page, jamais le cours.
+        """
+        if destination.exists():
+            return
+        try:
+            self.ena.capturer_pdf(chemin, destination)
+        except (ErreurPlaywright, OSError) as erreur:
+            self.resultat.echecs.append(
+                Echec(cours=cours.dossier(), element=destination.name, cause=f"PDF : {erreur}")
+            )
+
+    def _archiver_page_evaluation(
+        self, cours, evaluation, dossier: Path, obtenir_fichiers, chemin: str, nom_pdf: str
+    ) -> None:
+        """Piece jointe et capture PDF d'un onglet d'evaluation (description
+        ou resultats).
+
+        Isolee comme _capturer et _archiver_plan_de_cours : un echec ici
+        (navigation Playwright, ecriture disque du PDF) ne coute jamais que ce
+        fichier, ni l'evaluation ni le cours. Le telechargement des pieces
+        jointes deja trouvees est lui-meme isole fichier par fichier, via
+        _recuperer/_telecharger.
+        """
+        try:
+            fichiers = obtenir_fichiers(evaluation)
+        except SessionExpiree:
+            raise
+        except ErreurPlaywright as erreur:
+            self.resultat.echecs.append(
+                Echec(cours=cours.dossier(), element=nom_pdf, cause=str(erreur))
+            )
+        else:
+            for fichier in fichiers:
+                self._recuperer(cours, fichier, dossier)
+
+        destination = dossier / nom_pdf
+        if destination.exists():
+            return
+        try:
+            self.ena.capturer_pdf(chemin, destination)
         except (ErreurPlaywright, OSError) as erreur:
             self.resultat.echecs.append(
                 Echec(cours=cours.dossier(), element=destination.name, cause=f"PDF : {erreur}")
