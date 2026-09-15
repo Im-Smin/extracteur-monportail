@@ -619,6 +619,98 @@ def test_cours_sans_evaluation_ne_produit_ni_dossier_ni_erreur(tmp_path):
     assert resultat.echecs == []
 
 
+def test_archivage_dun_seul_cours_preserve_les_notes_des_autres_cours(tmp_path):
+    # Defaut critique : notes-tous-cours.csv etait ecrase avec le seul
+    # perimetre de l'execution en cours (voir archiver()), perdant les notes
+    # des cours archives lors d'executions precedentes (--tout, --session).
+    # Relancer --un-seul-cours pour reparer un cours ne doit jamais reduire
+    # ce fichier a ce seul cours.
+    autre = Cours(id_site="2", sigle="GIN-3320", titre="Projet", session=SESSION)
+    ena_premier = EnaFactice(notes=[Note(evaluation="Examen 1", note="18", sur="20")])
+    Archiveur(ena_premier, transport_ok, tmp_path, queue.Queue()).archiver([autre])
+
+    ena_second = EnaFactice(notes=[Note(evaluation="TP1 - Projet", note="9", sur="10")])
+    Archiveur(ena_second, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
+
+    contenu = (tmp_path / "notes-tous-cours.csv").read_text(encoding="utf-8-sig")
+    assert "GIN-3320 Projet" in contenu
+    assert "Examen 1" in contenu
+    assert "PHI-3900 Éthique" in contenu
+    assert "TP1 - Projet" in contenu
+
+
+def test_ecriture_notes_consolidees_verrouillee_ne_plante_pas_larchivage(tmp_path):
+    # Reproduit le plantage reel : notes-tous-cours.csv ouvert dans Excel
+    # (PermissionError) ne doit couter qu'un Echec ordinaire, jamais faire
+    # planter tout l'archivage alors que le contenu du cours est deja
+    # telecharge avec succes sur disque.
+    (tmp_path / "notes-tous-cours.csv").mkdir()
+    fichier = Fichier(nom="a.pdf", url="/contenu/sitescours/x/a.pdf?identifiant=a")
+    ena = EnaFactice([fichier], notes=[Note(evaluation="Examen 1", note="18", sur="20")])
+
+    resultat = Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
+
+    assert resultat.fichiers_ecrits >= 1
+    echec = next(e for e in resultat.echecs if e.element == "notes-tous-cours.csv")
+    assert "tableur" in echec.cause.lower() or "excel" in echec.cause.lower()
+
+
+def test_ecriture_notes_par_cours_verrouillee_isolee(tmp_path):
+    base = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique"
+    (base / "notes.csv").mkdir(parents=True)
+    ena = EnaFactice(notes=[Note(evaluation="Examen 1", note="18", sur="20")])
+
+    resultat = Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
+
+    echec = next(e for e in resultat.echecs if e.element == "notes.csv")
+    assert echec.cours == COURS.dossier()
+    assert "tableur" in echec.cause.lower() or "excel" in echec.cause.lower()
+    # Le plan de cours (autre partie du meme cours) doit rester recupere :
+    # l'isolation ne doit couter que ce fichier de synthese.
+    assert (base / "Plan de cours" / "plan-de-cours.pdf").exists()
+
+
+def test_ecriture_depots_verrouillee_isolee(tmp_path):
+    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Évaluations" / "TP1"
+    dossier.mkdir(parents=True)
+    (dossier / "depots.csv").mkdir()
+    depot = Depot(nom="travail.docx", url="/contenu/sitescours/x/travail.docx?identifiant=a")
+    ena = EnaFactice(depots=[depot])
+
+    resultat = Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
+
+    assert (dossier / "travail.docx").exists()
+    echec = next(e for e in resultat.echecs if e.element == "depots.csv")
+    assert "tableur" in echec.cause.lower() or "excel" in echec.cause.lower()
+
+
+def test_erreur_ecriture_fichier_de_contenu_reste_un_echec_de_cours(tmp_path):
+    # Contre-test : une erreur d'ecriture sur un fichier de CONTENU (pas de
+    # synthese) doit continuer a etre traitee comme avant l'isolation des
+    # fichiers de synthese -- ici avalee par l'isolation par cours de
+    # archiver(), pas par la nouvelle isolation des fichiers de synthese.
+    def transport_verrouille(url):
+        class R:
+            statut = 200
+
+            def morceaux(self):
+                yield b"debut"
+                raise PermissionError("simule : fichier de contenu verrouille")
+
+        return R()
+
+    autre = Cours(id_site="2", sigle="GIN-3320", titre="Projet", session=SESSION)
+    fichier = Fichier(nom="a.pdf", url="/contenu/sitescours/x/a.pdf?identifiant=a")
+    ena = EnaFactice([fichier])
+    archiveur = Archiveur(ena, transport_verrouille, tmp_path, queue.Queue())
+
+    resultat = archiveur.archiver([COURS, autre])
+
+    assert len(resultat.echecs) == 2
+    assert all(e.element == "(cours entier)" for e in resultat.echecs)
+    assert all("verrouille" in e.cause for e in resultat.echecs)
+
+
 def test_arborescence_des_depots_existants_inchangee(tmp_path):
     # Le dossier des evaluations porte desormais le nom "Evaluations" (decision
     # de l'utilisateur, qui accepte le retelechargement ponctuel que ce

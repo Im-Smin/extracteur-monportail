@@ -116,6 +116,41 @@ def ecrire_notes_consolidees(destination: Path, lignes) -> None:
             redacteur.writerow([session, cours] + _ligne_note(note))
 
 
+def consolider_notes(racine: Path, destination: Path) -> None:
+    """Reconstruit notes-tous-cours.csv a partir des notes.csv deja ecrits
+    par cours sur le disque (voir ecrire_notes, appele une fois par cours
+    dans <session>/<cours>/notes.csv).
+
+    Choisi plutot qu'une fusion en memoire avec le contenu deja present du
+    fichier consolide : les notes.csv par cours sont deja la source de
+    verite de l'archive, ecrits avant meme d'atteindre cette fonction.
+    Reconstruire a partir d'eux rend ce fichier reproductible et independant
+    de son propre etat anterieur -- correct quel que soit le perimetre du
+    lancement (--tout, --session, ou --un-seul-cours sur une archive deja
+    constituee). C'est ce dernier cas qui echouait avant cette fonction :
+    ecrire_notes_consolidees ecrasait le fichier avec les seules notes des
+    cours traites pendant l'execution en cours, perdant celles de toutes les
+    autres deja archivees.
+    """
+    lignes = []
+    for chemin_notes in sorted(racine.glob("*/*/notes.csv")):
+        cours_dossier = chemin_notes.parent.name
+        session_dossier = chemin_notes.parent.parent.name
+        with open(chemin_notes, encoding=ENCODAGE_CSV, newline="") as source:
+            lecteur = csv.DictReader(source)
+            for ligne in lecteur:
+                lignes.append(
+                    [session_dossier, cours_dossier]
+                    + [ligne.get(colonne, "") for colonne in COLONNES_NOTE]
+                )
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with open(destination, "w", encoding=ENCODAGE_CSV, newline="") as sortie:
+        redacteur = csv.writer(sortie)
+        redacteur.writerow(["Session", "Cours"] + COLONNES_NOTE)
+        redacteur.writerows(lignes)
+
+
 def ecrire_depots(destination: Path, depots) -> None:
     """CSV pose a cote des fichiers d'une boite de depot.
 

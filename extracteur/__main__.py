@@ -658,10 +658,13 @@ def _archiver_plusieurs_sessions(
     liste complete de tous les cours retenus, remise a Archiveur.archiver()
     en un seul appel.
 
-    Un seul appel, jamais un par session : Archiveur.archiver() ecrit
-    notes-tous-cours.csv a partir d'une liste locale a l'appel en cours ;
-    l'appeler une fois par session ecraserait ce fichier a chaque session au
-    lieu de couvrir l'ensemble. Le cout est qu'aucun telechargement ne
+    Un seul appel, jamais un par session : Archiveur.archiver() reconstruit
+    desormais notes-tous-cours.csv a partir des notes.csv de chaque cours
+    deja ecrits sur disque (voir manifeste.consolider_notes), donc un appel
+    par session ne l'ecraserait plus a tort. Le regroupement en un seul
+    appel reste neanmoins necessaire : resultat.cours_non_tentes et
+    l'evenement "fin" doivent porter sur l'ensemble des sessions visees, pas
+    sur une seule a la fois. Le cout est qu'aucun telechargement ne
     commence avant que toutes les sessions visees aient ete enumerees ; si
     une session expire pendant cette enumeration, rien n'a encore ete ecrit,
     ET le rapport le dit explicitement (etat "travail interrompu" de
