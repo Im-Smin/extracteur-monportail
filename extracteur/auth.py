@@ -27,6 +27,28 @@ URL_DEPART = "https://sitescours.monportail.ulaval.ca/portail/cours"
 HOTE_SITESCOURS = "sitescours.monportail.ulaval.ca"
 TAILLE_MORCEAU = 65536
 
+# Plafond d'attente de la connexion manuelle (MFA compris). L'ancien reglage
+# de 300s (5 minutes) coupait court a une authentification a deux facteurs
+# lente (telephone hors de portee), sans jamais prevenir l'utilisateur qu'il
+# restait peu de temps.
+DELAI_ATTENTE_CONNEXION = 600
+# Frequence des lignes d'etat pendant l'attente : assez frequent pour
+# distinguer une attente normale d'un blocage, assez espace pour rester
+# lisible sur un plafond de plusieurs minutes.
+INTERVALLE_STATUT_ATTENTE = 5
+# Temps passe sur le domaine de connexion Microsoft avant de rappeler que le
+# selecteur de compte propose plusieurs comptes : cause de blocage muette,
+# l'utilisateur ne peut pas la deviner de lui-meme.
+SEUIL_RAPPEL_SELECTEUR_COMPTE = 15
+# Temps restant, en secondes, a partir duquel la ligne d'etat annonce
+# explicitement combien de temps il reste avant l'abandon de l'attente.
+SEUIL_FIN_IMMINENTE = 30
+# Sous-chaine suffisante pour reconnaitre un hote de connexion Microsoft
+# (login.microsoftonline.com, login.microsoft.com, etc.) sans faire de la
+# detection d'authentification (est_page_authentifiee) un lieu de decision
+# supplementaire.
+FRAGMENT_HOTE_MICROSOFT = "microsoft"
+
 
 def _porte_marqueur_authentifie(page) -> bool:
     """Marqueur de contenu propre a une page authentifiee de monPortail.
@@ -113,6 +135,9 @@ class SessionNavigateur:
         self._playwright = None
         self.contexte = None
         self.page = None
+        # Domaine observe au dernier sondage d'attendre_connexion (y compris
+        # apres un echec) : sert a batir un message d'echec informatif.
+        self.dernier_domaine_observe = None
 
     def ouvrir(self) -> None:
         self.dossier_profil.mkdir(parents=True, exist_ok=True)
@@ -132,10 +157,42 @@ class SessionNavigateur:
             return False
         return est_page_authentifiee(self.page)
 
-    def attendre_connexion(self, delai: int = 300) -> bool:
-        """Attend que l'utilisateur ait termine sa connexion, MFA compris."""
-        limite = time.time() + delai
-        while time.time() < limite:
+    def attendre_connexion(
+        self,
+        delai: int = DELAI_ATTENTE_CONNEXION,
+        imprimer=print,
+        horloge=time.time,
+        sommeil=time.sleep,
+    ) -> bool:
+        """Attend que l'utilisateur ait termine sa connexion, MFA compris.
+
+        Ne reste jamais muette : une ligne d'etat toutes les
+        INTERVALLE_STATUT_ATTENTE secondes dit depuis combien de temps on
+        attend et sur quel domaine se trouve la page, pour que l'utilisateur
+        distingue une attente normale d'un programme bloque. Si la page
+        s'attarde sur le domaine de connexion Microsoft, un rappel invite a
+        choisir le bon compte parmi ceux que propose le selecteur de comptes
+        -- un blocage que l'utilisateur ne peut pas deviner de lui-meme.
+
+        `dernier_domaine_observe` est pose a chaque sondage (y compris en cas
+        d'echec final) : l'appelant s'en sert pour batir un message d'echec
+        qui dit ou la page en etait, plutot qu'un simple delai ecoule.
+
+        `imprimer`, `horloge` et `sommeil` sont injectables pour les tests :
+        aucun test ne doit faire dormir la suite pour de vrai.
+        """
+        self.dernier_domaine_observe = None
+        debut = horloge()
+        limite = debut + delai
+        prochain_statut = debut + INTERVALLE_STATUT_ATTENTE
+        debut_sur_microsoft = None
+        rappel_selecteur_affiche = False
+
+        while True:
+            maintenant = horloge()
+            if maintenant >= limite:
+                break
+
             try:
                 if self.est_connecte():
                     return True
@@ -143,7 +200,49 @@ class SessionNavigateur:
                 # Fenetre ou contexte ferme par l'utilisateur : fin d'attente
                 # propre, pas une exception qui empeche l'appel a fermer().
                 return False
-            time.sleep(2)
+
+            if self.page is not None:
+                self.dernier_domaine_observe = urlparse(self.page.url).hostname
+
+            domaine = self.dernier_domaine_observe
+            sur_microsoft = domaine is not None and FRAGMENT_HOTE_MICROSOFT in domaine
+            if sur_microsoft:
+                if debut_sur_microsoft is None:
+                    debut_sur_microsoft = maintenant
+            else:
+                debut_sur_microsoft = None
+                rappel_selecteur_affiche = False
+
+            if maintenant >= prochain_statut:
+                ecoule = int(maintenant - debut)
+                restant = int(limite - maintenant)
+                if domaine is None:
+                    imprimer(f"en attente ({ecoule}s) - page pas encore chargee")
+                elif domaine == HOTE_SITESCOURS:
+                    imprimer(
+                        f"en attente ({ecoule}s) - page sur {domaine}, "
+                        "contenu pas encore rendu"
+                    )
+                else:
+                    imprimer(f"en attente ({ecoule}s) - page actuellement sur {domaine}")
+
+                if (
+                    sur_microsoft
+                    and not rappel_selecteur_affiche
+                    and (maintenant - debut_sur_microsoft) >= SEUIL_RAPPEL_SELECTEUR_COMPTE
+                ):
+                    imprimer(
+                        "Si un selecteur de compte est affiche, plusieurs comptes "
+                        "peuvent etre proposes : choisissez celui de l'Universite Laval."
+                    )
+                    rappel_selecteur_affiche = True
+
+                if restant <= SEUIL_FIN_IMMINENTE:
+                    imprimer(f"encore environ {restant}s avant l'abandon de l'attente")
+
+                prochain_statut += INTERVALLE_STATUT_ATTENTE
+
+            sommeil(2)
         return False
 
     def _cookiejar(self) -> http.cookiejar.CookieJar:

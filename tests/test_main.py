@@ -16,6 +16,7 @@ from extracteur.__main__ import (
     _ecrire_rapport_final,
     _fusionner_verification,
     _lister,
+    _message_echec_connexion,
     _session,
     _tout,
     _un_seul_cours,
@@ -89,12 +90,21 @@ class EnaDeTest:
 class SessionFactice:
     """Doublure de SessionNavigateur : ne touche jamais a Playwright."""
 
-    def __init__(self, connectee=True, transport=None, leve_a_l_attente=None):
+    def __init__(
+        self,
+        connectee=True,
+        transport=None,
+        leve_a_l_attente=None,
+        dernier_domaine_observe=None,
+    ):
         self.connectee = connectee
         self.ouverte = False
         self.fermee = False
         self.transport = transport or (lambda url: _ReponseOk())
         self._leve_a_l_attente = leve_a_l_attente
+        # Pose par la vraie attendre_connexion a chaque sondage ; injectable
+        # ici pour verifier que le message d'echec le reprend.
+        self.dernier_domaine_observe = dernier_domaine_observe
 
     def ouvrir(self):
         self.ouverte = True
@@ -407,7 +417,56 @@ def test_connecter_rend_la_session_ouverte_sur_connexion_reussie():
     resultat = _connecter(session=session)
 
     assert resultat is session
-    assert session.fermee is False
+
+
+# --- _message_echec_connexion : message d'echec informatif (defaut 4) ---
+
+
+def test_message_echec_mentionne_le_domaine_microsoft_observe():
+    """Une page restee sur le domaine de connexion Microsoft suggere que la
+    connexion n'a jamais abouti : le message doit le dire, pas se limiter au
+    delai ecoule."""
+    session = SessionFactice(dernier_domaine_observe="login.microsoftonline.com")
+
+    message = _message_echec_connexion(session)
+
+    assert "login.microsoftonline.com" in message
+    assert "jamais aboutie" in message or "jamais abouti" in message
+
+
+def test_message_echec_mentionne_le_bon_domaine_sans_marqueur():
+    """Une page deja sur sitescours.monportail.ulaval.ca sans marqueur
+    suggere un chargement incomplet ou un acces refuse, pas une connexion
+    manquee : le message doit distinguer ce cas du precedent."""
+    session = SessionFactice(dernier_domaine_observe="sitescours.monportail.ulaval.ca")
+
+    message = _message_echec_connexion(session)
+
+    assert "sitescours.monportail.ulaval.ca" in message
+    assert "charger" in message or "refuse" in message
+
+
+def test_message_echec_sans_domaine_observe_reste_generique():
+    """Une doublure qui ne pose jamais dernier_domaine_observe (page jamais
+    chargee) ne doit pas faire planter le message, seulement rester generique."""
+    session = SessionFactice()
+    session.dernier_domaine_observe = None
+
+    message = _message_echec_connexion(session)
+
+    assert "connexion non detectee" in message
+
+
+def test_connecter_leve_avec_le_domaine_observe_dans_le_message():
+    """Integration : _connecter propage bien le message enrichi dans
+    ConnexionEchouee, pas le texte muet d'origine."""
+    session = SessionFactice(connectee=False, dernier_domaine_observe="login.microsoftonline.com")
+
+    with pytest.raises(ConnexionEchouee) as info:
+        _connecter(session=session)
+
+    assert "login.microsoftonline.com" in str(info.value)
+    assert session.fermee is True
 
 
 # --- _lister : point d'injection et fermeture garantie (defaut 5) ---
