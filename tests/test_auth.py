@@ -419,3 +419,217 @@ def test_attendre_connexion_erreur_transitoire_ne_pollue_pas_l_affichage():
     for message in messages:
         assert "erreur" not in message.lower()
         assert "Execution context" not in message
+
+
+# --- Sondage de toutes les pages du contexte, pas d'une seule reference
+# --- figee (defaut : la page authentifiee peut vivre dans un onglet ou une
+# --- popup distincte de la page capturee a l'ouverture) ---
+#
+# Rien n'accede au reseau ni ne dort : ContexteFactice est une simple liste
+# de pages mutable en direct, comme playwright.sync_api.BrowserContext.pages.
+
+
+class ContexteFactice:
+    """Simule playwright.sync_api.BrowserContext : une liste de pages
+    consultable et modifiable en direct (`.pages`), et un etat de fermeture
+    explicite (`.is_closed()`)."""
+
+    def __init__(self, pages):
+        self.pages = list(pages)
+        self._ferme = False
+
+    def is_closed(self):
+        return self._ferme
+
+    def fermer(self):
+        self._ferme = True
+
+
+class PageErreurExamenFactice:
+    """Page dont l'examen (lecture de l'URL) leve une erreur Playwright,
+    simulant une navigation en cours au moment du sondage. Reproduit
+    "Execution context was destroyed, most likely because of a navigation" :
+    un etat normal pendant une chaine de redirections OAuth, qui ne doit
+    jamais interrompre l'examen des autres pages du contexte."""
+
+    def __init__(self):
+        self._fermee = False
+
+    @property
+    def url(self):
+        raise ErreurPlaywright(
+            "Execution context was destroyed, most likely because of a navigation"
+        )
+
+    def is_closed(self):
+        return self._fermee
+
+
+class SessionContexteTestable(SessionNavigateur):
+    """Version testable exposant un contexte factice a plusieurs pages,
+    plutot qu'une seule page capturee."""
+
+    def __init__(self, pages):
+        super().__init__(dossier_profil="/tmp/test")
+        self.contexte = ContexteFactice(pages)
+        self.page = pages[0] if pages else None
+
+
+def _page_authentifiee_factice():
+    """Page factice de /portail/cours portant le marqueur d'authentification
+    'Cours suivis'."""
+    page = PageFactice(f"https://{HOTE_SITESCOURS}/portail/cours")
+    page.ajouter_texte("Cours suivis", 1)
+    return page
+
+
+def test_est_connecte_examine_toutes_les_pages_et_adopte_la_page_authentifiee():
+    """Un contexte a deux pages, l'une restee sur le domaine de connexion et
+    l'autre authentifiee : la connexion est detectee, et la page de travail
+    retenue (session.page) est la page authentifiee, pas la premiere page du
+    contexte ni une reference figee a l'ouverture du navigateur."""
+    page_connexion = PageFactice("https://login.microsoftonline.com/common/oauth2/authorize")
+    page_authentifiee = _page_authentifiee_factice()
+
+    session = SessionContexteTestable([page_connexion, page_authentifiee])
+
+    assert session.est_connecte() is True
+    assert session.page is page_authentifiee
+
+
+def test_est_connecte_ignore_une_page_en_echec_d_examen_sans_bloquer_les_autres():
+    """Une page qui leve une erreur de navigation pendant qu'on l'examine ne
+    doit pas empecher l'examen des autres pages du contexte : la page
+    authentifiee est tout de meme trouvee et adoptee."""
+    page_en_navigation = PageErreurExamenFactice()
+    page_authentifiee = _page_authentifiee_factice()
+
+    session = SessionContexteTestable([page_en_navigation, page_authentifiee])
+
+    assert session.est_connecte() is True
+    assert session.page is page_authentifiee
+
+
+class HorlogeAvecApparitionTardive:
+    """Horloge deterministe qui, a un appel donne, fait apparaitre une
+    nouvelle page dans le contexte -- reproduit le flux OAuth reel, ou la
+    page authentifiee n'existe pas encore au premier sondage mais apparait
+    en cours d'attente (nouvel onglet, redirection). N'attend jamais pour de
+    vrai : seule l'horloge simulee avance."""
+
+    def __init__(self, contexte, nouvelle_page, appel_apparition, pas=1.0):
+        self._temps = 0.0
+        self._pas = pas
+        self._contexte = contexte
+        self._nouvelle_page = nouvelle_page
+        self._appel_apparition = appel_apparition
+        self._appels = 0
+
+    def __call__(self):
+        self._appels += 1
+        if self._appels == self._appel_apparition:
+            self._contexte.pages.append(self._nouvelle_page)
+        maintenant = self._temps
+        self._temps += self._pas
+        return maintenant
+
+
+def test_attendre_connexion_decouvre_une_page_apparue_apres_le_debut_de_l_attente():
+    """Cas exact du flux OAuth qui a cause le defaut initial : la page
+    authentifiee n'existe pas encore au premier sondage, elle apparait plus
+    tard dans le contexte. attendre_connexion doit la decouvrir et l'adopter,
+    plutot que de continuer a sonder la seule page capturee a l'ouverture."""
+    page_connexion = PageFactice("https://login.microsoftonline.com/common/oauth2/authorize")
+    page_authentifiee = _page_authentifiee_factice()
+
+    session = SessionContexteTestable([page_connexion])
+    horloge = HorlogeAvecApparitionTardive(
+        session.contexte, page_authentifiee, appel_apparition=5
+    )
+
+    resultat = session.attendre_connexion(
+        delai=1000,
+        imprimer=lambda _m: None,
+        horloge=horloge,
+        sommeil=_sommeil_factice,
+    )
+
+    assert resultat is True
+    assert session.page is page_authentifiee
+
+
+class HorlogeFacticeComptee:
+    """Horloge deterministe qui compte ses appels, pour verifier qu'une
+    attente s'est arretee tot plutot que d'avoir consomme tout le delai."""
+
+    def __init__(self, pas=1.0):
+        self._temps = 0.0
+        self._pas = pas
+        self.appels = 0
+
+    def __call__(self):
+        self.appels += 1
+        maintenant = self._temps
+        self._temps += self._pas
+        return maintenant
+
+
+def test_attendre_connexion_toutes_pages_fermees_rend_false():
+    """Quand toutes les pages du contexte sont fermees, attendre_connexion
+    se termine en rendant False sans attendre l'echeance du delai : c'est la
+    seule disparition de toutes les pages qui doit y mettre fin, pas la
+    fermeture d'une seule page parmi d'autres.
+
+    Le delai est enorme (100000s) : si l'attente ne se terminait qu'a
+    l'echeance (comportement de l'ancien code, qui ne verifiait la fermeture
+    qu'a la faveur d'une exception jamais levee ici), l'horloge factice
+    serait appelee des dizaines de milliers de fois. Un arret des les
+    premiers sondages prouve que la fermeture a ete detectee directement.
+    """
+    page_une = PageFactice("https://login.microsoftonline.com/common/oauth2/authorize")
+    page_deux = PageFactice(f"https://{HOTE_SITESCOURS}/portail/cours")
+    page_une.fermer()
+    page_deux.fermer()
+
+    session = SessionContexteTestable([page_une, page_deux])
+    horloge = HorlogeFacticeComptee(pas=1.0)
+
+    resultat = session.attendre_connexion(
+        delai=100_000,
+        imprimer=lambda _m: None,
+        horloge=horloge,
+        sommeil=_sommeil_factice,
+    )
+
+    assert resultat is False
+    assert horloge.appels < 5
+
+
+def test_attendre_connexion_ligne_d_etat_mentionne_tous_les_domaines_ouverts():
+    """La ligne d'etat rend compte de toutes les pages ouvertes et de leurs
+    domaines, pas du domaine d'une seule page choisie arbitrairement : c'est
+    ce qui aurait revele immediatement le defaut de page abandonnee sur le
+    domaine de connexion pendant qu'une autre page, authentifiee, restait
+    invisible du programme."""
+    page_connexion = PageFactice("https://login.microsoftonline.com/common/oauth2/authorize")
+    # Sur le bon domaine mais sans marqueur : ne doit pas etre prise pour
+    # authentifiee, sert seulement a peupler la ligne d'etat.
+    page_site_cours = PageFactice(f"https://{HOTE_SITESCOURS}/portail/cours")
+
+    session = SessionContexteTestable([page_connexion, page_site_cours])
+    messages = []
+
+    resultat = session.attendre_connexion(
+        delai=10,
+        imprimer=messages.append,
+        horloge=HorlogeFactice(pas=1.0),
+        sommeil=_sommeil_factice,
+    )
+
+    assert resultat is False
+    lignes_etat = [m for m in messages if m.startswith("en attente")]
+    assert lignes_etat
+    assert any(
+        "login.microsoftonline.com" in ligne and HOTE_SITESCOURS in ligne
+        for ligne in lignes_etat
+    )
