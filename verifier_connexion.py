@@ -2,13 +2,16 @@
 
 Usage : python verifier_connexion.py
 Se connecter dans la fenetre qui s'ouvre, puis lire le resultat en console.
-"""
 
-from pathlib import Path
+Chaque execution ouvre un profil de navigateur neuf (voir SessionNavigateur
+dans extracteur/auth.py) : une authentification complete est demandee a
+chaque lancement de ce script, aucun profil n'est conserve d'une execution a
+l'autre.
+"""
 
 from extracteur.auth import SessionNavigateur
 
-session = SessionNavigateur(Path(".session"))
+session = SessionNavigateur()
 session.ouvrir()
 
 # try/finally : si l'utilisateur ferme la fenetre ou qu'une exception survient,

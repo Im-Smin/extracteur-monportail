@@ -1,3 +1,6 @@
+import tempfile
+from pathlib import Path
+
 import pytest
 from urllib.parse import urlparse
 
@@ -8,10 +11,6 @@ from extracteur.auth import (
     HOTE_SITESCOURS,
     HOTE_PORTAIL,
     URL_DEPART,
-    NOM_DOSSIER_PROFIL,
-    SEUIL_SUGGESTION_REINITIALISATION,
-    CheminProfilInattendu,
-    reinitialiser_session,
 )
 
 
@@ -43,7 +42,7 @@ class SessionNavigateurTestable(SessionNavigateur):
     """Version testable qui accepte une page factice."""
 
     def __init__(self, page_factice=None):
-        super().__init__(dossier_profil="/tmp/test")
+        super().__init__()
         if page_factice:
             self.page = page_factice
 
@@ -161,7 +160,7 @@ class SessionAttenteTestable(SessionNavigateur):
     """
 
     def __init__(self, page, connectee_au_nieme_appel=None):
-        super().__init__(dossier_profil="/tmp/test")
+        super().__init__()
         self.page = page
         self._connectee_au_nieme_appel = connectee_au_nieme_appel
         self._appels = 0
@@ -293,7 +292,7 @@ class SessionAttenteErreurTestable(SessionNavigateur):
     """
 
     def __init__(self, page, echecs_avant_succes=0):
-        super().__init__(dossier_profil="/tmp/test")
+        super().__init__()
         self.page = page
         self._echecs_avant_succes = echecs_avant_succes
         self._appels = 0
@@ -417,7 +416,7 @@ class SessionContexteTestable(SessionNavigateur):
     plutot qu'une seule page capturee."""
 
     def __init__(self, pages):
-        super().__init__(dossier_profil="/tmp/test")
+        super().__init__()
         self.contexte = ContexteFactice(pages)
         self.page = pages[0] if pages else None
 
@@ -582,149 +581,186 @@ def test_attendre_connexion_ligne_d_etat_mentionne_tous_les_domaines_ouverts():
     )
 
 
-# --- reinitialiser_session : suppression prudente du profil de navigateur
-# --- conserve (piege de la soiree du 2026-09-14 : profil corrompu) ---
+# --- SessionNavigateur.ouvrir/fermer : profil temporaire, jamais persistant
+# --- (changement de conception du 2026-09-15 : voir docs/api-monportail.md,
+# --- section "Pieges d'exploitation", pour l'incident qui l'a motive) ---
 #
-# Aucun test ici ne touche a un vrai dossier de profil du projet : tmp_path
-# fournit un dossier temporaire isole, jamais .session lui-meme.
+# Aucun test ici ne touche au reseau ni ne lance un vrai navigateur :
+# sync_playwright est remplace par une doublure complete (start/chromium/
+# launch_persistent_context/stop), suffisante pour observer ce que
+# SessionNavigateur fait du dossier de profil sans jamais toucher a
+# Playwright pour de vrai.
 
 
-def test_reinitialiser_session_supprime_le_dossier_vise(tmp_path):
-    """Le dossier de profil, et lui seul, est supprime."""
-    dossier_profil = tmp_path / NOM_DOSSIER_PROFIL
-    dossier_profil.mkdir()
-    (dossier_profil / "Default").mkdir()
-    (dossier_profil / "Default" / "Cookies").write_bytes(b"donnees")
-    autre_dossier = tmp_path / "ne-pas-toucher"
-    autre_dossier.mkdir()
-    (autre_dossier / "fichier.txt").write_text("intact")
+class ContextePersistantFactice:
+    """Simule playwright.sync_api.BrowserContext rendu par
+    launch_persistent_context : conserve le chemin de profil recu, pour que
+    les tests verifient qu'il correspond bien a self.dossier_profil."""
 
-    reinitialiser_session(dossier_profil, imprimer=lambda _m: None)
+    def __init__(self, user_data_dir, headless, accept_downloads):
+        self.user_data_dir = user_data_dir
+        self.headless = headless
+        self.accept_downloads = accept_downloads
+        self.pages = []
+        self._ferme = False
+
+    def new_page(self):
+        page = PageFactice("about:blank")
+        self.pages.append(page)
+        return page
+
+    def is_closed(self):
+        return self._ferme
+
+    def close(self):
+        self._ferme = True
+
+
+class ChromiumFactice:
+    def __init__(self, leve_a_la_fermeture=None):
+        self.appels_launch = []
+        self._leve_a_la_fermeture = leve_a_la_fermeture
+
+    def launch_persistent_context(self, user_data_dir, headless, accept_downloads):
+        contexte = ContextePersistantFactice(user_data_dir, headless, accept_downloads)
+        if self._leve_a_la_fermeture is not None:
+            contexte.close = _leve(self._leve_a_la_fermeture)
+        self.appels_launch.append(contexte)
+        return contexte
+
+
+def _leve(erreur):
+    def _fonction():
+        raise erreur
+
+    return _fonction
+
+
+class PlaywrightFactice:
+    """Simule l'objet Playwright rendu par sync_playwright().start()."""
+
+    def __init__(self, chromium=None, leve_a_l_arret=None):
+        self.chromium = chromium or ChromiumFactice()
+        self._arrete = False
+        self._leve_a_l_arret = leve_a_l_arret
+
+    def stop(self):
+        if self._leve_a_l_arret is not None:
+            raise self._leve_a_l_arret
+        self._arrete = True
+
+
+class GestionnairePlaywrightFactice:
+    """Simule playwright.sync_api.sync_playwright() : .start() rend
+    directement l'objet Playwright factice, comme le vrai gestionnaire."""
+
+    def __init__(self, instance):
+        self._instance = instance
+
+    def start(self):
+        return self._instance
+
+
+def _installer_playwright_factice(monkeypatch, instance=None):
+    """Remplace extracteur.auth.sync_playwright par une doublure, et rend
+    l'instance Playwright factice utilisee (pour inspection apres coup)."""
+    instance = instance or PlaywrightFactice()
+    monkeypatch.setattr(
+        "extracteur.auth.sync_playwright", lambda: GestionnairePlaywrightFactice(instance)
+    )
+    return instance
+
+
+def test_ouvrir_cree_un_dossier_de_profil_distinct_a_chaque_ouverture(monkeypatch):
+    """Deux ouvertures successives (deux instances, comme deux lancements
+    du programme) ne doivent jamais reutiliser le meme dossier de profil :
+    c'est tout le sens de l'abandon du profil persistant."""
+    _installer_playwright_factice(monkeypatch)
+
+    session_un = SessionNavigateur()
+    session_un.ouvrir()
+    session_deux = SessionNavigateur()
+    session_deux.ouvrir()
+
+    assert session_un.dossier_profil != session_deux.dossier_profil
+    assert session_un.dossier_profil.is_dir()
+    assert session_deux.dossier_profil.is_dir()
+
+    session_un.fermer()
+    session_deux.fermer()
+
+
+def test_ouvrir_cree_le_profil_dans_le_dossier_temporaire_du_systeme(monkeypatch):
+    """Jamais dans le depot, jamais dans un dossier synchronise OneDrive :
+    le profil doit vivre sous le dossier temporaire du systeme
+    (tempfile.gettempdir()), qui n'est ni l'un ni l'autre."""
+    _installer_playwright_factice(monkeypatch)
+
+    session = SessionNavigateur()
+    session.ouvrir()
+
+    dossier_temporaire_systeme = Path(tempfile.gettempdir()).resolve()
+    assert session.dossier_profil.resolve().is_relative_to(dossier_temporaire_systeme)
+    # Le contexte Playwright factice recoit bien ce meme chemin, preuve que
+    # c'est ce dossier-la qui sert vraiment de profil, pas un autre.
+    assert session.contexte.user_data_dir == str(session.dossier_profil)
+
+    session.fermer()
+
+
+def test_fermer_supprime_le_dossier_de_profil(monkeypatch):
+    _installer_playwright_factice(monkeypatch)
+    session = SessionNavigateur()
+    session.ouvrir()
+    dossier_profil = session.dossier_profil
+    assert dossier_profil.is_dir()
+
+    session.fermer()
 
     assert not dossier_profil.exists()
-    assert autre_dossier.exists()
-    assert (autre_dossier / "fichier.txt").read_text() == "intact"
+    assert session.dossier_profil is None
 
 
-def test_reinitialiser_session_affiche_ce_qu_elle_supprime_avant_de_le_faire(tmp_path):
-    dossier_profil = tmp_path / NOM_DOSSIER_PROFIL
-    dossier_profil.mkdir()
-    messages = []
+def test_fermer_supprime_le_profil_meme_si_la_fermeture_du_contexte_echoue(monkeypatch):
+    """Le profil doit disparaitre meme quand contexte.close() leve une
+    exception entre l'ouverture et la fin normale de fermer() : c'est la
+    garantie centrale du changement de conception (voir la docstring de
+    fermer())."""
+    instance = PlaywrightFactice(
+        chromium=ChromiumFactice(leve_a_la_fermeture=RuntimeError("contexte deja mort"))
+    )
+    _installer_playwright_factice(monkeypatch, instance)
+    session = SessionNavigateur()
+    session.ouvrir()
+    dossier_profil = session.dossier_profil
 
-    reinitialiser_session(dossier_profil, imprimer=messages.append)
-
-    assert len(messages) == 1
-    assert str(dossier_profil.resolve()) in messages[0]
-
-
-def test_reinitialiser_session_sans_dossier_existant_ne_leve_rien(tmp_path):
-    """Le drapeau doit rester utilisable avant la toute premiere connexion,
-    quand aucun profil n'a encore ete cree."""
-    dossier_profil = tmp_path / NOM_DOSSIER_PROFIL
-    assert not dossier_profil.exists()
-
-    reinitialiser_session(dossier_profil, imprimer=lambda _m: None)
+    with pytest.raises(RuntimeError):
+        session.fermer()
 
     assert not dossier_profil.exists()
 
 
-def test_reinitialiser_session_refuse_un_chemin_qui_ne_porte_pas_le_bon_nom(tmp_path):
-    """Un chemin qui ne s'appelle pas .session est manifestement autre chose
-    que le profil du projet : refus d'agir plutot que de supprimer au hasard."""
-    dossier_quelconque = tmp_path / "Documents"
-    dossier_quelconque.mkdir()
-    (dossier_quelconque / "fichier.txt").write_text("important")
+def test_fermer_supprime_le_profil_meme_si_l_arret_de_playwright_echoue(monkeypatch):
+    """Meme garantie que ci-dessus, pour un echec un cran plus loin dans
+    fermer() (playwright.stop() plutot que contexte.close())."""
+    instance = PlaywrightFactice(leve_a_l_arret=RuntimeError("playwright deja arrete"))
+    _installer_playwright_factice(monkeypatch, instance)
+    session = SessionNavigateur()
+    session.ouvrir()
+    dossier_profil = session.dossier_profil
 
-    with pytest.raises(CheminProfilInattendu):
-        reinitialiser_session(dossier_quelconque, imprimer=lambda _m: None)
+    with pytest.raises(RuntimeError):
+        session.fermer()
 
-    assert dossier_quelconque.exists()
-    assert (dossier_quelconque / "fichier.txt").exists()
-
-
-def test_reinitialiser_session_refuse_un_fichier_portant_le_bon_nom(tmp_path):
-    """Le nom seul ne suffit pas : si ce n'est pas un dossier, ce n'est
-    manifestement pas un profil de navigateur, refus d'agir."""
-    faux_profil = tmp_path / NOM_DOSSIER_PROFIL
-    faux_profil.write_text("ceci n'est pas un dossier de profil")
-
-    with pytest.raises(CheminProfilInattendu):
-        reinitialiser_session(faux_profil, imprimer=lambda _m: None)
-
-    assert faux_profil.exists()
+    assert not dossier_profil.exists()
 
 
-# --- attendre_connexion : suggestion de --reinitialiser-session au-dela du
-# --- seuil, une seule fois, seulement bloque sur le domaine de connexion ---
+def test_fermer_deux_fois_de_suite_ne_leve_rien():
+    """fermer() peut etre appelee plusieurs fois sans effet de bord (aucun
+    contexte ni profil a nettoyer la seconde fois) : les appelants du projet
+    la placent dans des finally qui peuvent, selon le chemin emprunte,
+    s'executer sur une session jamais ouverte."""
+    session = SessionNavigateur()
 
-
-def test_attendre_connexion_suggere_la_reinitialisation_au_dela_du_seuil():
-    page = PageFactice("https://login.microsoftonline.com/common/oauth2/authorize")
-    session = SessionAttenteTestable(page, connectee_au_nieme_appel=None)
-    messages = []
-
-    resultat = session.attendre_connexion(
-        delai=SEUIL_SUGGESTION_REINITIALISATION + 20,
-        imprimer=messages.append,
-        horloge=HorlogeFactice(pas=1.0),
-        sommeil=_sommeil_factice,
-    )
-
-    assert resultat is False
-    suggestions = [m for m in messages if "--reinitialiser-session" in m]
-    assert len(suggestions) == 1
-
-
-def test_attendre_connexion_ne_suggere_pas_la_reinitialisation_avant_le_seuil():
-    """Une attente qui expire avant le seuil (mais apres le rappel du
-    selecteur de compte) ne doit pas encore suggerer la reinitialisation :
-    largement plus qu'une authentification a deux facteurs normale."""
-    page = PageFactice("https://login.microsoftonline.com/common/oauth2/authorize")
-    session = SessionAttenteTestable(page, connectee_au_nieme_appel=None)
-    messages = []
-
-    resultat = session.attendre_connexion(
-        delai=SEUIL_SUGGESTION_REINITIALISATION - 10,
-        imprimer=messages.append,
-        horloge=HorlogeFactice(pas=1.0),
-        sommeil=_sommeil_factice,
-    )
-
-    assert resultat is False
-    assert not any("--reinitialiser-session" in m for m in messages)
-
-
-def test_attendre_connexion_ne_suggere_pas_la_reinitialisation_hors_microsoft():
-    """Rester bloque sur le domaine legitime, sans jamais passer par
-    Microsoft, n'a rien a voir avec un profil corrompu : aucune suggestion."""
-    page = PageFactice(f"https://{HOTE_SITESCOURS}/une/page/quelconque")
-    session = SessionAttenteTestable(page, connectee_au_nieme_appel=None)
-    messages = []
-
-    resultat = session.attendre_connexion(
-        delai=SEUIL_SUGGESTION_REINITIALISATION + 20,
-        imprimer=messages.append,
-        horloge=HorlogeFactice(pas=1.0),
-        sommeil=_sommeil_factice,
-    )
-
-    assert resultat is False
-    assert not any("--reinitialiser-session" in m for m in messages)
-
-
-def test_attendre_connexion_reussie_rapidement_n_affiche_aucune_suggestion():
-    """Une connexion qui aboutit bien avant le seuil ne doit produire aucune
-    suggestion de reinitialisation : elle n'a jamais eu lieu d'etre."""
-    page = PageFactice("https://login.microsoftonline.com/common/oauth2/authorize")
-    session = SessionAttenteTestable(page, connectee_au_nieme_appel=5)
-    messages = []
-
-    resultat = session.attendre_connexion(
-        delai=1000,
-        imprimer=messages.append,
-        horloge=HorlogeFactice(pas=1.0),
-        sommeil=_sommeil_factice,
-    )
-
-    assert resultat is True
-    assert not any("--reinitialiser-session" in m for m in messages)
+    session.fermer()
+    session.fermer()
