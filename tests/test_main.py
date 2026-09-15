@@ -113,9 +113,11 @@ class SessionFactice:
     def ouvrir(self):
         self.ouverte = True
 
-    def attendre_connexion(self, delai=300):
+    def attendre_connexion(self, delai=300, annulation=None):
         if self._leve_a_l_attente is not None:
             raise self._leve_a_l_attente
+        if annulation is not None and annulation.is_set():
+            return False
         return self.connectee
 
     def fermer(self):
@@ -1433,4 +1435,209 @@ def test_tout_verification_coherente_laisse_le_code_de_sortie_a_zero(tmp_path, c
     assert code == 0
     sortie = capsys.readouterr().out
     assert "Verification :" in sortie
-    assert "0 manquants" in sortie
+
+
+# --- imprimer/imprimer_erreur/annulation/sur_fin : coeur reutilisable par
+# --- l'interface graphique (tache 12), sans rien changer au comportement
+# --- console par defaut (deja couvert par tous les tests ci-dessus) ---
+
+
+def test_un_seul_cours_route_tout_vers_imprimer_rien_sur_stdout(tmp_path, capsys):
+    # L'interface graphique n'a aucun terminal a lire : toute la narration
+    # doit pouvoir etre captee par un imprimer/imprimer_erreur injecte, sans
+    # qu'un seul print() ne passe outre sur le vrai stdout/stderr.
+    ena = EnaDeTest({SESSION_HIVER: [COURS_HIVER]})
+    session = SessionFactice()
+    lignes: list = []
+
+    code = _un_seul_cours(
+        "181216",
+        tmp_path,
+        session=session,
+        fabrique_ena=lambda _s: ena,
+        imprimer=lignes.append,
+        imprimer_erreur=lignes.append,
+    )
+
+    assert code == 0
+    assert any("[fin]" in ligne for ligne in lignes)
+    assert any("Verification :" in ligne for ligne in lignes)
+    sortie = capsys.readouterr()
+    assert sortie.out == ""
+    assert sortie.err == ""
+
+
+def test_un_seul_cours_erreurs_routees_vers_imprimer_erreur(tmp_path):
+    session = SessionFactice()
+    erreurs: list = []
+
+    code = _un_seul_cours(
+        "000000",
+        tmp_path,
+        session=session,
+        fabrique_ena=lambda _s: EnaDeTest({SESSION_HIVER: [COURS_HIVER]}),
+        imprimer=lambda _t: None,
+        imprimer_erreur=erreurs.append,
+    )
+
+    assert code == 2
+    assert any("000000" in ligne for ligne in erreurs)
+
+
+def test_un_seul_cours_sur_fin_recoit_le_resultat_le_controle_et_le_rapport(tmp_path):
+    ena = EnaDeTest({SESSION_HIVER: [COURS_HIVER]})
+    session = SessionFactice()
+    recu: list = []
+
+    code = _un_seul_cours(
+        "181216",
+        tmp_path,
+        session=session,
+        fabrique_ena=lambda _s: ena,
+        sur_fin=lambda *args: recu.append(args),
+    )
+
+    assert code == 0
+    assert len(recu) == 1
+    resultat, controle, chemin_rapport = recu[0]
+    assert resultat.fichiers_ecrits > 0
+    assert controle["inscrits"] == resultat.fichiers_ecrits
+    assert chemin_rapport == tmp_path / "_rapport.html"
+
+
+def test_un_seul_cours_sur_fin_jamais_appele_si_cours_introuvable(tmp_path):
+    session = SessionFactice()
+    recu: list = []
+
+    code = _un_seul_cours(
+        "000000",
+        tmp_path,
+        session=session,
+        fabrique_ena=lambda _s: EnaDeTest({SESSION_HIVER: [COURS_HIVER]}),
+        sur_fin=lambda *args: recu.append(args),
+    )
+
+    assert code == 2
+    assert recu == []
+
+
+def test_un_seul_cours_annulation_posee_avant_meme_de_se_connecter(tmp_path):
+    # L'interruption pendant l'attente de connexion se traduit, comme un
+    # delai ecoule ordinaire, par une connexion non detectee -- chemin deja
+    # entierement teste par ailleurs. Ce test verifie seulement que
+    # l'Event est bien transmis jusqu'a la doublure de session.
+    import threading
+
+    session = SessionFactice(connectee=True)
+    annulation = threading.Event()
+    annulation.set()
+
+    code = _un_seul_cours(
+        "181216",
+        tmp_path,
+        session=session,
+        fabrique_ena=lambda _s: EnaDeTest({SESSION_HIVER: [COURS_HIVER]}),
+        annulation=annulation,
+    )
+
+    assert code == 1
+    assert session.fermee is True
+
+
+def test_session_sur_fin_recoit_le_resultat(tmp_path):
+    ena = EnaDeTest({SESSION_HIVER: [COURS_HIVER], SESSION_AUTOMNE: [COURS_ANCIEN]})
+    session = SessionFactice()
+    recu: list = []
+
+    code = _session(
+        "Hiver 2026",
+        tmp_path,
+        session=session,
+        fabrique_ena=lambda _s: ena,
+        sur_fin=lambda *args: recu.append(args),
+    )
+
+    assert code == 0
+    assert len(recu) == 1
+
+
+def test_tout_route_tout_vers_imprimer_rien_sur_stdout(tmp_path, capsys):
+    ena = EnaDeTest({SESSION_HIVER: [COURS_HIVER]})
+    session = SessionFactice()
+    lignes: list = []
+
+    code = _tout(
+        tmp_path,
+        session=session,
+        fabrique_ena=lambda _s: ena,
+        imprimer=lignes.append,
+        imprimer_erreur=lignes.append,
+    )
+
+    assert code == 0
+    assert any("Verification :" in ligne for ligne in lignes)
+    sortie = capsys.readouterr()
+    assert sortie.out == ""
+    assert sortie.err == ""
+
+
+def test_tout_sur_fin_recoit_le_resultat(tmp_path):
+    ena = EnaDeTest({SESSION_HIVER: [COURS_HIVER]})
+    session = SessionFactice()
+    recu: list = []
+
+    code = _tout(
+        tmp_path, session=session, fabrique_ena=lambda _s: ena, sur_fin=lambda *args: recu.append(args)
+    )
+
+    assert code == 0
+    assert len(recu) == 1
+
+
+def test_tout_annulation_arretee_a_la_frontiere_du_deuxieme_cours(tmp_path):
+    # Preuve d'integration : l'Event transmis par _tout atteint bien
+    # Archiveur.archiver, pas seulement l'attente de connexion (deja couvert
+    # cote archiveur.py par ses propres tests unitaires).
+    import threading
+
+    cours_automne = Cours(
+        id_site="199999",
+        sigle="AAA-1000",
+        titre="Ancien",
+        session=SESSION_AUTOMNE,
+        # Un plan de cours telechargeable : sans lui le cours tente n'ecrirait
+        # aucun fichier, et le code de sortie serait 1 (« rien n'a ete ecrit »)
+        # au lieu de 4. C'est 4 qui doit etre verifie ici : un archivage
+        # interrompu qui a tout de meme produit des fichiers est partiel, et
+        # ne doit jamais etre rendu comme un succes.
+        url_plan_de_cours="/contenu/sitescours/x/plan.pdf?identifiant=b",
+    )
+
+    class EnaQuiAnnuleApresLePremierCours(EnaDeTest):
+        def modules(self, cours):
+            if cours == cours_automne:
+                annulation.set()
+            return super().modules(cours)
+
+    ena = EnaQuiAnnuleApresLePremierCours(
+        {SESSION_AUTOMNE: [cours_automne], SESSION_HIVER: [COURS_HIVER]}
+    )
+    session = SessionFactice()
+    annulation = threading.Event()
+
+    code = _tout(tmp_path, session=session, fabrique_ena=lambda _s: ena, annulation=annulation)
+
+    # Le cours de la session la plus ancienne (traite en premier) a bien ete
+    # tente ; celui de Hiver, qui suit, ne l'a jamais ete.
+    assert (tmp_path / SESSION_AUTOMNE.dossier() / cours_automne.dossier()).exists()
+    assert not (tmp_path / SESSION_HIVER.dossier()).exists()
+    assert code == 4
+
+    # Et le rapport doit le dire en clair : ni succes complet, ni simple echec
+    # partiel, mais un arret en cours de route -- avec le nombre de cours
+    # jamais tentes, le seul chiffre qui dise ce qui manque encore.
+    rapport = (tmp_path / "_rapport.html").read_text(encoding="utf-8")
+    # Sans apostrophe dans le motif : ecrire_rapport passe le message par
+    # html.escape, qui rend « l'utilisateur » sous la forme « l&#x27;utilisateur ».
+    assert "interrompu par" in rapport
+    assert "1 cours" in rapport

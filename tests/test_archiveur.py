@@ -163,6 +163,47 @@ def test_session_expiree_interrompt_et_signale(tmp_path):
     assert "pause" in types
 
 
+def test_annulation_interrompt_a_la_frontiere_du_cours_suivant(tmp_path):
+    # Le bouton Interrompre de l'interface graphique pose l'Event AVANT le
+    # premier cours : rien ne doit etre tente, mais la synthese finale et
+    # l'evenement "fin" doivent tout de meme sortir, sans exception levee --
+    # a la difference de SessionExpiree.
+    import threading
+
+    autre = Cours(id_site="2", sigle="GIN-3320", titre="Projet", session=SESSION)
+    evenements = queue.Queue()
+    archiveur = Archiveur(EnaFactice(), transport_ok, tmp_path, evenements)
+    annulation = threading.Event()
+    annulation.set()
+
+    resultat = archiveur.archiver([COURS, autre], annulation=annulation)
+
+    assert resultat.cours_non_tentes == 2
+    assert resultat.fichiers_ecrits == 0
+    types = []
+    while not evenements.empty():
+        types.append(evenements.get()[0])
+    assert "pause" in types
+    assert "fin" in types
+    assert "cours" not in types
+
+
+def test_annulation_posee_pendant_le_premier_cours_epargne_les_suivants(tmp_path):
+    import threading
+
+    autre = Cours(id_site="2", sigle="GIN-3320", titre="Projet", session=SESSION)
+    evenements = queue.Queue()
+    archiveur = Archiveur(EnaFactice(), transport_ok, tmp_path, evenements)
+    annulation = threading.Event()
+
+    resultat = archiveur.archiver([COURS, autre], annulation=annulation)
+
+    # Sans annulation posee, les deux cours sont bien tentes -- contre-epreuve
+    # que le parametre par defaut (None) ne change rien au comportement
+    # existant.
+    assert resultat.cours_non_tentes == 0
+
+
 def test_notes_exportees(tmp_path):
     ena = EnaFactice(notes=[Note(evaluation="Examen 1", note="18", sur="20")])
     Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])

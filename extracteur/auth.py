@@ -484,6 +484,7 @@ class SessionNavigateur:
         imprimer=print,
         horloge=time.time,
         sommeil=time.sleep,
+        annulation=None,
     ) -> bool:
         """Attend que l'utilisateur ait termine sa connexion, MFA compris.
 
@@ -508,6 +509,14 @@ class SessionNavigateur:
 
         `imprimer`, `horloge` et `sommeil` sont injectables pour les tests :
         aucun test ne doit faire dormir la suite pour de vrai.
+
+        `annulation`, quand fourni, est un threading.Event verifie a chaque
+        sondage (toutes les 2 secondes) : le poser fait rendre False
+        immediatement, sans attendre l'echeance du delai. Sert l'interface
+        graphique, dont le bouton d'interruption doit pouvoir ecourter une
+        attente de connexion qui peut durer jusqu'a cinq minutes -- sans
+        jamais toucher aux objets Playwright depuis un autre fil que celui
+        qui les a crees.
         """
         self.dernier_domaine_observe = None
         debut = horloge()
@@ -517,6 +526,9 @@ class SessionNavigateur:
         rappel_selecteur_affiche = False
 
         while True:
+            if annulation is not None and annulation.is_set():
+                return False
+
             maintenant = horloge()
             if maintenant >= limite:
                 break

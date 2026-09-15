@@ -68,10 +68,27 @@ class Archiveur:
     def _relatif(self, destination: Path) -> str:
         return str(destination.relative_to(self.racine)).replace("\\", "/")
 
-    def archiver(self, cours_choisis) -> Resultat:
+    def archiver(self, cours_choisis, annulation=None) -> Resultat:
+        """Archive chaque cours de la liste, un par un.
+
+        `annulation`, quand fourni, est un threading.Event verifie a la
+        frontiere de chaque cours (jamais au milieu d'un telechargement) :
+        le poser interrompt la boucle proprement, comme le ferait une
+        SessionExpiree, mais sans lever d'exception -- la synthese finale
+        (notes-tous-cours.csv) et l'evenement "fin" sont tout de meme
+        produits sur ce qui a ete accompli. Sert l'interface graphique, dont
+        le bouton d'interruption ne doit jamais toucher aux objets Playwright
+        depuis un autre fil que celui qui les a crees (voir la docstring de
+        SessionNavigateur.attendre_connexion pour la meme contrainte).
+        """
         total = len(cours_choisis)
 
         for indice, cours in enumerate(cours_choisis):
+            if annulation is not None and annulation.is_set():
+                self.resultat.cours_non_tentes = total - indice
+                self._emettre("pause", "Interrompu par l'utilisateur.")
+                break
+
             self._emettre("cours", cours.dossier())
             try:
                 self._archiver_un_cours(cours)
