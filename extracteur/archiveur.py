@@ -9,7 +9,7 @@ from pathlib import Path
 
 from playwright.sync_api import Error as ErreurPlaywright
 
-from extracteur.manifeste import Manifeste, ecrire_depots, ecrire_notes, ecrire_notes_consolidees
+from extracteur.manifeste import Manifeste, consolider_notes, ecrire_depots, ecrire_notes
 from extracteur.modele import Echec, Fichier, Resultat
 from extracteur.nommage import nom_sur, nom_unique, tronquer
 from extracteur.stockage import deja_present
@@ -69,13 +69,12 @@ class Archiveur:
         return str(destination.relative_to(self.racine)).replace("\\", "/")
 
     def archiver(self, cours_choisis) -> Resultat:
-        notes_consolidees: list[tuple[str, str, object]] = []
         total = len(cours_choisis)
 
         for indice, cours in enumerate(cours_choisis):
             self._emettre("cours", cours.dossier())
             try:
-                self._archiver_un_cours(cours, notes_consolidees)
+                self._archiver_un_cours(cours)
             except SessionExpiree:
                 # Le cours en cours (indice inclus) et tous ceux qui le
                 # suivaient dans cette liste n'ont jamais ete tentes : ni
@@ -90,11 +89,43 @@ class Archiveur:
                 )
                 self._emettre("echec", f"{cours.dossier()} : {erreur}")
 
-        ecrire_notes_consolidees(self.racine / "notes-tous-cours.csv", notes_consolidees)
+        # Reconstruction depuis le disque, pas fusion d'une liste locale a cet
+        # appel : voir consolider_notes pour pourquoi c'est le fichier de
+        # notes.csv par cours, deja ecrits sur disque, qui fait foi. Isole
+        # comme les autres fichiers de synthese : voir _ecrire_synthese.
+        self._ecrire_synthese(
+            "(archive)",
+            "notes-tous-cours.csv",
+            lambda: consolider_notes(self.racine, self.racine / "notes-tous-cours.csv"),
+        )
         self._emettre("fin", f"{self.resultat.fichiers_ecrits} fichiers archives")
         return self.resultat
 
-    def _archiver_un_cours(self, cours, notes_consolidees) -> None:
+    def _ecrire_synthese(self, cours_dossier: str, element: str, ecrire) -> None:
+        """Isole l'ecriture d'un fichier de synthese (notes consolidees,
+        notes par cours, metadonnees de depot) : ces fichiers peuvent
+        toujours etre verrouilles par un tableur ouvert (Excel...), sans
+        aucun rapport avec la sante du contenu deja telecharge -- parfois
+        plusieurs centaines de fichiers. Un echec ici est consigne comme un
+        Echec ordinaire, avec la piste la plus probable dans sa cause,
+        jamais comme un plantage qui ferait perdre le benefice de tout ce
+        qui a deja ete recupere.
+
+        Isolation etroite a OSError (dont PermissionError, le cas reel
+        constate) : aucune de ces ecritures ne touche le reseau, une
+        SessionExpiree ne peut jamais en sortir. Une erreur d'ecriture sur un
+        fichier de CONTENU (via _telecharger) ne passe pas par ici : elle
+        garde son traitement d'avant, absorbee par l'isolation par cours de
+        archiver() en un Echec « (cours entier) ».
+        """
+        try:
+            ecrire()
+        except OSError as erreur:
+            cause = f"{erreur} (probablement ouvert dans un tableur comme Excel)"
+            self.resultat.echecs.append(Echec(cours=cours_dossier, element=element, cause=cause))
+            self._emettre("echec", f"{element} : {erreur}")
+
+    def _archiver_un_cours(self, cours) -> None:
         from extracteur.ena import URL
 
         base = self.chemin_du_cours(cours)
@@ -146,7 +177,9 @@ class Archiveur:
                 self._recuperer(cours, Fichier(nom=depot.nom, url=depot.url), dossier)
             if depots:
                 dossier.mkdir(parents=True, exist_ok=True)
-                ecrire_depots(dossier / "depots.csv", depots)
+                self._ecrire_synthese(
+                    cours.dossier(), "depots.csv", lambda: ecrire_depots(dossier / "depots.csv", depots)
+                )
             self._capturer_page_section(
                 cours,
                 URL.boite_depot(evaluation.id_site, evaluation.id_evaluation),
@@ -164,9 +197,9 @@ class Archiveur:
 
         notes = self.ena.resultats(cours)
         if notes:
-            ecrire_notes(base / "notes.csv", notes)
-            for note in notes:
-                notes_consolidees.append((cours.session.dossier(), cours.dossier(), note))
+            self._ecrire_synthese(
+                cours.dossier(), "notes.csv", lambda: ecrire_notes(base / "notes.csv", notes)
+            )
             self._capturer_page_section(
                 cours, URL.resultats(cours.id_site), base / "Pages" / NOM_PAGE_RESULTATS
             )
