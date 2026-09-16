@@ -4,3 +4,20 @@ __pycache__/
 Archive monPortail/
 archive.log
 .superpowers/
+
+# Profil de navigateur d'une execution : contient des cookies de session
+# authentifies. Ne doit JAMAIS etre publie.
+.session/
+extracteur-monportail-*/
+
+# Sorties d'archivage : contenu de cours et resultats personnels.
+Archive*/
+*.zip
+manifeste.csv
+notes-tous-cours.csv
+_rapport.html
+reconnaissance*.txt
+
+# Artefacts de construction
+*.egg-info/
+.pytest_cache/

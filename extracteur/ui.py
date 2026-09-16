@@ -138,7 +138,7 @@ def valider_les_champs(portee: str, destination, libelle_session: str, id_site: 
         identifiant = (id_site or "").strip()
         if not identifiant:
             raise ChampManquant(
-                "Entrez l'idSite du cours, par exemple : 181216. Il se lit dans "
+                "Entrez l'idSite du cours, par exemple : 100001. Il se lit dans "
                 "l'adresse du site de cours, apres idSite=."
             )
         if not identifiant.isdigit():
@@ -417,7 +417,7 @@ class Fenetre:
         ).grid(row=2, column=0, sticky="w", pady=(4, 0))
         self.champ_cours = ttk.Entry(cadre, textvariable=self.id_site, width=30)
         self.champ_cours.grid(row=2, column=1, sticky="w", padx=6, pady=(4, 0))
-        ttk.Label(cadre, text="idSite, ex. 181216").grid(row=2, column=2, sticky="w")
+        ttk.Label(cadre, text="idSite, ex. 100001").grid(row=2, column=2, sticky="w")
 
         self._rafraichir_champs()
 

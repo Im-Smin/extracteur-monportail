@@ -206,39 +206,39 @@ def test_capturer_pdf_leve_session_expiree_si_page_non_authentifiee(tmp_path):
 
 
 def test_urls_canoniques_sont_bien_formees():
-    assert URL.modules("181216") == "/ena/site/modules?idSite=181216"
-    assert URL.evaluations("181216") == "/ena/site/evaluations?idSite=181216"
-    assert URL.resultats("181216") == "/ena/site/resultats?idSite=181216"
-    assert URL.boite_depot("181216", "1035434") == (
-        "/ena/site/evaluation?idSite=181216&idEvaluation=1035434&onglet=boiteDepots"
+    assert URL.modules("100001") == "/ena/site/modules?idSite=100001"
+    assert URL.evaluations("100001") == "/ena/site/evaluations?idSite=100001"
+    assert URL.resultats("100001") == "/ena/site/resultats?idSite=100001"
+    assert URL.boite_depot("100001", "1035434") == (
+        "/ena/site/evaluation?idSite=100001&idEvaluation=1035434&onglet=boiteDepots"
     )
-    assert URL.module("181216", "1795743") == (
-        "/ena/site/module?idSite=181216&idModule=1795743&editionModule=false"
+    assert URL.module("100001", "1795743") == (
+        "/ena/site/module?idSite=100001&idModule=1795743&editionModule=false"
     )
-    assert URL.redirection("181216", "liste_modules") == (
-        "/lieninterne/redirection/181216/liste_modules"
+    assert URL.redirection("100001", "liste_modules") == (
+        "/lieninterne/redirection/100001/liste_modules"
     )
-    assert URL.evaluation("181216", "1035434") == (
-        "/ena/site/evaluation?idSite=181216&idEvaluation=1035434"
+    assert URL.evaluation("100001", "1035434") == (
+        "/ena/site/evaluation?idSite=100001&idEvaluation=1035434"
     )
-    assert URL.evaluation_resultats("181216", "1035434") == (
-        "/ena/site/evaluation?idSite=181216&idEvaluation=1035434&onglet=resultats"
+    assert URL.evaluation_resultats("100001", "1035434") == (
+        "/ena/site/evaluation?idSite=100001&idEvaluation=1035434&onglet=resultats"
     )
 
 
 def test_url_module_ajoute_idpage_quand_fourni():
     # Sans idPage explicite, le serveur ADF sert un onglet imprevisible (le
     # dernier consulte dans la session) : voir docs/api-monportail.md, etape 3.
-    assert URL.module("181216", "1795743", "4874493") == (
-        "/ena/site/module?idSite=181216&idModule=1795743"
+    assert URL.module("100001", "1795743", "4874493") == (
+        "/ena/site/module?idSite=100001&idModule=1795743"
         "&editionModule=false&idPage=4874493"
     )
 
 
 def test_url_module_sans_idpage_reste_identique():
     # Les appels existants, sans idPage, ne doivent pas changer d'URL.
-    assert URL.module("181216", "1795743") == (
-        "/ena/site/module?idSite=181216&idModule=1795743&editionModule=false"
+    assert URL.module("100001", "1795743") == (
+        "/ena/site/module?idSite=100001&idModule=1795743&editionModule=false"
     )
 
 
@@ -247,7 +247,7 @@ class PageAvecPlanDeCours(PageFactice):
     mene reellement au plan de cours ; les autres restent sur le routeur lui-meme,
     ce qui echoue au critere « URL sous /ena/site/ »."""
 
-    URL_PLAN = "https://sitescours.monportail.ulaval.ca/ena/site/module?idSite=181216&idModule=999"
+    URL_PLAN = "https://sitescours.monportail.ulaval.ca/ena/site/module?idSite=100001&idModule=999"
 
     def __init__(self, section_valide, html_plan):
         super().__init__({})
@@ -272,22 +272,22 @@ def test_plan_de_cours_capture_en_pdf(tmp_path):
     )
     ena = Ena(session)
     cours = Cours(
-        id_site="181216",
-        sigle="PHI-3900",
+        id_site="100001",
+        sigle="ABC-1000",
         titre="Éthique",
         session=Session(code="202601", libelle="Hiver 2026"),
     )
 
     assert ena.capturer_plan_de_cours(cours, tmp_path / "plan.pdf") == "plan_de_cours"
-    assert any("/lieninterne/redirection/181216/" in u for u in ena.session.page.visitees)
+    assert any("/lieninterne/redirection/100001/" in u for u in ena.session.page.visitees)
 
 
 class PageRedirigeeVersAccueil(PageFactice):
     """Les candidats invalides redirigent silencieusement vers l'accueil (code
     200, pas de page_erreur) : un piege pour un critere fonde sur page_erreur."""
 
-    URL_ACCUEIL = "https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=181216"
-    URL_PLAN = "https://sitescours.monportail.ulaval.ca/ena/site/module?idSite=181216&idModule=999"
+    URL_ACCUEIL = "https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100001"
+    URL_PLAN = "https://sitescours.monportail.ulaval.ca/ena/site/module?idSite=100001&idModule=999"
 
     def __init__(self, section_valide, html_plan):
         super().__init__({})
@@ -315,8 +315,8 @@ def test_plan_de_cours_rejette_une_redirection_vers_l_accueil(tmp_path):
     )
     ena = Ena(session)
     cours = Cours(
-        id_site="181216",
-        sigle="PHI-3900",
+        id_site="100001",
+        sigle="ABC-1000",
         titre="Éthique",
         session=Session(code="202601", libelle="Hiver 2026"),
     )
@@ -331,7 +331,7 @@ class PageValideSansMarqueur(PageFactice):
     """URL finale reelle, differente de l'accueil, mais sans texte de plan de
     cours : un site dont aucune section n'est un plan de cours."""
 
-    URL_REELLE = "https://sitescours.monportail.ulaval.ca/ena/site/module?idSite=181216&idModule=1"
+    URL_REELLE = "https://sitescours.monportail.ulaval.ca/ena/site/module?idSite=100001&idModule=1"
 
     def goto(self, url, **_):
         self.visitees.append(url)
@@ -348,8 +348,8 @@ def test_plan_de_cours_sans_marqueur_est_rejete(tmp_path):
     session.page = PageValideSansMarqueur({})
     ena = Ena(session)
     cours = Cours(
-        id_site="181216",
-        sigle="PHI-3900",
+        id_site="100001",
+        sigle="ABC-1000",
         titre="Éthique",
         session=Session(code="202601", libelle="Hiver 2026"),
     )
@@ -380,27 +380,27 @@ def test_plan_de_cours_absent_renvoie_faux(tmp_path):
 
 def test_modules_utilise_l_url_canonique():
     html = (
-        '<a href="/ena/site/module?idSite=181216&idModule=1795743&editionModule=false">'
+        '<a href="/ena/site/module?idSite=100001&idModule=1795743&editionModule=false">'
         "1. Introduction</a>"
     )
     ena = Ena(SessionFactice({"/ena/site/modules": html}))
     cours = Cours(
-        id_site="181216",
-        sigle="PHI-3900",
+        id_site="100001",
+        sigle="ABC-1000",
         titre="Éthique",
         session=Session(code="202601", libelle="Hiver 2026"),
     )
 
     modules = ena.modules(cours)
     assert [m.id_module for m in modules] == ["1795743"]
-    assert "/ena/site/modules?idSite=181216" in ena.session.page.visitees[0]
+    assert "/ena/site/modules?idSite=100001" in ena.session.page.visitees[0]
 
 
 def test_modules_absents_ne_font_pas_echouer():
     # Le site de formation EDI n'a ni modules ni evaluations.
     ena = Ena(SessionFactice({}))
     cours = Cours(
-        id_site="149047",
+        id_site="100006",
         sigle=None,
         titre="Nos biais inconscients",
         session=Session(code="202209", libelle="Automne 2022"),
@@ -410,13 +410,13 @@ def test_modules_absents_ne_font_pas_echouer():
 
 def test_evaluations_extraites():
     html = """
-    <a href="/ena/site/evaluation?idSite=183033&idEvaluation=1035434&onglet">Exposé oral I</a>
-    <a href="/ena/site/evaluation?idSite=183033&idEvaluation=1035435&onglet">Rapport de suivi I</a>
+    <a href="/ena/site/evaluation?idSite=100002&idEvaluation=1035434&onglet">Exposé oral I</a>
+    <a href="/ena/site/evaluation?idSite=100002&idEvaluation=1035435&onglet">Rapport de suivi I</a>
     """
     ena = Ena(SessionFactice({"/ena/site/evaluations": html}))
     cours = Cours(
-        id_site="183033",
-        sigle="GIN-3320",
+        id_site="100002",
+        sigle="DEF-2000",
         titre="Projet",
         session=Session(code="202601", libelle="Hiver 2026"),
     )
@@ -428,14 +428,14 @@ def test_evaluations_extraites():
 
 def test_fichiers_de_depot_visitent_l_onglet_boite_depots():
     ena = Ena(SessionFactice({}))
-    ena.fichiers_de_depot(Evaluation(id_site="183033", id_evaluation="1035434", titre="T"))
+    ena.fichiers_de_depot(Evaluation(id_site="100002", id_evaluation="1035434", titre="T"))
     assert "onglet=boiteDepots" in ena.session.page.visitees[0]
 
 
 # Nom URL-encode (espace et accent) : le nom du depot vient de l'URL, jamais
 # du texte affiche du lien, qui peut etre tronque par la plateforme.
 LIEN_DOCUMENT_DEPOSE = (
-    "/contenu/sitescours/040/04000/202601/site181216/depots"
+    "/contenu/sitescours/040/04000/202601/site100001/depots"
     "/Z1-PHI3900-H2026-TP2%20-%20%C3%89thique.docx?identifiant=abc"
 )
 
@@ -458,7 +458,7 @@ def test_fichiers_de_depot_rend_des_depots_complets():
     ena = Ena(SessionFactice({"onglet=boiteDepots": html}))
 
     depots = ena.fichiers_de_depot(
-        Evaluation(id_site="181216", id_evaluation="1035434", titre="TP2")
+        Evaluation(id_site="100001", id_evaluation="1035434", titre="TP2")
     )
 
     assert len(depots) == 1
@@ -471,7 +471,7 @@ def test_fichiers_de_depot_rend_des_depots_complets():
 
 def test_fichiers_de_description_visitent_l_onglet_par_defaut():
     ena = Ena(SessionFactice({}))
-    ena.fichiers_de_description(Evaluation(id_site="183033", id_evaluation="1035434", titre="T"))
+    ena.fichiers_de_description(Evaluation(id_site="100002", id_evaluation="1035434", titre="T"))
     visitee = ena.session.page.visitees[0]
     assert "idEvaluation=1035434" in visitee
     assert "onglet" not in visitee
@@ -484,7 +484,7 @@ def test_fichiers_de_description_extrait_les_pieces_jointes():
     ena = Ena(SessionFactice({"idEvaluation=1035434": html}))
 
     fichiers = ena.fichiers_de_description(
-        Evaluation(id_site="183033", id_evaluation="1035434", titre="T")
+        Evaluation(id_site="100002", id_evaluation="1035434", titre="T")
     )
 
     assert [f.nom for f in fichiers] == ["enonce.pdf"]
@@ -493,7 +493,7 @@ def test_fichiers_de_description_extrait_les_pieces_jointes():
 def test_fichiers_de_resultats_evaluation_visitent_l_onglet_resultats():
     ena = Ena(SessionFactice({}))
     ena.fichiers_de_resultats_evaluation(
-        Evaluation(id_site="183033", id_evaluation="1035434", titre="T")
+        Evaluation(id_site="100002", id_evaluation="1035434", titre="T")
     )
     assert "onglet=resultats" in ena.session.page.visitees[0]
 
@@ -504,7 +504,7 @@ def test_fichiers_de_resultats_evaluation_extrait_les_pieces_jointes():
     ena = Ena(SessionFactice({"onglet=resultats": html}))
 
     fichiers = ena.fichiers_de_resultats_evaluation(
-        Evaluation(id_site="183033", id_evaluation="1035434", titre="T")
+        Evaluation(id_site="100002", id_evaluation="1035434", titre="T")
     )
 
     assert [f.nom for f in fichiers] == ["retroaction.pdf"]
@@ -512,7 +512,7 @@ def test_fichiers_de_resultats_evaluation_extrait_les_pieces_jointes():
 
 def test_fichiers_du_module_visitent_l_url_du_module():
     ena = Ena(SessionFactice({}))
-    ena.fichiers_du_module(Module(id_site="181216", id_module="1795743", titre="M"))
+    ena.fichiers_du_module(Module(id_site="100001", id_module="1795743", titre="M"))
     assert "idModule=1795743" in ena.session.page.visitees[0]
     assert "editionModule=false" in ena.session.page.visitees[0]
 
@@ -528,12 +528,12 @@ class PageSansOngletContenu(PageFactice):
 def test_fichiers_du_module_tolere_un_onglet_contenu_introuvable():
     # Le module n'a pas d'onglet "Contenu du module" : ce n'est pas une
     # erreur, le module peut simplement n'avoir pas de documents en ligne.
-    html = '<a href="/contenu/sitescours/181216/module1795743/doc.pdf">Document</a>'
+    html = '<a href="/contenu/sitescours/100001/module1795743/doc.pdf">Document</a>'
     session = SessionFactice({})
     session.page = PageSansOngletContenu({"idModule=1795743": html})
     ena = Ena(session)
 
-    fichiers = ena.fichiers_du_module(Module(id_site="181216", id_module="1795743", titre="M"))
+    fichiers = ena.fichiers_du_module(Module(id_site="100001", id_module="1795743", titre="M"))
 
     assert [f.nom for f in fichiers] == ["doc.pdf"]
 
@@ -543,7 +543,7 @@ def test_fichiers_du_module_visite_l_idpage_quand_fourni():
     # doit etre visite par sa propre URL.
     ena = Ena(SessionFactice({}))
     ena.fichiers_du_module(
-        Module(id_site="181216", id_module="1795743", titre="M"), "4874493"
+        Module(id_site="100001", id_module="1795743", titre="M"), "4874493"
     )
     assert "idPage=4874493" in ena.session.page.visitees[0]
 
@@ -553,7 +553,7 @@ def test_pages_du_module_module_sans_onglets_rend_une_seule_page_racine():
     # docs/api-monportail.md) : comportement d'avant l'ajout des onglets,
     # conserve tel quel -- une seule page, sans chemin.
     ena = Ena(SessionFactice({}))
-    pages = ena.pages_du_module(Module(id_site="181216", id_module="1795743", titre="M"))
+    pages = ena.pages_du_module(Module(id_site="100001", id_module="1795743", titre="M"))
     assert [(p.id_page, p.chemin) for p in pages] == [(None, ())]
 
 
@@ -565,11 +565,11 @@ def test_pages_du_module_leve_session_expiree_si_page_non_authentifiee():
     ena.session.page = PageNonAuthentifiee({})
 
     with pytest.raises(SessionExpiree):
-        ena.pages_du_module(Module(id_site="181216", id_module="1795743", titre="M"))
+        ena.pages_du_module(Module(id_site="100001", id_module="1795743", titre="M"))
 
 
 class PageParcoursOngletsImbriques(PageFactice):
-    """Reconstitution simplifiee de GMC-1000 (idSite=146001, idModule=1310231
+    """Reconstitution simplifiee de MNO-5000 (idSite=100004, idModule=1310231
     -- voir docs/api-monportail.md, etape 3) : deux niveaux d'onglets, le
     niveau 2 ("Avancé") portant deux feuilles ("Sous A", "Sous B").
 
@@ -650,7 +650,7 @@ def test_pages_du_module_parcourt_les_onglets_imbriques_par_idpage():
     session.page = PageParcoursOngletsImbriques()
     ena = Ena(session)
 
-    pages = ena.pages_du_module(Module(id_site="181216", id_module="1310231", titre="Module 1"))
+    pages = ena.pages_du_module(Module(id_site="100001", id_module="1310231", titre="Module 1"))
 
     releve = {(p.id_page, p.chemin) for p in pages}
     assert releve == {
@@ -701,7 +701,7 @@ def test_pages_du_module_leve_si_la_borne_de_securite_est_atteinte():
     ena = Ena(session)
 
     with pytest.raises(TropDePagesDansUnModule):
-        ena.pages_du_module(Module(id_site="181216", id_module="1795743", titre="M"))
+        ena.pages_du_module(Module(id_site="100001", id_module="1795743", titre="M"))
 
     # La borne s'applique au nombre de pages DISTINCTES retenues, pas au
     # nombre brut de navigations : elle s'arrete des qu'elle est atteinte,
@@ -751,7 +751,7 @@ def test_parcourir_menu_ouvre_chaque_section_du_site():
     vues = []
     nombre = ena.parcourir_menu(
         Cours(
-            id_site="149047",
+            id_site="100006",
             sigle=None,
             titre="EDI",
             session=Session(code="202209", libelle="Automne 2022"),
@@ -997,7 +997,7 @@ def test_sessions_disponibles_ouvre_le_selecteur_et_liste_les_sessions():
 
 
 def test_sites_de_session_selectionne_la_session_puis_extrait_les_cours():
-    html_hiver_2026 = '<a href="/ena/site/accueil?idSite=181216">Éthique</a>'
+    html_hiver_2026 = '<a href="/ena/site/accueil?idSite=100001">Éthique</a>'
     page = PageAvecSelecteurSessions(["Hiver 2026"], {"Hiver 2026": html_hiver_2026})
     ena = Ena(SessionFactice({}))
     ena.session.page = page
@@ -1006,7 +1006,7 @@ def test_sites_de_session_selectionne_la_session_puis_extrait_les_cours():
     cours = ena.sites_de_session(session)
 
     assert page.session_selectionnee == "Hiver 2026"
-    assert [c.id_site for c in cours] == ["181216"]
+    assert [c.id_site for c in cours] == ["100001"]
     assert cours[0].session == session
 
 
@@ -1640,7 +1640,7 @@ def test_parcourir_menu_tolere_un_lien_non_cliquable():
     vues = []
     nombre = ena.parcourir_menu(
         Cours(
-            id_site="149047",
+            id_site="100006",
             sigle=None,
             titre="EDI",
             session=Session(code="202209", libelle="Automne 2022"),
@@ -1658,7 +1658,7 @@ def test_sites_de_session_tolere_les_espaces_autour_du_libelle():
     # le moindre espace ou saut de ligne autour du libelle (ex. " Hiver 2027 "),
     # la selection ne doit pas echouer silencieusement et laisser croire qu'on
     # a les cours d'une autre session.
-    html_hiver_2026 = '<a href="/ena/site/accueil?idSite=181216">Ethique</a>'
+    html_hiver_2026 = '<a href="/ena/site/accueil?idSite=100001">Ethique</a>'
     page = PageAvecSelecteurSessions(
         [" Hiver 2026 ", "\nAutomne 2025\n"],
         {"Hiver 2026": html_hiver_2026},
@@ -1672,7 +1672,7 @@ def test_sites_de_session_tolere_les_espaces_autour_du_libelle():
     # Le selecteur s'est ouvert, une option avec espaces parasites a ete
     # trouvee (apres nettoyage), cliquee, et la page a ete reloadee.
     assert page.session_selectionnee == "Hiver 2026"
-    assert [c.id_site for c in cours] == ["181216"]
+    assert [c.id_site for c in cours] == ["100001"]
 
 
 class PageAvecPanneauProgressif(PageFactice):

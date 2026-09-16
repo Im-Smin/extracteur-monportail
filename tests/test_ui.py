@@ -59,7 +59,7 @@ def test_valider_refuse_une_session_sans_libelle():
 
 
 def test_valider_cours_rend_l_id_site_nettoye():
-    assert valider_les_champs(PORTEE_COURS, "C:/a", "", " 181216 ") == "181216"
+    assert valider_les_champs(PORTEE_COURS, "C:/a", "", " 100001 ") == "100001"
 
 
 def test_valider_refuse_un_cours_sans_id_site():
@@ -72,7 +72,7 @@ def test_valider_refuse_un_id_site_non_numerique():
     # jamais a rien, et ne le constater qu'apres le MFA couterait plusieurs
     # minutes a chaque essai.
     with pytest.raises(ChampManquant, match="nombre"):
-        valider_les_champs(PORTEE_COURS, "C:/a", "", "MQT-2101")
+        valider_les_champs(PORTEE_COURS, "C:/a", "", "GHI-3000")
 
 
 def test_valider_ignore_le_champ_hors_portee():
@@ -549,7 +549,7 @@ def test_la_fenetre_grise_les_champs_hors_portee(tmp_path, fenetre_tk):
 def test_la_fenetre_refuse_de_commencer_sur_un_id_site_fautif(tmp_path, fenetre_tk):
     fenetre = fenetre_tk(tmp_path)
     fenetre.portee.set(PORTEE_COURS)
-    fenetre.id_site.set("MQT-2101")
+    fenetre.id_site.set("GHI-3000")
 
     fenetre._commencer()
 

@@ -11,7 +11,7 @@ from extracteur.modele import Cours, Depot, Evaluation, Fichier, Module, Note, P
 from extracteur.telechargement import ErreurPermanente, SessionExpiree
 
 SESSION = Session(code="202601", libelle="Hiver 2026")
-COURS = Cours(id_site="181216", sigle="PHI-3900", titre="Éthique", session=SESSION)
+COURS = Cours(id_site="100001", sigle="ABC-1000", titre="Éthique", session=SESSION)
 
 
 class EnaFactice:
@@ -104,7 +104,7 @@ def transport_403(url):
 def test_arborescence_session_cours(tmp_path):
     archiveur = Archiveur(EnaFactice(), transport_ok, tmp_path, queue.Queue())
     chemin = archiveur.chemin_du_cours(COURS)
-    assert chemin == tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique"
+    assert chemin == tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique"
 
 
 def test_fichier_telecharge_et_inscrit_au_manifeste(tmp_path):
@@ -113,7 +113,7 @@ def test_fichier_telecharge_et_inscrit_au_manifeste(tmp_path):
 
     resultat = archiveur.archiver([COURS])
 
-    attendu = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Documents" / "Module 1" / "notes.pdf"
+    attendu = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "Documents" / "Module 1" / "notes.pdf"
     assert attendu.exists()
     assert resultat.fichiers_ecrits == 1
     assert (tmp_path / "manifeste.csv").exists()
@@ -142,7 +142,7 @@ def test_echec_permanent_consigne_et_continue(tmp_path):
 
 
 def test_un_cours_qui_casse_n_emporte_pas_les_autres(tmp_path):
-    autre = Cours(id_site="2", sigle="GIN-3320", titre="Projet", session=SESSION)
+    autre = Cours(id_site="2", sigle="DEF-2000", titre="Projet", session=SESSION)
     ena = EnaFactice(erreur=RuntimeError("site illisible"))
     archiveur = Archiveur(ena, transport_ok, tmp_path, queue.Queue())
 
@@ -176,7 +176,7 @@ def test_annulation_interrompt_a_la_frontiere_du_cours_suivant(tmp_path):
     # a la difference de SessionExpiree.
     import threading
 
-    autre = Cours(id_site="2", sigle="GIN-3320", titre="Projet", session=SESSION)
+    autre = Cours(id_site="2", sigle="DEF-2000", titre="Projet", session=SESSION)
     evenements = queue.Queue()
     archiveur = Archiveur(EnaFactice(), transport_ok, tmp_path, evenements)
     annulation = threading.Event()
@@ -197,7 +197,7 @@ def test_annulation_interrompt_a_la_frontiere_du_cours_suivant(tmp_path):
 def test_annulation_posee_pendant_le_premier_cours_epargne_les_suivants(tmp_path):
     import threading
 
-    autre = Cours(id_site="2", sigle="GIN-3320", titre="Projet", session=SESSION)
+    autre = Cours(id_site="2", sigle="DEF-2000", titre="Projet", session=SESSION)
     evenements = queue.Queue()
     archiveur = Archiveur(EnaFactice(), transport_ok, tmp_path, evenements)
     annulation = threading.Event()
@@ -214,7 +214,7 @@ def test_notes_exportees(tmp_path):
     ena = EnaFactice(notes=[Note(evaluation="Examen 1", note="18", sur="20")])
     Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
 
-    notes = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "notes.csv"
+    notes = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "notes.csv"
     assert notes.exists()
     assert "Examen 1" in notes.read_text(encoding="utf-8-sig")
 
@@ -256,7 +256,7 @@ def test_module_sans_onglets_garde_l_arborescence_actuelle(tmp_path):
 
     Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
 
-    base = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique"
+    base = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique"
     assert (base / "Documents" / "Module 1" / "a.pdf").exists()
     assert (base / "Pages" / "Module 1.pdf").exists()
     assert not (base / "Documents" / "Module 1" / "Général").exists()
@@ -276,7 +276,7 @@ def test_module_avec_un_seul_niveau_d_onglets_range_fichiers_et_pdf_par_onglet(t
 
     resultat = Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
 
-    base = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique"
+    base = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique"
     assert (base / "Documents" / "Module 1" / "Général" / "a.pdf").exists()
     assert (base / "Documents" / "Module 1" / "Contenu du module" / "b.pdf").exists()
     assert (base / "Pages" / "Module 1 - Général.pdf").exists()
@@ -285,7 +285,7 @@ def test_module_avec_un_seul_niveau_d_onglets_range_fichiers_et_pdf_par_onglet(t
 
 
 def test_module_avec_onglets_imbriques_range_fichiers_et_pdf_sur_deux_niveaux(tmp_path):
-    # GMC-1000 (idSite=146001, idModule=1310231) : deux niveaux d'onglets
+    # MNO-5000 (idSite=100004, idModule=1310231) : deux niveaux d'onglets
     # empiles, avec deux feuilles distinctes ("Vues orthogonales", "Coupes")
     # partageant le meme onglet de niveau 1 ("Théorie et dessin à la main"),
     # et un onglet de niveau 1 sans enfant ("AutoCAD").
@@ -308,12 +308,12 @@ def test_module_avec_onglets_imbriques_range_fichiers_et_pdf_sur_deux_niveaux(tm
 
     resultat = Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
 
-    base = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Documents" / "Module 1"
+    base = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "Documents" / "Module 1"
     assert (base / "Théorie et dessin à la main" / "Vues orthogonales" / "vues.pdf").exists()
     assert (base / "Théorie et dessin à la main" / "Coupes" / "coupes.pdf").exists()
     assert (base / "AutoCAD" / "dwg.pdf").exists()
 
-    pages_pdf = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Pages"
+    pages_pdf = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "Pages"
     assert (pages_pdf / "Module 1 - Théorie et dessin à la main - Vues orthogonales.pdf").exists()
     assert (pages_pdf / "Module 1 - Théorie et dessin à la main - Coupes.pdf").exists()
     assert (pages_pdf / "Module 1 - AutoCAD.pdf").exists()
@@ -337,7 +337,7 @@ def test_page_de_module_en_echec_est_isolee_des_autres_pages_du_module(tmp_path)
     resultat = Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
 
     assert any(e.element == "Module 1 - Général" for e in resultat.echecs)
-    base = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique"
+    base = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique"
     assert (base / "Documents" / "Module 1" / "Contenu du module" / "b.pdf").exists()
     assert not (base / "Documents" / "Module 1" / "Général").exists()
 
@@ -376,7 +376,7 @@ def test_trop_de_pages_dans_un_module_est_isole(tmp_path):
 
     assert any(e.element == "Module 1" for e in resultat.echecs)
     # Le reste du cours (plan de cours, evaluations...) reste archive.
-    base = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique"
+    base = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique"
     assert (base / "Plan de cours" / "plan-de-cours.pdf").exists()
 
 
@@ -397,7 +397,7 @@ def test_noms_de_fichiers_assainis(tmp_path):
     fichier = Fichier(nom='ra:pport<1>.pdf', url="/contenu/sitescours/x/a.pdf?identifiant=a")
     Archiveur(EnaFactice([fichier]), transport_ok, tmp_path, queue.Queue()).archiver([COURS])
 
-    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Documents" / "Module 1"
+    dossier = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "Documents" / "Module 1"
     assert (dossier / "ra-pport-1-.pdf").exists()
 
 
@@ -411,7 +411,7 @@ def test_relancer_ne_cree_jamais_de_doublon_numerote(tmp_path):
     for _ in range(3):
         Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
 
-    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Documents" / "Module 1"
+    dossier = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "Documents" / "Module 1"
     assert sorted(p.name for p in dossier.iterdir()) == ["notes.pdf"]
 
 
@@ -423,7 +423,7 @@ def test_collision_reelle_entre_deux_urls_differentes(tmp_path):
 
     archiveur.archiver([COURS])
 
-    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Documents" / "Module 1"
+    dossier = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "Documents" / "Module 1"
     assert sorted(p.name for p in dossier.iterdir()) == ["notes (2).pdf", "notes.pdf"]
 
 
@@ -441,7 +441,7 @@ def test_collision_reelle_stable_a_travers_les_relances(tmp_path):
     for _ in range(4):
         Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
 
-    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Documents" / "Module 1"
+    dossier = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "Documents" / "Module 1"
     assert sorted(p.name for p in dossier.iterdir()) == ["notes (2).pdf", "notes.pdf"]
 
 
@@ -450,11 +450,11 @@ def test_taille_illisible_dans_le_manifeste_ne_fait_pas_planter_la_reprise(tmp_p
     # a la main : une colonne "taille" vide ou non numerique ne doit jamais
     # lever de ValueError, mais etre traitee comme une taille inconnue.
     fichier = Fichier(nom="notes.pdf", url="/contenu/sitescours/x/notes.pdf?identifiant=a")
-    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Documents" / "Module 1"
+    dossier = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "Documents" / "Module 1"
     dossier.mkdir(parents=True)
     (dossier / "notes.pdf").write_bytes(b"contenu")
 
-    chemin_relatif = "2026-1 Hiver/PHI-3900 Éthique/Documents/Module 1/notes.pdf"
+    chemin_relatif = "2026-1 Hiver/ABC-1000 Éthique/Documents/Module 1/notes.pdf"
     with open(tmp_path / "manifeste.csv", "w", encoding="utf-8-sig", newline="") as sortie:
         redacteur = csv.DictWriter(sortie, fieldnames=COLONNES)
         redacteur.writeheader()
@@ -484,7 +484,7 @@ def test_plan_de_cours_repli_capture_quand_url_absente(tmp_path):
     ena = EnaFactice()
     Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
 
-    plan = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Plan de cours" / "plan-de-cours.pdf"
+    plan = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "Plan de cours" / "plan-de-cours.pdf"
     assert plan.exists()
     assert ena.plans_captures
 
@@ -494,8 +494,8 @@ def test_plan_de_cours_telecharge_depuis_url_officielle(tmp_path):
     # telecharge comme un fichier normal ; le filet de secours ne doit pas
     # etre sollicite.
     cours = Cours(
-        id_site="181216",
-        sigle="PHI-3900",
+        id_site="100001",
+        sigle="ABC-1000",
         titre="Éthique",
         session=SESSION,
         url_plan_de_cours="/contenu/sitescours/x/plan.pdf?identifiant=a",
@@ -503,7 +503,7 @@ def test_plan_de_cours_telecharge_depuis_url_officielle(tmp_path):
     ena = EnaFactice()
     resultat = Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([cours])
 
-    plan = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Plan de cours" / "plan-de-cours.pdf"
+    plan = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "Plan de cours" / "plan-de-cours.pdf"
     assert plan.exists()
     assert ena.plans_captures == []
     assert resultat.fichiers_ecrits >= 1
@@ -522,7 +522,7 @@ def test_depot_telecharge_avec_metadonnees_et_csv(tmp_path):
     ena = EnaFactice(depots=[depot])
     resultat = Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
 
-    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Évaluations" / "TP1"
+    dossier = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "Évaluations" / "TP1"
     assert (dossier / "travail.docx").exists()
 
     contenu = (dossier / "depots.csv").read_text(encoding="utf-8-sig")
@@ -549,7 +549,7 @@ def test_site_sans_modules_ni_evaluations_passe_par_le_menu(tmp_path):
             return 1
 
     cours = Cours(
-        id_site="149047",
+        id_site="100006",
         sigle=None,
         titre="Nos biais inconscients",
         session=Session(code="202209", libelle="Automne 2022"),
@@ -622,7 +622,7 @@ def test_echec_capture_menu_isole_la_section_fautive(tmp_path):
     assert resultat.echecs[0].cours == COURS.dossier()
     assert resultat.echecs[0].element == "Section un.pdf"
 
-    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Documents" / "Section deux"
+    dossier = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "Documents" / "Section deux"
     assert (dossier / "second.pdf").exists()
 
 
@@ -694,7 +694,7 @@ def test_notes_consolidees_a_la_racine(tmp_path):
     consolide = tmp_path / "notes-tous-cours.csv"
     contenu = consolide.read_text(encoding="utf-8-sig")
     assert "2026-1 Hiver" in contenu
-    assert "PHI-3900 Éthique" in contenu
+    assert "ABC-1000 Éthique" in contenu
     assert "Examen 1" in contenu
 
 
@@ -706,7 +706,7 @@ def test_pages_de_la_section_evaluations_capturees(tmp_path):
     ena = EnaFactice(notes=[Note(evaluation="Examen 1", note="18", sur="20")])
     Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
 
-    base = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique"
+    base = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique"
     assert (base / "Pages" / "evaluations.pdf").exists()
     assert (base / "Pages" / "sommaire-des-resultats.pdf").exists()
 
@@ -718,7 +718,7 @@ def test_description_et_resultats_d_evaluation_captures_dans_evaluations(tmp_pat
     ena = EnaFactice()
     Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
 
-    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Évaluations" / "TP1"
+    dossier = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "Évaluations" / "TP1"
     assert (dossier / "description.pdf").exists()
     assert (dossier / "resultats.pdf").exists()
 
@@ -730,7 +730,7 @@ def test_page_boite_de_depot_capturee_en_pdf(tmp_path):
     ena = EnaFactice()
     Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
 
-    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Évaluations" / "TP1"
+    dossier = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "Évaluations" / "TP1"
     assert (dossier / "boite-de-depot.pdf").exists()
 
 
@@ -742,7 +742,7 @@ def test_echec_capture_boite_de_depot_isole(tmp_path):
     resultat = Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
 
     assert any(e.element == "boite-de-depot.pdf" for e in resultat.echecs)
-    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Évaluations" / "TP1"
+    dossier = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "Évaluations" / "TP1"
     assert not (dossier / "boite-de-depot.pdf").exists()
     assert (dossier / "travail.docx").exists()
     assert (dossier / "description.pdf").exists()
@@ -774,7 +774,7 @@ def test_fichiers_joints_description_recuperes(tmp_path):
     ena = EnaFactice(fichiers_description=[enonce])
     resultat = Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
 
-    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Évaluations" / "TP1"
+    dossier = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "Évaluations" / "TP1"
     assert (dossier / "enonce.pdf").exists()
     assert resultat.fichiers_ecrits >= 1
 
@@ -788,7 +788,7 @@ def test_fichiers_joints_resultats_evaluation_recuperes(tmp_path):
     ena = EnaFactice(fichiers_resultats_evaluation=[retroaction])
     Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
 
-    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Évaluations" / "TP1"
+    dossier = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "Évaluations" / "TP1"
     assert (dossier / "retroaction.pdf").exists()
 
 
@@ -800,7 +800,7 @@ def test_capture_de_page_evaluation_en_echec_isolee(tmp_path):
     resultat = Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
 
     assert any(e.element == "description.pdf" for e in resultat.echecs)
-    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Évaluations" / "TP1"
+    dossier = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "Évaluations" / "TP1"
     assert not (dossier / "description.pdf").exists()
     assert (dossier / "resultats.pdf").exists()
 
@@ -814,7 +814,7 @@ def test_cours_sans_evaluation_ne_produit_ni_dossier_ni_erreur(tmp_path):
         EnaSansEvaluations(), transport_ok, tmp_path, queue.Queue()
     ).archiver([COURS])
 
-    base = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique"
+    base = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique"
     assert not (base / "Évaluations").exists()
     assert not (base / "Pages" / "evaluations.pdf").exists()
     assert not (base / "Pages" / "sommaire-des-resultats.pdf").exists()
@@ -827,7 +827,7 @@ def test_archivage_dun_seul_cours_preserve_les_notes_des_autres_cours(tmp_path):
     # des cours archives lors d'executions precedentes (--tout, --session).
     # Relancer --un-seul-cours pour reparer un cours ne doit jamais reduire
     # ce fichier a ce seul cours.
-    autre = Cours(id_site="2", sigle="GIN-3320", titre="Projet", session=SESSION)
+    autre = Cours(id_site="2", sigle="DEF-2000", titre="Projet", session=SESSION)
     ena_premier = EnaFactice(notes=[Note(evaluation="Examen 1", note="18", sur="20")])
     Archiveur(ena_premier, transport_ok, tmp_path, queue.Queue()).archiver([autre])
 
@@ -835,9 +835,9 @@ def test_archivage_dun_seul_cours_preserve_les_notes_des_autres_cours(tmp_path):
     Archiveur(ena_second, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
 
     contenu = (tmp_path / "notes-tous-cours.csv").read_text(encoding="utf-8-sig")
-    assert "GIN-3320 Projet" in contenu
+    assert "DEF-2000 Projet" in contenu
     assert "Examen 1" in contenu
-    assert "PHI-3900 Éthique" in contenu
+    assert "ABC-1000 Éthique" in contenu
     assert "TP1 - Projet" in contenu
 
 
@@ -858,7 +858,7 @@ def test_ecriture_notes_consolidees_verrouillee_ne_plante_pas_larchivage(tmp_pat
 
 
 def test_ecriture_notes_par_cours_verrouillee_isolee(tmp_path):
-    base = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique"
+    base = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique"
     (base / "notes.csv").mkdir(parents=True)
     ena = EnaFactice(notes=[Note(evaluation="Examen 1", note="18", sur="20")])
 
@@ -873,7 +873,7 @@ def test_ecriture_notes_par_cours_verrouillee_isolee(tmp_path):
 
 
 def test_ecriture_depots_verrouillee_isolee(tmp_path):
-    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Évaluations" / "TP1"
+    dossier = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "Évaluations" / "TP1"
     dossier.mkdir(parents=True)
     (dossier / "depots.csv").mkdir()
     depot = Depot(nom="travail.docx", url="/contenu/sitescours/x/travail.docx?identifiant=a")
@@ -901,7 +901,7 @@ def test_erreur_ecriture_fichier_de_contenu_reste_un_echec_de_cours(tmp_path):
 
         return R()
 
-    autre = Cours(id_site="2", sigle="GIN-3320", titre="Projet", session=SESSION)
+    autre = Cours(id_site="2", sigle="DEF-2000", titre="Projet", session=SESSION)
     fichier = Fichier(nom="a.pdf", url="/contenu/sitescours/x/a.pdf?identifiant=a")
     ena = EnaFactice([fichier])
     archiveur = Archiveur(ena, transport_verrouille, tmp_path, queue.Queue())
@@ -926,7 +926,7 @@ def test_arborescence_des_depots_existants_inchangee(tmp_path):
     attendu = (
         tmp_path
         / "2026-1 Hiver"
-        / "PHI-3900 Éthique"
+        / "ABC-1000 Éthique"
         / "Évaluations"
         / "TP1"
         / "travail.docx"

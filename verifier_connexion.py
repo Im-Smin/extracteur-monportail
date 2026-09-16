@@ -24,7 +24,7 @@ try:
         raise SystemExit(1)
 
     print("Connexion detectee.")
-    reponse = session.transport("/ena/site/accueil?idSite=181216")
+    reponse = session.transport("/ena/site/accueil?idSite=100001")
     print(f"GET /ena/site/accueil -> HTTP {reponse.statut}")
     print("OK" if reponse.statut == 200 else "ECHEC")
 finally:

@@ -15,8 +15,8 @@ from extracteur.extraction import (
 from extracteur.modele import Session
 
 LIEN_TRACEUR = (
-    "/analytique/evenement/fichier?idFichier=140274665&idSite=181216"
-    "&url=%2Fcontenu%2Fsitescours%2F040%2F04000%2F202601%2Fsite181216"
+    "/analytique/evenement/fichier?idFichier=140274665&idSite=100001"
+    "&url=%2Fcontenu%2Fsitescours%2F040%2F04000%2F202601%2Fsite100001"
     "%2Fmodules1434431%2Fmodule1795743%2Fpage4874493%2Fbloccontenu5204221"
     "%2FCours_1_-_Introduction-janvier%25202026.pptx"
     "%3Fidentifiant%3D0a981dbdc4212d59737bc2e400fd0d39076480bc"
@@ -26,9 +26,9 @@ LIEN_TRACEUR = (
 # plan de cours passe par un traceur different de celui des fichiers, et son
 # parametre url porte une URL absolue (et non un chemin relatif).
 LIEN_PLANCOURS = (
-    "/analytique/evenement/plancours?idFichier=141542389&idSite=181216"
+    "/analytique/evenement/plancours?idFichier=141542389&idSite=100001"
     "&url=https%3A%2F%2Fsitescours.monportail.ulaval.ca%2Fcontenu%2Fsitescours"
-    "%2F040%2F04000%2F202601%2Fsite181216%2Fplancours%2FPHI-3900_H26_17541.pdf"
+    "%2F040%2F04000%2F202601%2Fsite100001%2Fplancours%2FABC-1000_H26_17541.pdf"
     "%3Fidentifiant%3D6b6947ef288d16d135b3342db86127f2ee7afcbc"
 )
 
@@ -39,14 +39,14 @@ LIEN_PLANCOURS = (
 LIEN_PLANCOURS_SANS_IDSITE = (
     "/analytique/evenement/plancours?idFichier=141542389"
     "&url=https%3A%2F%2Fsitescours.monportail.ulaval.ca%2Fcontenu%2Fsitescours"
-    "%2F040%2F04000%2F202601%2Fsite181216%2Fplancours%2FPHI-3900_H26_17541.pdf"
+    "%2F040%2F04000%2F202601%2Fsite100001%2Fplancours%2FABC-1000_H26_17541.pdf"
     "%3Fidentifiant%3D6b6947ef288d16d135b3342db86127f2ee7afcbc"
 )
 
 
 def test_url_reelle_decode_le_parametre_url():
     assert url_reelle(LIEN_TRACEUR) == (
-        "/contenu/sitescours/040/04000/202601/site181216/modules1434431"
+        "/contenu/sitescours/040/04000/202601/site100001/modules1434431"
         "/module1795743/page4874493/bloccontenu5204221"
         "/Cours_1_-_Introduction-janvier%202026.pptx"
         "?identifiant=0a981dbdc4212d59737bc2e400fd0d39076480bc"
@@ -71,7 +71,7 @@ def test_url_reelle_reconnait_le_traceur_du_plan_de_cours():
     # /analytique/evenement/fichier : sans elargir le filtre, il est ignore.
     assert url_reelle(LIEN_PLANCOURS) == (
         "https://sitescours.monportail.ulaval.ca/contenu/sitescours/040/04000"
-        "/202601/site181216/plancours/PHI-3900_H26_17541.pdf"
+        "/202601/site100001/plancours/ABC-1000_H26_17541.pdf"
         "?identifiant=6b6947ef288d16d135b3342db86127f2ee7afcbc"
     )
 
@@ -85,17 +85,17 @@ def test_nom_depuis_url_gere_une_url_absolue():
     # Le parametre url du traceur plancours porte une URL absolue, alors que
     # les fichiers de module portent un chemin relatif : les deux doivent marcher.
     url = url_reelle(LIEN_PLANCOURS)
-    assert nom_depuis_url(url) == "PHI-3900_H26_17541.pdf"
+    assert nom_depuis_url(url) == "ABC-1000_H26_17541.pdf"
 
 
 def test_modules_depuis_html():
     html = """
     <table>
-      <tr><td><a href="/ena/site/module?idSite=181216&idModule=1795743&editionModule=false">1. Introduction</a></td></tr>
-      <tr><td><a href="/ena/site/module?idSite=181216&idModule=1795744&editionModule=false">2. Vocabulaire</a></td></tr>
+      <tr><td><a href="/ena/site/module?idSite=100001&idModule=1795743&editionModule=false">1. Introduction</a></td></tr>
+      <tr><td><a href="/ena/site/module?idSite=100001&idModule=1795744&editionModule=false">2. Vocabulaire</a></td></tr>
     </table>
     """
-    modules = modules_depuis_html(html, "181216")
+    modules = modules_depuis_html(html, "100001")
     assert [m.id_module for m in modules] == ["1795743", "1795744"]
     assert modules[0].titre == "1. Introduction"
     assert modules[0].rang == 0
@@ -103,8 +103,8 @@ def test_modules_depuis_html():
 
 
 def test_modules_ignore_les_liens_sans_id_module():
-    html = '<a href="/ena/site/accueil?idSite=181216">Accueil</a>'
-    assert modules_depuis_html(html, "181216") == []
+    html = '<a href="/ena/site/accueil?idSite=100001">Accueil</a>'
+    assert modules_depuis_html(html, "100001") == []
 
 
 def test_modules_dedoublonne_le_meme_module():
@@ -133,7 +133,7 @@ def test_fichiers_depuis_html_retient_aussi_le_traceur_plancours():
     html = f'<a href="{LIEN_PLANCOURS}">Plan de cours</a>'
     fichiers = fichiers_depuis_html(html)
     assert len(fichiers) == 1
-    assert fichiers[0].nom == "PHI-3900_H26_17541.pdf"
+    assert fichiers[0].nom == "ABC-1000_H26_17541.pdf"
 
 
 def test_fichiers_dedoublonne_les_liens_identiques():
@@ -263,7 +263,7 @@ def test_resultats_sur_page_sans_tableau():
     assert resultats_depuis_html("<p>Aucun résultat</p>") == []
 
 
-# Structure relevee sur MAT-1900 (idSite=145065), /ena/site/resultats. Cette
+# Structure relevee sur STU-7000 (idSite=100009), /ena/site/resultats. Cette
 # page Oracle ADF porte 46 <table> : boites de dialogue, menus de navigation,
 # et un seul tableau de notes, repere par sa classe explicite. Deux valeurs
 # supplementaires (note finale, cote) vivent hors du tableau, dans le corps
@@ -424,7 +424,7 @@ def test_resultats_repli_sans_classe_de_tableau():
 
 
 def test_sections_du_menu_varient_selon_les_sites():
-    # PHI-3900 dit "Feuille de route", GIN-3320 dit "Contenu et activites".
+    # ABC-1000 dit "Feuille de route", DEF-2000 dit "Contenu et activites".
     html_phi = '<nav><a href="#">Feuille de route</a><a href="#">Bibliographie</a></nav>'
     html_gin = '<nav><a href="#">Contenu et activités</a><a href="#">Archives</a></nav>'
     assert "Feuille de route" in sections_du_menu(html_phi)
@@ -456,15 +456,15 @@ def test_commandes_adf_reconnues():
 
 def test_cours_depuis_html():
     html = """
-    <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=181216">
+    <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100001">
       Éthique et professionnalisme</a>
-    <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=183033">
+    <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100002">
       Projet de fin d'études II</a>
     """
     session = Session(code="202601", libelle="Hiver 2026")
     cours = cours_depuis_html(html, session)
 
-    assert [c.id_site for c in cours] == ["181216", "183033"]
+    assert [c.id_site for c in cours] == ["100001", "100002"]
     assert cours[0].titre == "Éthique et professionnalisme"
 
 
@@ -474,8 +474,8 @@ def test_cours_extrait_le_sigle_quand_il_est_present():
     # la carte elle-meme, sous la forme "SIGLE-0000, NRC : xxxxx (sect. yy)".
     html = """
     <article class="mpo-boite mpo-boite-principale mpo-boite">
-      <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=178960">Analyse et modélisation des données</a>
-      MQT-2101, NRC : 86582 (sect. H1)
+      <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100012">Analyse et modélisation des données</a>
+      GHI-3000, NRC : 86582 (sect. H1)
       Cours présentiel-hybride
       Dates limites d'abandon
       Plages horaires
@@ -484,7 +484,7 @@ def test_cours_extrait_le_sigle_quand_il_est_present():
     </article>
     """
     cours = cours_depuis_html(html, Session(code="202509", libelle="Automne 2025"))
-    assert cours[0].sigle == "MQT-2101"
+    assert cours[0].sigle == "GHI-3000"
     assert cours[0].titre == "Analyse et modélisation des données"
 
 
@@ -510,11 +510,11 @@ def test_cours_extrait_le_sigle_meme_sans_mention_nrc():
     html = """
     <article class="mpo-boite">
       <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=1">Cours X</a>
-      MQT-2101, (sect. H1)
+      GHI-3000, (sect. H1)
     </article>
     """
     cours = cours_depuis_html(html, Session(code="202601", libelle="Hiver 2026"))
-    assert cours[0].sigle == "MQT-2101"
+    assert cours[0].sigle == "GHI-3000"
 
 
 def test_cours_deux_cartes_gardent_chacune_leur_propre_sigle():
@@ -522,19 +522,19 @@ def test_cours_deux_cartes_gardent_chacune_leur_propre_sigle():
     # carte reste bien le sien, sans fuite d'une carte a l'autre.
     html = """
     <article class="mpo-boite mpo-boite-principale mpo-boite">
-      <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=178960">Analyse et modélisation des données</a>
-      MQT-2101, NRC : 86582 (sect. H1)
+      <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100012">Analyse et modélisation des données</a>
+      GHI-3000, NRC : 86582 (sect. H1)
     </article>
     <article class="mpo-boite mpo-boite-principale mpo-boite">
-      <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=178785">Aspects administratifs et humains de la gestion</a>
-      RLT-1700, NRC : 88184 (sect. Z3)
+      <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100013">Aspects administratifs et humains de la gestion</a>
+      PQR-6000, NRC : 88184 (sect. Z3)
     </article>
     """
     cours = cours_depuis_html(html, Session(code="202509", libelle="Automne 2025"))
     par_id = {c.id_site: c for c in cours}
 
-    assert par_id["178960"].sigle == "MQT-2101"
-    assert par_id["178785"].sigle == "RLT-1700"
+    assert par_id["100012"].sigle == "GHI-3000"
+    assert par_id["100013"].sigle == "PQR-6000"
 
 
 def test_cours_associe_le_plan_de_cours_a_la_bonne_carte_sans_idsite_global():
@@ -547,21 +547,21 @@ def test_cours_associe_le_plan_de_cours_a_la_bonne_carte_sans_idsite_global():
     # celui de la seconde.
     html = f"""
     <article class="mpo-boite">
-      <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=178960">Analyse et modélisation des données</a>
-      MQT-2101, NRC : 86582 (sect. H1)
+      <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100012">Analyse et modélisation des données</a>
+      GHI-3000, NRC : 86582 (sect. H1)
     </article>
     <article class="mpo-boite">
-      <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=181216">Éthique et professionnalisme</a>
-      PHI-3900, NRC : 12345 (sect. A1)
+      <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100001">Éthique et professionnalisme</a>
+      ABC-1000, NRC : 12345 (sect. A1)
       <a href="https://sitescours.monportail.ulaval.ca{LIEN_PLANCOURS_SANS_IDSITE}">Plan de cours</a>
     </article>
     """
     cours = cours_depuis_html(html, Session(code="202601", libelle="Hiver 2026"))
     par_id = {c.id_site: c for c in cours}
 
-    assert par_id["178960"].url_plan_de_cours is None
-    assert par_id["181216"].url_plan_de_cours is not None
-    assert "PHI-3900_H26_17541.pdf" in par_id["181216"].url_plan_de_cours
+    assert par_id["100012"].url_plan_de_cours is None
+    assert par_id["100001"].url_plan_de_cours is not None
+    assert "ABC-1000_H26_17541.pdf" in par_id["100001"].url_plan_de_cours
 
 
 def test_carte_avec_deux_liens_vers_le_meme_cours_ne_perd_pas_son_contenu():
@@ -575,29 +575,29 @@ def test_carte_avec_deux_liens_vers_le_meme_cours_ne_perd_pas_son_contenu():
     html = f"""
     <div class="page">
       <article class="mpo-boite">
-        <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=178960"></a>
-        <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=178960">Analyse et modélisation des données</a>
-        MQT-2101, NRC : 86582 (sect. H1)
+        <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100012"></a>
+        <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100012">Analyse et modélisation des données</a>
+        GHI-3000, NRC : 86582 (sect. H1)
         <a href="https://sitescours.monportail.ulaval.ca{LIEN_PLANCOURS}">Plan de cours</a>
       </article>
       <article class="mpo-boite">
-        <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=178785">Aspects administratifs et humains de la gestion</a>
-        RLT-1700, NRC : 88184 (sect. Z3)
+        <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100013">Aspects administratifs et humains de la gestion</a>
+        PQR-6000, NRC : 88184 (sect. Z3)
       </article>
     </div>
     """
     cours = cours_depuis_html(html, Session(code="202509", libelle="Automne 2025"))
     par_id = {c.id_site: c for c in cours}
 
-    assert par_id["178960"].sigle == "MQT-2101"
-    assert par_id["178960"].titre == "Analyse et modélisation des données"
-    assert par_id["178960"].url_plan_de_cours is not None
+    assert par_id["100012"].sigle == "GHI-3000"
+    assert par_id["100012"].titre == "Analyse et modélisation des données"
+    assert par_id["100012"].url_plan_de_cours is not None
     # La carte voisine garde son propre sigle, sans fuite.
-    assert par_id["178785"].sigle == "RLT-1700"
+    assert par_id["100013"].sigle == "PQR-6000"
 
 
 def test_cours_sans_sigle():
-    html = '<a href="/ena/site/accueil?idSite=149047">Nos biais inconscients</a>'
+    html = '<a href="/ena/site/accueil?idSite=100006">Nos biais inconscients</a>'
     cours = cours_depuis_html(html, Session(code="202209", libelle="Automne 2022"))
     assert cours[0].sigle is None
     assert cours[0].titre == "Nos biais inconscients"
@@ -616,26 +616,26 @@ def test_cours_dedoublonne():
 def test_cours_capte_le_lien_du_plan_de_cours_et_des_resultats():
     # Trois liens releves tels quels sur la page /portail/cours pour un meme cours.
     html = (
-        '<a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=181216">'
-        "PHI-3900 : Éthique et professionnalisme</a>"
-        '<a href="https://sitescours.monportail.ulaval.ca/ena/site/resultats?idSite=181216">'
+        '<a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100001">'
+        "ABC-1000 : Éthique et professionnalisme</a>"
+        '<a href="https://sitescours.monportail.ulaval.ca/ena/site/resultats?idSite=100001">'
         "Résultats</a>"
         f'<a href="https://sitescours.monportail.ulaval.ca{LIEN_PLANCOURS}">Plan de cours</a>'
     )
     cours = cours_depuis_html(html, Session(code="202601", libelle="Hiver 2026"))
 
     assert cours[0].url_resultats == (
-        "https://sitescours.monportail.ulaval.ca/ena/site/resultats?idSite=181216"
+        "https://sitescours.monportail.ulaval.ca/ena/site/resultats?idSite=100001"
     )
     assert cours[0].url_plan_de_cours == (
         "https://sitescours.monportail.ulaval.ca/contenu/sitescours/040/04000"
-        "/202601/site181216/plancours/PHI-3900_H26_17541.pdf"
+        "/202601/site100001/plancours/ABC-1000_H26_17541.pdf"
         "?identifiant=6b6947ef288d16d135b3342db86127f2ee7afcbc"
     )
 
 
 def test_cours_sans_plan_ni_resultats_a_des_liens_absents():
-    html = '<a href="/ena/site/accueil?idSite=149047">Nos biais inconscients</a>'
+    html = '<a href="/ena/site/accueil?idSite=100006">Nos biais inconscients</a>'
     cours = cours_depuis_html(html, Session(code="202209", libelle="Automne 2022"))
     assert cours[0].url_plan_de_cours is None
     assert cours[0].url_resultats is None
@@ -675,11 +675,11 @@ def test_session_depuis_libelle_inattendu_ne_plante_pas():
     assert session_depuis_libelle("Printemps 2025").libelle == "Printemps 2025"
 
 
-# URL reelle relevee sur PHI-3900, boite de depot du TP2 : le nom du fichier
+# URL reelle relevee sur ABC-1000, boite de depot du TP2 : le nom du fichier
 # est URL-encode (espaces et accents) et ne passe jamais par le traceur
 # d'analytique, contrairement aux fichiers de module.
 LIEN_DOCUMENT_DEPOSE = (
-    "/contenu/sitescours/040/04000/202601/site181216/evaluations1434432"
+    "/contenu/sitescours/040/04000/202601/site100001/evaluations1434432"
     "/evaluation1018611/boitedepot/equipe1528525"
     "/Z1-PHI3900-H2026-TP2%20-%20%C3%89thique%20et%20professionnalisme.docx"
     "?identifiant=9b035967"
@@ -765,7 +765,7 @@ def test_depots_depuis_html_ignore_un_tableau_parasite_de_la_meme_classe():
 
 
 def test_depots_depuis_html_associe_les_colonnes_par_entete_quel_que_soit_l_ordre():
-    # Rien ne garantit que l'ordre observe sur PHI-3900 soit celui d'une autre
+    # Rien ne garantit que l'ordre observe sur ABC-1000 soit celui d'une autre
     # boite de depot : l'association se fait par libelle d'en-tete, jamais
     # par position de colonne.
     html = f"""
@@ -814,7 +814,7 @@ def test_depots_depuis_html_nom_vient_de_l_url_meme_si_le_texte_du_lien_est_tron
 
 
 def test_depots_depuis_html_html_reel_boite_de_depot_phi3900():
-    # Transcription fidele du HTML releve sur PHI-3900 (boite de depot du
+    # Transcription fidele du HTML releve sur ABC-1000 (boite de depot du
     # TP2) : cinq cellules par ligne, la premiere vide pour la case a cocher,
     # classe ul_table_data, lien direct sous /contenu/sitescours/ (pas de
     # traceur d'analytique pour les depots).
@@ -831,7 +831,7 @@ def test_depots_depuis_html_html_reel_boite_de_depot_phi3900():
         <td><input type="checkbox" id="r1:0:t1:0:selectionner::content"></td>
         <td>
           <a id="r1:0:t1:0:gl1"
-             href="/contenu/sitescours/040/04000/202601/site181216/evaluations1434432/evaluation1018611/boitedepot/equipe1528525/Z1-PHI3900-H2026-TP2%20-%20%C3%89thique%20et%20professionnalisme.docx?identifiant=9b035967">
+             href="/contenu/sitescours/040/04000/202601/site100001/evaluations1434432/evaluation1018611/boitedepot/equipe1528525/Z1-PHI3900-H2026-TP2%20-%20%C3%89thique%20et%20professionnalisme.docx?identifiant=9b035967">
             Z1-PHI3900-H2026-TP2 - Éthique et professionnalisme.docx
           </a>
         </td>
@@ -851,7 +851,7 @@ def test_depots_depuis_html_html_reel_boite_de_depot_phi3900():
     assert depot.date_remise == "12 avr. 2026 18h43"
     assert (
         depot.url
-        == "/contenu/sitescours/040/04000/202601/site181216/evaluations1434432"
+        == "/contenu/sitescours/040/04000/202601/site100001/evaluations1434432"
         "/evaluation1018611/boitedepot/equipe1528525"
         "/Z1-PHI3900-H2026-TP2%20-%20%C3%89thique%20et%20professionnalisme.docx"
         "?identifiant=9b035967"
@@ -975,7 +975,7 @@ def test_onglets_depuis_html_repli_sur_l_idpage_si_title_et_texte_absents():
 
 
 # Reconstitution d'une page de module a deux barres d'onglets empilees,
-# GMC-1000 (idSite=146001, idModule=1310231), inspection reelle du 2026-09-15.
+# MNO-5000 (idSite=100004, idModule=1310231), inspection reelle du 2026-09-15.
 # Seuls trois _ulitemid ont ete verifies directement : "r1:0:page:t3550444"
 # (niveau 1, "Théorie et dessin à la main", parent selectionne),
 # "r1:0:page:t3550444:z3550444:t3550445" (niveau 2, "Vues orthogonales",

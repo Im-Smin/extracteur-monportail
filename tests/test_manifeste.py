@@ -82,11 +82,11 @@ def test_consolider_notes_reconstruit_depuis_les_fichiers_par_cours(tmp_path):
     from extracteur.manifeste import consolider_notes
 
     ecrire_notes(
-        tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "notes.csv",
+        tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "notes.csv",
         [Note(evaluation="Examen 1", note="18", sur="20")],
     )
     ecrire_notes(
-        tmp_path / "2025-3 Automne" / "GIN-3320 Projet" / "notes.csv",
+        tmp_path / "2025-3 Automne" / "DEF-2000 Projet" / "notes.csv",
         [Note(evaluation="Rapport", note="45", sur="50")],
     )
 
@@ -95,10 +95,10 @@ def test_consolider_notes_reconstruit_depuis_les_fichiers_par_cours(tmp_path):
 
     contenu = destination.read_text(encoding="utf-8-sig")
     assert "2026-1 Hiver" in contenu
-    assert "PHI-3900 Éthique" in contenu
+    assert "ABC-1000 Éthique" in contenu
     assert "Examen 1" in contenu
     assert "2025-3 Automne" in contenu
-    assert "GIN-3320 Projet" in contenu
+    assert "DEF-2000 Projet" in contenu
     assert "Rapport" in contenu
 
 
@@ -117,7 +117,7 @@ def test_ecrire_depots(tmp_path):
         [
             Depot(
                 nom="Z1-PHI3900-H2026-TP2.docx",
-                url="/contenu/sitescours/site181216/depots/tp2.docx?identifiant=abc",
+                url="/contenu/sitescours/site100001/depots/tp2.docx?identifiant=abc",
                 taille="3,25 Mo",
                 depose_par="Buteau, Laurent",
                 date_remise="12 avr. 2026 18h43",
@@ -175,7 +175,7 @@ def test_integration_boite_de_depot_de_ena_jusqu_au_csv(tmp_path):
     <table>
       <tr><th>Nom du document</th><th>Taille</th><th>Déposé par</th><th>Date de remise</th></tr>
       <tr>
-        <td><a href="/contenu/sitescours/040/04000/202601/site181216/depots/Z1-PHI3900-H2026-TP2%20-%20%C3%89thique.docx?identifiant=abc">Z1-PHI3900-H2026-TP2 - Éthique.docx</a></td>
+        <td><a href="/contenu/sitescours/040/04000/202601/site100001/depots/Z1-PHI3900-H2026-TP2%20-%20%C3%89thique.docx?identifiant=abc">Z1-PHI3900-H2026-TP2 - Éthique.docx</a></td>
         <td>3,25 Mo</td>
         <td>Buteau, Laurent</td>
         <td>12 avr. 2026 18h43</td>
@@ -183,7 +183,7 @@ def test_integration_boite_de_depot_de_ena_jusqu_au_csv(tmp_path):
     </table>
     """
     ena = Ena(SessionFactice(html))
-    evaluation = Evaluation(id_site="181216", id_evaluation="1035434", titre="TP2")
+    evaluation = Evaluation(id_site="100001", id_evaluation="1035434", titre="TP2")
 
     depots = ena.fichiers_de_depot(evaluation)
     destination = tmp_path / "depots.csv"
@@ -199,12 +199,12 @@ def test_rapport_liste_les_echecs(tmp_path):
     destination = tmp_path / "_rapport.html"
     ecrire_rapport(
         destination,
-        [Echec(cours="PHI-3900", element="a.pdf", cause="HTTP 403", url="/contenu/a.pdf")],
+        [Echec(cours="ABC-1000", element="a.pdf", cause="HTTP 403", url="/contenu/a.pdf")],
         {"fichiers": 12, "cours": 3},
     )
 
     contenu = destination.read_text(encoding="utf-8")
-    assert "PHI-3900" in contenu
+    assert "ABC-1000" in contenu
     assert "HTTP 403" in contenu
     assert "/contenu/a.pdf" in contenu
 
@@ -239,7 +239,7 @@ def test_rapport_interruption_avec_echecs_liste_les_deux(tmp_path):
     destination = tmp_path / "_rapport.html"
     ecrire_rapport(
         destination,
-        [Echec(cours="PHI-3900", element="a.pdf", cause="HTTP 403")],
+        [Echec(cours="ABC-1000", element="a.pdf", cause="HTTP 403")],
         {"fichiers ecrits": 1, "fichiers sautes": 0},
         interruption="2 cours sur 5 n'ont jamais ete tentes.",
     )

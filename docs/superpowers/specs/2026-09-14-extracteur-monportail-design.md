@@ -180,7 +180,7 @@ du lien tronque.
 ```
 Archive monPortail/
 ├── 2019-3 Automne/
-│   └── GLO-1901 Introduction à la programmation/
+│   └── YZA-9000 Introduction à la programmation/
 │       ├── Plan de cours/
 │       │   └── plan-de-cours.pdf
 │       ├── Documents/

@@ -37,15 +37,15 @@ SESSION_ETE = Session(code="202505", libelle="Été 2025")
 SESSION_HIVER_2027 = Session(code="202701", libelle="Hiver 2027")
 
 COURS_HIVER = Cours(
-    id_site="181216",
-    sigle="PHI-3900",
+    id_site="100001",
+    sigle="ABC-1000",
     titre="Éthique et professionnalisme",
     session=SESSION_HIVER,
     url_plan_de_cours="/contenu/sitescours/x/plan.pdf?identifiant=a",
-    url_resultats="/ena/site/resultats?idSite=181216",
+    url_resultats="/ena/site/resultats?idSite=100001",
 )
 COURS_ANCIEN = Cours(
-    id_site="148734", sigle=None, titre="Nos biais inconscients", session=SESSION_AUTOMNE
+    id_site="100007", sigle=None, titre="Nos biais inconscients", session=SESSION_AUTOMNE
 )
 COURS_ETE = Cours(
     id_site="200000",
@@ -171,7 +171,7 @@ class EnaExpireSurUneSession(EnaDeTest):
 def test_chercher_cours_trouve_par_id_site():
     ena = EnaDeTest({SESSION_HIVER: [COURS_HIVER], SESSION_AUTOMNE: [COURS_ANCIEN]})
 
-    trouve = _chercher_cours(ena, "148734")
+    trouve = _chercher_cours(ena, "100007")
 
     assert trouve is COURS_ANCIEN
     # Le cours retrouve porte ses champs d'enumeration : preuve qu'il n'a pas
@@ -182,7 +182,7 @@ def test_chercher_cours_trouve_par_id_site():
 def test_chercher_cours_conserve_les_url_de_l_enumeration():
     ena = EnaDeTest({SESSION_HIVER: [COURS_HIVER]})
 
-    trouve = _chercher_cours(ena, "181216")
+    trouve = _chercher_cours(ena, "100001")
 
     assert trouve.url_plan_de_cours == COURS_HIVER.url_plan_de_cours
     assert trouve.url_resultats == COURS_HIVER.url_resultats
@@ -197,7 +197,7 @@ def test_chercher_cours_introuvable_rend_none():
 def test_chercher_cours_sur_enumeration_vide_rend_none():
     ena = EnaDeTest({})
 
-    assert _chercher_cours(ena, "181216") is None
+    assert _chercher_cours(ena, "100001") is None
 
 
 # --- _drainer : vidage de la file d'evenements ---
@@ -205,13 +205,13 @@ def test_chercher_cours_sur_enumeration_vide_rend_none():
 
 def test_drainer_affiche_et_vide_la_file():
     evenements = queue.Queue()
-    evenements.put(("cours", "PHI-3900 Éthique"))
+    evenements.put(("cours", "ABC-1000 Éthique"))
     evenements.put(("fichier", "plan-de-cours.pdf"))
     lignes = []
 
     _drainer(evenements, imprimer=lignes.append)
 
-    assert lignes == ["  [cours] PHI-3900 Éthique", "  [fichier] plan-de-cours.pdf"]
+    assert lignes == ["  [cours] ABC-1000 Éthique", "  [fichier] plan-de-cours.pdf"]
     assert evenements.empty()
 
 
@@ -227,14 +227,14 @@ def test_drainer_appele_deux_fois_ne_reaffiche_pas():
     # Vidage au fil de l'eau : un evenement deja affiche ne doit jamais
     # ressortir a un second passage.
     evenements = queue.Queue()
-    evenements.put(("cours", "PHI-3900"))
+    evenements.put(("cours", "ABC-1000"))
     lignes = []
 
     _drainer(evenements, imprimer=lignes.append)
     evenements.put(("fin", "1 fichier archive"))
     _drainer(evenements, imprimer=lignes.append)
 
-    assert lignes == ["  [cours] PHI-3900", "  [fin] 1 fichier archive"]
+    assert lignes == ["  [cours] ABC-1000", "  [fin] 1 fichier archive"]
 
 
 # --- _ecrire_rapport_final : ecriture du rapport ---
@@ -244,14 +244,14 @@ def test_ecrire_rapport_final_ecrit_le_resume_et_les_echecs(tmp_path):
     resultat = Resultat(
         fichiers_ecrits=3,
         fichiers_sautes=1,
-        echecs=[Echec(cours="PHI-3900 Éthique", element="notes.pdf", cause="HTTP 403")],
+        echecs=[Echec(cours="ABC-1000 Éthique", element="notes.pdf", cause="HTTP 403")],
     )
 
     chemin = _ecrire_rapport_final(tmp_path, resultat)
 
     assert chemin == tmp_path / "_rapport.html"
     contenu = chemin.read_text(encoding="utf-8")
-    assert "PHI-3900 Éthique" in contenu
+    assert "ABC-1000 Éthique" in contenu
     assert "HTTP 403" in contenu
     assert "fichiers ecrits" in contenu
 
@@ -302,8 +302,8 @@ def test_afficher_sessions_montre_id_sigle_titre_et_indicateurs():
 
     texte = "\n".join(lignes)
     assert "Hiver 2026" in texte
-    assert "181216" in texte
-    assert "PHI-3900" in texte
+    assert "100001" in texte
+    assert "ABC-1000" in texte
     assert "Éthique et professionnalisme" in texte
     assert "plan de cours officiel : oui" in texte
     assert "sommaire de resultats : oui" in texte
@@ -364,8 +364,8 @@ def test_afficher_sessions_isole_une_session_en_echec_et_continue():
     assert "ECHEC" in texte
     # Les deux sessions suivantes sont bien traitees malgre l'echec de la
     # premiere.
-    assert "181216" in texte
-    assert "148734" in texte
+    assert "100001" in texte
+    assert "100007" in texte
 
 
 def test_afficher_sessions_ne_capture_jamais_sessionexpiree():
@@ -388,7 +388,7 @@ def test_un_seul_cours_archive_le_cours_trouve_par_enumeration(tmp_path, capsys)
     session = SessionFactice()
 
     code = _un_seul_cours(
-        "181216", tmp_path, session=session, fabrique_ena=lambda _session: ena
+        "100001", tmp_path, session=session, fabrique_ena=lambda _session: ena
     )
 
     assert code == 0
@@ -417,7 +417,7 @@ def test_un_seul_cours_connexion_non_detectee_rend_code_non_nul(tmp_path):
     session = SessionFactice(connectee=False)
 
     code = _un_seul_cours(
-        "181216", tmp_path, session=session, fabrique_ena=lambda _session: EnaDeTest({})
+        "100001", tmp_path, session=session, fabrique_ena=lambda _session: EnaDeTest({})
     )
 
     assert code == 1
@@ -429,7 +429,7 @@ def test_un_seul_cours_session_expiree_ecrit_le_rapport_partiel(tmp_path):
     session = SessionFactice()
 
     code = _un_seul_cours(
-        "181216", tmp_path, session=session, fabrique_ena=lambda _session: ena
+        "100001", tmp_path, session=session, fabrique_ena=lambda _session: ena
     )
 
     assert code == 3
@@ -453,7 +453,7 @@ def test_un_seul_cours_sessions_disponibles_expire_avant_toute_enumeration_ecrit
     session = SessionFactice()
 
     code = _un_seul_cours(
-        "181216", tmp_path, session=session, fabrique_ena=lambda _s: EnaExpireAvantEnumeration()
+        "100001", tmp_path, session=session, fabrique_ena=lambda _s: EnaExpireAvantEnumeration()
     )
 
     assert code == 3
@@ -472,7 +472,7 @@ def test_un_seul_cours_ferme_toujours_la_session_meme_sur_erreur_inattendue(tmp_
     session = SessionFactice()
 
     code = _un_seul_cours(
-        "181216", tmp_path, session=session, fabrique_ena=lambda _session: EnaCassee({})
+        "100001", tmp_path, session=session, fabrique_ena=lambda _session: EnaCassee({})
     )
 
     assert code == 1
@@ -586,7 +586,7 @@ def test_lister_enumere_avec_une_session_injectee(capsys):
     assert code == 0
     assert session.fermee is True
     sortie = capsys.readouterr().out
-    assert "181216" in sortie
+    assert "100001" in sortie
 
 
 def test_lister_connexion_non_detectee_rend_code_non_nul():
@@ -634,7 +634,7 @@ def test_lister_session_expiree_sur_une_session_interrompt_tout():
 def test_chercher_cours_normalise_les_espaces_et_retours_de_ligne():
     ena = EnaDeTest({SESSION_HIVER: [COURS_HIVER]})
 
-    trouve = _chercher_cours(ena, "  181216\n")
+    trouve = _chercher_cours(ena, "  100001\n")
 
     assert trouve is COURS_HIVER
 
@@ -663,7 +663,7 @@ def test_lister_et_un_seul_cours_ensemble_sont_rejetes():
     analyseur = _construire_analyseur()
 
     with pytest.raises(SystemExit):
-        analyseur.parse_args(["--lister", "--un-seul-cours", "181216"])
+        analyseur.parse_args(["--lister", "--un-seul-cours", "100001"])
 
 
 def test_lister_seul_est_accepte():
@@ -678,9 +678,9 @@ def test_lister_seul_est_accepte():
 def test_un_seul_cours_seul_est_accepte():
     analyseur = _construire_analyseur()
 
-    arguments = analyseur.parse_args(["--un-seul-cours", "181216"])
+    arguments = analyseur.parse_args(["--un-seul-cours", "100001"])
 
-    assert arguments.id_site == "181216"
+    assert arguments.id_site == "100001"
     assert arguments.lister is False
 
 
@@ -698,7 +698,7 @@ def test_un_seul_cours_et_diagnostic_ensemble_sont_rejetes():
     analyseur = _construire_analyseur()
 
     with pytest.raises(SystemExit):
-        analyseur.parse_args(["--un-seul-cours", "181216", "--diagnostic"])
+        analyseur.parse_args(["--un-seul-cours", "100001", "--diagnostic"])
 
 
 def test_diagnostic_seul_est_accepte():
@@ -790,7 +790,7 @@ def test_un_seul_cours_selecteur_sessions_illisible_sans_trace_brute(tmp_path, c
     session = SessionFactice()
 
     code = _un_seul_cours(
-        "181216", tmp_path, session=session, fabrique_ena=lambda _session: EnaCassee({})
+        "100001", tmp_path, session=session, fabrique_ena=lambda _session: EnaCassee({})
     )
 
     assert code == 1
@@ -818,7 +818,7 @@ def test_drainer_progression_annonce_la_session_et_le_rang_global():
     evenements.put(("plan", ["Automne 2025", "Hiver 2026"]))
     evenements.put(("cours", "AAA-1000 Cours ancien"))
     evenements.put(("fichier", "plan-de-cours.pdf"))
-    evenements.put(("cours", "PHI-3900 Éthique"))
+    evenements.put(("cours", "ABC-1000 Éthique"))
     lignes = []
     etat = {}
 
@@ -828,7 +828,7 @@ def test_drainer_progression_annonce_la_session_et_le_rang_global():
     assert "  [Automne 2025] (1/2) AAA-1000 Cours ancien" in lignes
     assert "  [fichier] plan-de-cours.pdf" in lignes
     assert "\n=== Session 2/2 : Hiver 2026 - 1 cours ===" in lignes
-    assert "  [Hiver 2026] (2/2) PHI-3900 Éthique" in lignes
+    assert "  [Hiver 2026] (2/2) ABC-1000 Éthique" in lignes
 
 
 def test_drainer_progression_appele_deux_fois_ne_reaffiche_pas():
@@ -837,7 +837,7 @@ def test_drainer_progression_appele_deux_fois_ne_reaffiche_pas():
     # progression maintenu entre deux appels.
     evenements = queue.Queue()
     evenements.put(("plan", ["Hiver 2026"]))
-    evenements.put(("cours", "PHI-3900"))
+    evenements.put(("cours", "ABC-1000"))
     lignes = []
     etat = {}
 
@@ -848,7 +848,7 @@ def test_drainer_progression_appele_deux_fois_ne_reaffiche_pas():
     assert lignes[-1] == "  [fin] 1 fichier archive"
     # Le cours deja affiche au premier passage ne doit pas ressortir au
     # second, meme avec l'etat de progression maintenu entre deux appels.
-    assert lignes.count("  [Hiver 2026] (1/1) PHI-3900") == 1
+    assert lignes.count("  [Hiver 2026] (1/1) ABC-1000") == 1
 
 
 # --- _session : archive tous les cours d'une session, tolerant sur le libelle ---
@@ -1220,7 +1220,7 @@ def test_un_seul_cours_et_tout_ensemble_sont_rejetes():
     analyseur = _construire_analyseur()
 
     with pytest.raises(SystemExit):
-        analyseur.parse_args(["--un-seul-cours", "181216", "--tout"])
+        analyseur.parse_args(["--un-seul-cours", "100001", "--tout"])
 
 
 def test_diagnostic_et_session_ensemble_sont_rejetes():
@@ -1400,7 +1400,7 @@ def test_un_seul_cours_anomalie_de_verification_degrade_le_code_de_sortie(
         lambda destination: {"inscrits": 1, "manquants": ["a.pdf"], "taille_incorrecte": []},
     )
 
-    code = _un_seul_cours("181216", tmp_path, session=session, fabrique_ena=lambda _s: ena)
+    code = _un_seul_cours("100001", tmp_path, session=session, fabrique_ena=lambda _s: ena)
 
     assert code == 4
     rapport = (tmp_path / "_rapport.html").read_text(encoding="utf-8")
@@ -1451,7 +1451,7 @@ def test_un_seul_cours_route_tout_vers_imprimer_rien_sur_stdout(tmp_path, capsys
     lignes: list = []
 
     code = _un_seul_cours(
-        "181216",
+        "100001",
         tmp_path,
         session=session,
         fabrique_ena=lambda _s: ena,
@@ -1490,7 +1490,7 @@ def test_un_seul_cours_sur_fin_recoit_le_resultat_le_controle_et_le_rapport(tmp_
     recu: list = []
 
     code = _un_seul_cours(
-        "181216",
+        "100001",
         tmp_path,
         session=session,
         fabrique_ena=lambda _s: ena,
@@ -1533,7 +1533,7 @@ def test_un_seul_cours_annulation_posee_avant_meme_de_se_connecter(tmp_path):
     annulation.set()
 
     code = _un_seul_cours(
-        "181216",
+        "100001",
         tmp_path,
         session=session,
         fabrique_ena=lambda _s: EnaDeTest({SESSION_HIVER: [COURS_HIVER]}),

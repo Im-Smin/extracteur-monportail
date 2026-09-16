@@ -310,17 +310,17 @@ def test_dossier_de_session_inconnue_reste_lisible():
 
 def test_dossier_de_cours_combine_sigle_et_titre():
     cours = Cours(
-        id_site="181216",
-        sigle="PHI-3900",
+        id_site="100001",
+        sigle="ABC-1000",
         titre="Éthique et professionnalisme",
         session=Session(code="202601", libelle="Hiver 2026"),
     )
-    assert cours.dossier() == "PHI-3900 Éthique et professionnalisme"
+    assert cours.dossier() == "ABC-1000 Éthique et professionnalisme"
 
 
 def test_dossier_de_cours_sans_sigle():
     cours = Cours(
-        id_site="149047",
+        id_site="100006",
         sigle=None,
         titre="Nos biais inconscients",
         session=Session(code="202209", libelle="Automne 2022"),
@@ -849,8 +849,8 @@ from extracteur.extraction import (
 )
 
 LIEN_TRACEUR = (
-    "/analytique/evenement/fichier?idFichier=140274665&idSite=181216"
-    "&url=%2Fcontenu%2Fsitescours%2F040%2F04000%2F202601%2Fsite181216"
+    "/analytique/evenement/fichier?idFichier=140274665&idSite=100001"
+    "&url=%2Fcontenu%2Fsitescours%2F040%2F04000%2F202601%2Fsite100001"
     "%2Fmodules1434431%2Fmodule1795743%2Fpage4874493%2Fbloccontenu5204221"
     "%2FCours_1_-_Introduction-janvier%25202026.pptx"
     "%3Fidentifiant%3D0a981dbdc4212d59737bc2e400fd0d39076480bc"
@@ -859,7 +859,7 @@ LIEN_TRACEUR = (
 
 def test_url_reelle_decode_le_parametre_url():
     assert url_reelle(LIEN_TRACEUR) == (
-        "/contenu/sitescours/040/04000/202601/site181216/modules1434431"
+        "/contenu/sitescours/040/04000/202601/site100001/modules1434431"
         "/module1795743/page4874493/bloccontenu5204221"
         "/Cours_1_-_Introduction-janvier%202026.pptx"
         "?identifiant=0a981dbdc4212d59737bc2e400fd0d39076480bc"
@@ -887,11 +887,11 @@ def test_nom_depuis_url_desencode_et_retire_la_requete():
 def test_modules_depuis_html():
     html = """
     <table>
-      <tr><td><a href="/ena/site/module?idSite=181216&idModule=1795743&editionModule=false">1. Introduction</a></td></tr>
-      <tr><td><a href="/ena/site/module?idSite=181216&idModule=1795744&editionModule=false">2. Vocabulaire</a></td></tr>
+      <tr><td><a href="/ena/site/module?idSite=100001&idModule=1795743&editionModule=false">1. Introduction</a></td></tr>
+      <tr><td><a href="/ena/site/module?idSite=100001&idModule=1795744&editionModule=false">2. Vocabulaire</a></td></tr>
     </table>
     """
-    modules = modules_depuis_html(html, "181216")
+    modules = modules_depuis_html(html, "100001")
     assert [m.id_module for m in modules] == ["1795743", "1795744"]
     assert modules[0].titre == "1. Introduction"
     assert modules[0].rang == 0
@@ -899,8 +899,8 @@ def test_modules_depuis_html():
 
 
 def test_modules_ignore_les_liens_sans_id_module():
-    html = '<a href="/ena/site/accueil?idSite=181216">Accueil</a>'
-    assert modules_depuis_html(html, "181216") == []
+    html = '<a href="/ena/site/accueil?idSite=100001">Accueil</a>'
+    assert modules_depuis_html(html, "100001") == []
 
 
 def test_modules_dedoublonne_le_meme_module():
@@ -963,7 +963,7 @@ def test_resultats_sur_page_sans_tableau():
 
 
 def test_sections_du_menu_varient_selon_les_sites():
-    # PHI-3900 dit "Feuille de route", GIN-3320 dit "Contenu et activités".
+    # ABC-1000 dit "Feuille de route", DEF-2000 dit "Contenu et activités".
     html_phi = '<nav><a href="#">Feuille de route</a><a href="#">Bibliographie</a></nav>'
     html_gin = '<nav><a href="#">Contenu et activités</a><a href="#">Archives</a></nav>'
     assert "Feuille de route" in sections_du_menu(html_phi)
@@ -1266,14 +1266,14 @@ def test_notes_consolidees_portent_session_et_cours(tmp_path):
     ecrire_notes_consolidees(
         destination,
         [
-            ("2026-1 Hiver", "PHI-3900 Éthique", Note(evaluation="Examen 1", note="18", sur="20")),
-            ("2025-3 Automne", "GIN-3320 Projet", Note(evaluation="Rapport", note="45", sur="50")),
+            ("2026-1 Hiver", "ABC-1000 Éthique", Note(evaluation="Examen 1", note="18", sur="20")),
+            ("2025-3 Automne", "DEF-2000 Projet", Note(evaluation="Rapport", note="45", sur="50")),
         ],
     )
 
     contenu = destination.read_text(encoding="utf-8-sig")
     assert "2026-1 Hiver" in contenu
-    assert "PHI-3900 Éthique" in contenu
+    assert "ABC-1000 Éthique" in contenu
     assert "Rapport" in contenu
 
 
@@ -1289,12 +1289,12 @@ def test_rapport_liste_les_echecs(tmp_path):
     destination = tmp_path / "_rapport.html"
     ecrire_rapport(
         destination,
-        [Echec(cours="PHI-3900", element="a.pdf", cause="HTTP 403", url="/contenu/a.pdf")],
+        [Echec(cours="ABC-1000", element="a.pdf", cause="HTTP 403", url="/contenu/a.pdf")],
         {"fichiers": 12, "cours": 3},
     )
 
     contenu = destination.read_text(encoding="utf-8")
-    assert "PHI-3900" in contenu
+    assert "ABC-1000" in contenu
     assert "HTTP 403" in contenu
     assert "/contenu/a.pdf" in contenu
 
@@ -1598,7 +1598,7 @@ if not session.attendre_connexion():
     raise SystemExit(1)
 
 print("Connexion detectee.")
-reponse = session.transport("/ena/site/accueil?idSite=181216")
+reponse = session.transport("/ena/site/accueil?idSite=100001")
 print(f"GET /ena/site/accueil -> HTTP {reponse.statut}")
 print("OK" if reponse.statut == 200 else "ECHEC")
 session.fermer()
@@ -1676,17 +1676,17 @@ class SessionFactice:
 
 
 def test_urls_canoniques_sont_bien_formees():
-    assert URL.modules("181216") == "/ena/site/modules?idSite=181216"
-    assert URL.evaluations("181216") == "/ena/site/evaluations?idSite=181216"
-    assert URL.resultats("181216") == "/ena/site/resultats?idSite=181216"
-    assert URL.boite_depot("181216", "1035434") == (
-        "/ena/site/evaluation?idSite=181216&idEvaluation=1035434&onglet=boiteDepots"
+    assert URL.modules("100001") == "/ena/site/modules?idSite=100001"
+    assert URL.evaluations("100001") == "/ena/site/evaluations?idSite=100001"
+    assert URL.resultats("100001") == "/ena/site/resultats?idSite=100001"
+    assert URL.boite_depot("100001", "1035434") == (
+        "/ena/site/evaluation?idSite=100001&idEvaluation=1035434&onglet=boiteDepots"
     )
-    assert URL.module("181216", "1795743") == (
-        "/ena/site/module?idSite=181216&idModule=1795743&editionModule=false"
+    assert URL.module("100001", "1795743") == (
+        "/ena/site/module?idSite=100001&idModule=1795743&editionModule=false"
     )
-    assert URL.redirection("181216", "liste_modules") == (
-        "/lieninterne/redirection/181216/liste_modules"
+    assert URL.redirection("100001", "liste_modules") == (
+        "/lieninterne/redirection/100001/liste_modules"
     )
 
 
@@ -1694,14 +1694,14 @@ def test_plan_de_cours_capture_en_pdf(tmp_path):
     # Le lien PDF du menu est une commande ADF qui PUBLIE : on imprime la page.
     ena = Ena(SessionFactice({}))
     cours = Cours(
-        id_site="181216",
-        sigle="PHI-3900",
+        id_site="100001",
+        sigle="ABC-1000",
         titre="Éthique",
         session=Session(code="202601", libelle="Hiver 2026"),
     )
 
     assert ena.capturer_plan_de_cours(cours, tmp_path / "plan.pdf") is True
-    assert any("/lieninterne/redirection/181216/" in u for u in ena.session.page.visitees)
+    assert any("/lieninterne/redirection/100001/" in u for u in ena.session.page.visitees)
 
 
 def test_plan_de_cours_absent_renvoie_faux(tmp_path):
@@ -1725,27 +1725,27 @@ def test_plan_de_cours_absent_renvoie_faux(tmp_path):
 
 def test_modules_utilise_l_url_canonique():
     html = (
-        '<a href="/ena/site/module?idSite=181216&idModule=1795743&editionModule=false">'
+        '<a href="/ena/site/module?idSite=100001&idModule=1795743&editionModule=false">'
         "1. Introduction</a>"
     )
     ena = Ena(SessionFactice({"/ena/site/modules": html}))
     cours = Cours(
-        id_site="181216",
-        sigle="PHI-3900",
+        id_site="100001",
+        sigle="ABC-1000",
         titre="Éthique",
         session=Session(code="202601", libelle="Hiver 2026"),
     )
 
     modules = ena.modules(cours)
     assert [m.id_module for m in modules] == ["1795743"]
-    assert "/ena/site/modules?idSite=181216" in ena.session.page.visitees[0]
+    assert "/ena/site/modules?idSite=100001" in ena.session.page.visitees[0]
 
 
 def test_modules_absents_ne_font_pas_echouer():
     # Le site de formation EDI n'a ni modules ni evaluations.
     ena = Ena(SessionFactice({}))
     cours = Cours(
-        id_site="149047",
+        id_site="100006",
         sigle=None,
         titre="Nos biais inconscients",
         session=Session(code="202209", libelle="Automne 2022"),
@@ -1755,13 +1755,13 @@ def test_modules_absents_ne_font_pas_echouer():
 
 def test_evaluations_extraites():
     html = """
-    <a href="/ena/site/evaluation?idSite=183033&idEvaluation=1035434&onglet">Exposé oral I</a>
-    <a href="/ena/site/evaluation?idSite=183033&idEvaluation=1035435&onglet">Rapport de suivi I</a>
+    <a href="/ena/site/evaluation?idSite=100002&idEvaluation=1035434&onglet">Exposé oral I</a>
+    <a href="/ena/site/evaluation?idSite=100002&idEvaluation=1035435&onglet">Rapport de suivi I</a>
     """
     ena = Ena(SessionFactice({"/ena/site/evaluations": html}))
     cours = Cours(
-        id_site="183033",
-        sigle="GIN-3320",
+        id_site="100002",
+        sigle="DEF-2000",
         titre="Projet",
         session=Session(code="202601", libelle="Hiver 2026"),
     )
@@ -1773,13 +1773,13 @@ def test_evaluations_extraites():
 
 def test_fichiers_de_depot_visitent_l_onglet_boite_depots():
     ena = Ena(SessionFactice({}))
-    ena.fichiers_de_depot(Evaluation(id_site="183033", id_evaluation="1035434", titre="T"))
+    ena.fichiers_de_depot(Evaluation(id_site="100002", id_evaluation="1035434", titre="T"))
     assert "onglet=boiteDepots" in ena.session.page.visitees[0]
 
 
 def test_fichiers_du_module_visitent_l_url_du_module():
     ena = Ena(SessionFactice({}))
-    ena.fichiers_du_module(Module(id_site="181216", id_module="1795743", titre="M"))
+    ena.fichiers_du_module(Module(id_site="100001", id_module="1795743", titre="M"))
     assert "idModule=1795743" in ena.session.page.visitees[0]
     assert "editionModule=false" in ena.session.page.visitees[0]
 
@@ -1826,7 +1826,7 @@ def test_parcourir_menu_ouvre_chaque_section_du_site():
     vues = []
     nombre = ena.parcourir_menu(
         Cours(
-            id_site="149047",
+            id_site="100006",
             sigle=None,
             titre="EDI",
             session=Session(code="202209", libelle="Automne 2022"),
@@ -2092,29 +2092,29 @@ from extracteur.modele import Session
 
 def test_cours_depuis_html():
     html = """
-    <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=181216">
+    <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100001">
       Éthique et professionnalisme</a>
-    <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=183033">
+    <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100002">
       Projet de fin d'études II</a>
     """
     session = Session(code="202601", libelle="Hiver 2026")
     cours = cours_depuis_html(html, session)
 
-    assert [c.id_site for c in cours] == ["181216", "183033"]
+    assert [c.id_site for c in cours] == ["100001", "100002"]
     assert cours[0].titre == "Éthique et professionnalisme"
 
 
 def test_cours_extrait_le_sigle_quand_il_est_present():
     html = (
-        '<a href="/ena/site/accueil?idSite=1">PHI-3900 : Éthique et professionnalisme</a>'
+        '<a href="/ena/site/accueil?idSite=1">ABC-1000 : Éthique et professionnalisme</a>'
     )
     cours = cours_depuis_html(html, Session(code="202601", libelle="Hiver 2026"))
-    assert cours[0].sigle == "PHI-3900"
+    assert cours[0].sigle == "ABC-1000"
     assert cours[0].titre == "Éthique et professionnalisme"
 
 
 def test_cours_sans_sigle():
-    html = '<a href="/ena/site/accueil?idSite=149047">Nos biais inconscients</a>'
+    html = '<a href="/ena/site/accueil?idSite=100006">Nos biais inconscients</a>'
     cours = cours_depuis_html(html, Session(code="202209", libelle="Automne 2022"))
     assert cours[0].sigle is None
     assert cours[0].titre == "Nos biais inconscients"
@@ -2252,7 +2252,7 @@ from extracteur.modele import Cours, Evaluation, Fichier, Module, Note, Session
 from extracteur.telechargement import ErreurPermanente, SessionExpiree
 
 SESSION = Session(code="202601", libelle="Hiver 2026")
-COURS = Cours(id_site="181216", sigle="PHI-3900", titre="Éthique", session=SESSION)
+COURS = Cours(id_site="100001", sigle="ABC-1000", titre="Éthique", session=SESSION)
 
 
 class EnaFactice:
@@ -2314,7 +2314,7 @@ def transport_403(url):
 def test_arborescence_session_cours(tmp_path):
     archiveur = Archiveur(EnaFactice(), transport_ok, tmp_path, queue.Queue())
     chemin = archiveur.chemin_du_cours(COURS)
-    assert chemin == tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique"
+    assert chemin == tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique"
 
 
 def test_fichier_telecharge_et_inscrit_au_manifeste(tmp_path):
@@ -2323,7 +2323,7 @@ def test_fichier_telecharge_et_inscrit_au_manifeste(tmp_path):
 
     resultat = archiveur.archiver([COURS])
 
-    attendu = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Documents" / "Module 1" / "notes.pdf"
+    attendu = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "Documents" / "Module 1" / "notes.pdf"
     assert attendu.exists()
     assert resultat.fichiers_ecrits == 1
     assert (tmp_path / "manifeste.csv").exists()
@@ -2352,7 +2352,7 @@ def test_echec_permanent_consigne_et_continue(tmp_path):
 
 
 def test_un_cours_qui_casse_n_emporte_pas_les_autres(tmp_path):
-    autre = Cours(id_site="2", sigle="GIN-3320", titre="Projet", session=SESSION)
+    autre = Cours(id_site="2", sigle="DEF-2000", titre="Projet", session=SESSION)
     ena = EnaFactice(erreur=RuntimeError("site illisible"))
     archiveur = Archiveur(ena, transport_ok, tmp_path, queue.Queue())
 
@@ -2383,7 +2383,7 @@ def test_notes_exportees(tmp_path):
     ena = EnaFactice(notes=[Note(evaluation="Examen 1", note="18", sur="20")])
     Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
 
-    notes = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "notes.csv"
+    notes = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "notes.csv"
     assert notes.exists()
     assert "Examen 1" in notes.read_text(encoding="utf-8-sig")
 
@@ -2411,7 +2411,7 @@ def test_noms_de_fichiers_assainis(tmp_path):
     fichier = Fichier(nom='ra:pport<1>.pdf', url="/contenu/sitescours/x/a.pdf?identifiant=a")
     Archiveur(EnaFactice([fichier]), transport_ok, tmp_path, queue.Queue()).archiver([COURS])
 
-    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Documents" / "Module 1"
+    dossier = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "Documents" / "Module 1"
     assert (dossier / "ra-pport-1-.pdf").exists()
 
 
@@ -2425,7 +2425,7 @@ def test_relancer_ne_cree_jamais_de_doublon_numerote(tmp_path):
     for _ in range(3):
         Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
 
-    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Documents" / "Module 1"
+    dossier = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "Documents" / "Module 1"
     assert sorted(p.name for p in dossier.iterdir()) == ["notes.pdf"]
 
 
@@ -2437,13 +2437,13 @@ def test_collision_reelle_entre_deux_urls_differentes(tmp_path):
 
     archiveur.archiver([COURS])
 
-    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Documents" / "Module 1"
+    dossier = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "Documents" / "Module 1"
     assert sorted(p.name for p in dossier.iterdir()) == ["notes (2).pdf", "notes.pdf"]
 
 
 def test_plan_de_cours_archive(tmp_path):
     Archiveur(EnaFactice(), transport_ok, tmp_path, queue.Queue()).archiver([COURS])
-    plan = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Plan de cours" / "plan-de-cours.pdf"
+    plan = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "Plan de cours" / "plan-de-cours.pdf"
     assert plan.exists()
 
 
@@ -2469,7 +2469,7 @@ def test_site_sans_modules_ni_evaluations_passe_par_le_menu(tmp_path):
             return 1
 
     cours = Cours(
-        id_site="149047",
+        id_site="100006",
         sigle=None,
         titre="Nos biais inconscients",
         session=Session(code="202209", libelle="Automne 2022"),
@@ -2504,7 +2504,7 @@ def test_notes_consolidees_a_la_racine(tmp_path):
     consolide = tmp_path / "notes-tous-cours.csv"
     contenu = consolide.read_text(encoding="utf-8-sig")
     assert "2026-1 Hiver" in contenu
-    assert "PHI-3900 Éthique" in contenu
+    assert "ABC-1000 Éthique" in contenu
     assert "Examen 1" in contenu
 ```
 
@@ -2722,7 +2722,7 @@ Le vrai garde-fou du projet : on vérifie de ses yeux un cours avant de lâcher 
 """Points d'entree de l'extracteur.
 
   python -m extracteur                          -> fenetre graphique
-  python -m extracteur --un-seul-cours 181216   -> verification en console
+  python -m extracteur --un-seul-cours 100001   -> verification en console
 """
 
 import argparse
@@ -2812,13 +2812,13 @@ Expected: PASS, tous les tests. (`ui` n'est pas encore importé au chargement du
 
 - [ ] **Step 3: Vérification manuelle sur un cours récent**
 
-Run: `python -m extracteur --un-seul-cours 181216 --destination "C:\Temp\ArchiveTest"`
+Run: `python -m extracteur --un-seul-cours 100001 --destination "C:\Temp\ArchiveTest"`
 
 Ouvrir le dossier produit et vérifier : les documents des modules sont présents, `Pages/` contient les PDF, `notes.csv` contient les résultats, `_rapport.html` s'ouvre.
 
 - [ ] **Step 4: Vérification manuelle sur un cours ancien**
 
-Run: `python -m extracteur --un-seul-cours 148734 --destination "C:\Temp\ArchiveTest"`
+Run: `python -m extracteur --un-seul-cours 100007 --destination "C:\Temp\ArchiveTest"`
 
 C'est le test qui compte : un site d'une autre génération, dont la structure diffère. Noter dans `_rapport.html` tout ce qui échoue, et capturer le HTML des pages fautives dans `tests/fixtures/` pour en faire des cas de test.
 

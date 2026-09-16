@@ -310,7 +310,7 @@ def _scinder_note(texte: str) -> tuple[str, str]:
 
 
 # Sigle d'un cours tel qu'affiche sur la carte (jamais dans le texte du
-# lien) : "MQT-2101, NRC : 86582 (sect. H1)". Chercher "trois lettres, un
+# lien) : "GHI-3000, NRC : 86582 (sect. H1)". Chercher "trois lettres, un
 # tiret, quatre chiffres" n'importe ou dans le texte produit des faux
 # positifs : une carte mentionnant "Reference dossier NRC-4567 pour ce
 # cours" donnerait un sigle invente, sans la moindre alerte (releve par
@@ -469,7 +469,7 @@ def cours_depuis_html(html: str, session: Session) -> list[Cours]:
 # d'un pourcentage obtenu (colonne 2 vide) contrairement a une evaluation.
 MARQUEUR_REGROUPEMENT = "(Somme des évaluations de ce regroupement)"
 
-# Le tableau des notes porte cette classe explicite sur MAT-1900 (classe
+# Le tableau des notes porte cette classe explicite sur STU-7000 (classe
 # complete : "ul_table_data TableauAvecRegroupements"). La page Oracle ADF
 # /ena/site/resultats en contient par ailleurs une quarantaine d'autres
 # (boites de dialogue de fin de session, menus de navigation) qu'un balayage
@@ -479,7 +479,7 @@ MARQUEUR_REGROUPEMENT = "(Somme des évaluations de ce regroupement)"
 # jamais rien extraire.
 CLASSE_TABLEAU_RESULTATS = "TableauAvecRegroupements"
 
-# Classe de la premiere ligne d'un regroupement, releve reel sur MAT-1900.
+# Classe de la premiere ligne d'un regroupement, releve reel sur STU-7000.
 # Confirme le marqueur textuel du titre ; sert aussi de repere si le
 # marqueur venait a changer de formulation.
 CLASSE_LIGNE_REGROUPEMENT = "regroupement-first"

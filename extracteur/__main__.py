@@ -2,7 +2,7 @@
 
   python -m extracteur                          -> fenetre graphique
   python -m extracteur --lister                 -> enumeration en console
-  python -m extracteur --un-seul-cours 181216   -> archivage d'un seul cours, en console
+  python -m extracteur --un-seul-cours 100001   -> archivage d'un seul cours, en console
   python -m extracteur --session "Automne 2022" -> archivage de tous les cours d'une session
   python -m extracteur --tout                   -> archivage de toutes les sessions, de la plus
                                                     ancienne a la plus recente

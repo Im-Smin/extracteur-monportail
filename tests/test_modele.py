@@ -13,17 +13,17 @@ def test_dossier_de_session_inconnue_reste_lisible():
 
 def test_dossier_de_cours_combine_sigle_et_titre():
     cours = Cours(
-        id_site="181216",
-        sigle="PHI-3900",
+        id_site="100001",
+        sigle="ABC-1000",
         titre="Éthique et professionnalisme",
         session=Session(code="202601", libelle="Hiver 2026"),
     )
-    assert cours.dossier() == "PHI-3900 Éthique et professionnalisme"
+    assert cours.dossier() == "ABC-1000 Éthique et professionnalisme"
 
 
 def test_dossier_de_cours_sans_sigle():
     cours = Cours(
-        id_site="149047",
+        id_site="100006",
         sigle=None,
         titre="Nos biais inconscients",
         session=Session(code="202209", libelle="Automne 2022"),
@@ -40,7 +40,7 @@ def test_fichier_est_interne_selon_son_url():
 
 def test_dossier_de_cours_sans_sigle_nettoie_espaces_parasites():
     cours = Cours(
-        id_site="149047",
+        id_site="100006",
         sigle=None,
         titre="Nos biais inconscients ",
         session=Session(code="202209", libelle="Automne 2022"),

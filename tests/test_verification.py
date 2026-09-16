@@ -161,7 +161,7 @@ def test_creation_du_zip(tmp_path):
 
 
 def test_creation_du_zip_preserve_l_arborescence_relative(tmp_path):
-    dossier = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Documents"
+    dossier = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "Documents"
     dossier.mkdir(parents=True)
     (dossier / "notes.pdf").write_bytes(b"abc")
     destination = tmp_path.parent / "archive.zip"
@@ -169,7 +169,7 @@ def test_creation_du_zip_preserve_l_arborescence_relative(tmp_path):
     creer_zip(tmp_path, destination)
 
     with zipfile.ZipFile(destination) as archive:
-        assert "2026-1 Hiver/PHI-3900 Éthique/Documents/notes.pdf" in archive.namelist()
+        assert "2026-1 Hiver/ABC-1000 Éthique/Documents/notes.pdf" in archive.namelist()
 
 
 def test_creation_du_zip_ne_s_inclut_pas_lui_meme(tmp_path):

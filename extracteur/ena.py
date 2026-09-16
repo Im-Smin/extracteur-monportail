@@ -41,7 +41,7 @@ MARQUEUR_PLAN_DE_COURS = "plan de cours"
 # Ena.pages_du_module. L'algorithme (parcours en largeur par idPage, indexe
 # par la feuille reellement servie) termine de lui-meme des que l'ensemble
 # des feuilles vues couvre toute la hierarchie reelle -- fini par
-# construction sur un module reel (GMC-1000 : 3 onglets de niveau 1 x
+# construction sur un module reel (MNO-5000 : 3 onglets de niveau 1 x
 # jusqu'a 6 de niveau 2, soit 18 feuilles). Une structure qui ne se
 # stabiliserait jamais (bogue de ce parcours, ou DOM totalement inattendu)
 # ne doit pas pour autant bloquer indefiniment tout l'archivage du cours sur
