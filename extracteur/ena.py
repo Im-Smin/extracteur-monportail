@@ -785,23 +785,64 @@ class Ena:
         sa docstring pour ce que cette borne protege.
         """
         a_visiter: list[str | None] = [None]
+        # Tout identifiant deja demande, qu'il ait ete servi ou non. Distinct
+        # de `vus`, qui ne retient que les identifiants REELLEMENT servis :
+        # un onglet parent redescend toujours sur une de ses feuilles (regle 3
+        # de docs/api-monportail.md), donc son propre identifiant n'entre
+        # jamais dans `vus`. Sans `demandes`, il serait re-enfile a chaque
+        # nouvelle page decouverte, comme chaque feuille voisine pas encore
+        # visitee -- le nombre de navigations croissant alors avec le carre du
+        # nombre d'onglets. Constate en conditions reelles : 22 navigations
+        # pour 7 pages sur un module a six feuilles, et des heures sur un
+        # cours entier au lieu de quelques minutes, l'operateur voyant defiler
+        # indefiniment les memes noms d'en-tetes.
+        demandes: set[str | None] = {None}
         vus: set[str | None] = set()
         pages: list[PageDeModule] = []
+        visites = 0
+
+        def _suivant() -> "str | None":
+            """Retire et rend le prochain onglet a visiter : le plus profond
+            en attente, et parmi ceux-la le premier arrive.
+
+            C'est ce qui fait descendre une section jusqu'au bout -- tous les
+            sous-onglets de l'en-tete courant -- avant de passer a l'en-tete
+            suivant. Un simple defilement de file (parcours en largeur) ferait
+            l'inverse : il alternerait entre les en-tetes, ce qui couvre
+            pourtant tout, mais donne a l'operateur l'impression que
+            l'archivage tourne en rond sans jamais finir une section.
+            """
+            choisi = 0
+            for indice in range(1, len(a_visiter)):
+                if profondeurs.get(a_visiter[indice], 1) > profondeurs.get(a_visiter[choisi], 1):
+                    choisi = indice
+            return a_visiter.pop(choisi)
+
+        profondeurs: dict[str | None, int] = {}
 
         while a_visiter:
-            if len(pages) >= LIMITE_PAGES_MODULE:
+            # Borne sur les NAVIGATIONS, pas sur les pages retenues : c'est le
+            # nombre d'allers-retours reseau qui fait le cout, et une page
+            # servie en boucle sans jamais etre retenue n'aurait fait monter
+            # aucun compteur de pages.
+            if visites >= LIMITE_PAGES_MODULE:
                 raise TropDePagesDansUnModule(
                     f"module {module.id_module} : plus de "
-                    f"{LIMITE_PAGES_MODULE} pages d'onglets distinctes "
-                    "retenues -- structure pathologique ou cyclique."
+                    f"{LIMITE_PAGES_MODULE} navigations d'onglets "
+                    "-- structure pathologique ou cyclique."
                 )
 
-            id_demande = a_visiter.pop(0)
+            id_demande = _suivant()
+            visites += 1
             html = self._visiter(URL.module(module.id_site, module.id_module, id_demande))
             self._assurer_authentifie()
 
             chaine = onglets_selectionnes_depuis_html(html)
             id_reel = chaine[-1].id_page if chaine else None
+
+            # L'identifiant servi vaut aussi comme demande : inutile de le
+            # redemander plus tard sous son propre nom, on vient de le lire.
+            demandes.add(id_reel)
 
             if id_reel in vus:
                 continue
@@ -810,7 +851,9 @@ class Ena:
             pages.append(PageDeModule(id_page=id_reel, chemin=tuple(o.titre for o in chaine)))
 
             for onglet in onglets_depuis_html(html):
-                if onglet.id_page not in vus:
+                if onglet.id_page not in demandes:
+                    demandes.add(onglet.id_page)
+                    profondeurs[onglet.id_page] = onglet.profondeur
                     a_visiter.append(onglet.id_page)
 
         return pages

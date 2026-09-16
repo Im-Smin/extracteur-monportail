@@ -129,6 +129,10 @@ CLASSE_LIEN_ONGLET = "ul_customizablePanelTabbed_tab-link"
 # ignore silencieusement ce span plutot que de planter, une barre a moitie
 # lue restant preferable a un arret complet.
 MOTIF_ID_PAGE_ONGLET = re.compile(r":t(\d+)$")
+# Chaque niveau d'onglet ajoute un segment « :t<chiffres> » au _ulitemid. Les
+# compter donne la profondeur ; seul le DERNIER porte l'idPage a passer en URL
+# (voir MOTIF_ID_PAGE_ONGLET, ancre sur la fin de chaine).
+MOTIF_SEGMENT_ONGLET = re.compile(r":t\d+")
 
 
 def _onglet_depuis_span(span, rang: int) -> Onglet | None:
@@ -146,7 +150,13 @@ def _onglet_depuis_span(span, rang: int) -> Onglet | None:
         titre = lien.get("title") or lien.get_text(strip=True) or None
     titre = titre or id_page
 
-    return Onglet(id_page=id_page, titre=titre, rang=rang)
+    # Le _ulitemid empile un segment t<idPage> par niveau :
+    # « r1:0:page:t3550444 » est un en-tete, « r1:0:page:t3550444:z3550444:t3550445 »
+    # un sous-onglet de celui-ci. Compter ces segments donne le niveau sans
+    # avoir a reconstruire l'arbre.
+    profondeur = max(1, len(MOTIF_SEGMENT_ONGLET.findall(ulitemid)))
+
+    return Onglet(id_page=id_page, titre=titre, rang=rang, profondeur=profondeur)
 
 
 def onglets_depuis_html(html: str) -> list[Onglet]:
