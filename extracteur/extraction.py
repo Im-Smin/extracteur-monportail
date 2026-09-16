@@ -19,6 +19,27 @@ from extracteur.modele import Cours, Depot, Fichier, Module, Note, Onglet, Sessi
 PREFIXES_TRACEUR = ("/analytique/evenement/fichier", "/analytique/evenement/plancours")
 PREFIXE_CONTENU = "/contenu/sitescours/"
 
+# Traceur des capsules video, distinct des traceurs de fichiers ci-dessus :
+# l'utilisateur a choisi de ne jamais les telecharger, mais leur lien doit
+# rester consigne au manifeste (voir ressources_ignorees_depuis_html).
+PREFIXE_TRACEUR_VIDEO = "/analytique/evenement/multimedia.mp4"
+
+# Racine commune a tous les traceurs d'analytique observes. Sert de garde-fou :
+# tout /analytique/evenement/<type> qui n'est ni un fichier, ni un plan de
+# cours, ni une video est un traceur INCONNU -- le cas qui compte le plus,
+# car c'est l'absence de ce signal qui a laisse les videos disparaitre en
+# silence avant l'ajout de ce module. Un futur quatrieme traceur doit
+# apparaitre au manifeste plutot que de s'evaporer de la meme facon.
+PREFIXE_ANALYTIQUE = "/analytique/evenement/"
+
+# Conteneur qui delimite le vrai contenu d'une page (verifie en inspection
+# reelle : dix ressources de cours, et aucun lien de mobilier de plateforme).
+# Les liens externes ne sont jamais recoltes hors de ce conteneur : Outlook,
+# office.com et le pied de page (Loi sur le droit d'auteur) sont massivement
+# presents partout ailleurs sur la page, et les consigner tous noierait le
+# manifeste sous des centaines de doublons.
+CLASSE_CORPS_CONTENU = "ul_customizablePanelTabbed_body"
+
 
 def _soupe(html: str) -> BeautifulSoup:
     return BeautifulSoup(html, "html.parser")
@@ -35,28 +56,112 @@ def _est_traceur(href: str) -> bool:
     return urlsplit(href).path.startswith(PREFIXES_TRACEUR)
 
 
+def _decoder_parametre_url(href: str) -> str | None:
+    """Decode le parametre `url` d'un href de traceur, ou None s'il est absent.
+
+    Extrait manuellement le parametre du query string pour eviter que parse_qs
+    ne pre-decodifie la valeur via unquote_plus. On ne veut qu'un seul niveau
+    de decodage. Le parametre porte parfois un chemin relatif (fichiers de
+    module), parfois une URL absolue (plan de cours, video) : les deux se
+    decodent de la meme facon.
+    """
+    match = re.search(r"[?&]url=([^&]+)", href)
+    if not match:
+        return None
+    encoded_url = match.group(1)
+    # Un seul unquote : le second niveau d'encodage est celui de l'URL elle-meme.
+    return unquote(encoded_url)
+
+
 def url_reelle(href: str) -> str | None:
     """Extrait l'URL de contenu d'un href, ou None si ce n'est pas une ressource interne."""
     if not href or href.startswith("#"):
         return None
 
     if _est_traceur(href):
-        # Extraire manuellement le parametre url du query string pour eviter que
-        # parse_qs ne pre-decodifie la valeur via unquote_plus. On besoin un seul
-        # niveau de decodage. Le parametre porte parfois un chemin relatif
-        # (fichiers de module), parfois une URL absolue (plan de cours) : les
-        # deux se decodent de la meme facon.
-        match = re.search(r"[?&]url=([^&]+)", href)
-        if not match:
-            return None
-        encoded_url = match.group(1)
-        # Un seul unquote : le second niveau d'encodage est celui de l'URL elle-meme.
-        return unquote(encoded_url)
+        return _decoder_parametre_url(href)
 
     if PREFIXE_CONTENU in href:
         return href
 
     return None
+
+
+def _genre_traceur(href: str) -> str | None:
+    """Categorie d'un traceur d'analytique ignore par le telechargement.
+
+    Rend "video" pour le traceur multimedia.mp4, "traceur-inconnu" pour tout
+    /analytique/evenement/<type> que ce projet ne sait pas encore classer, ou
+    None si le href n'est pas un traceur d'analytique (deja telecharge via
+    PREFIXES_TRACEUR, ou pas un traceur du tout).
+    """
+    chemin = urlsplit(href).path
+    if chemin.startswith(PREFIXE_TRACEUR_VIDEO):
+        return "video"
+    if chemin.startswith(PREFIXES_TRACEUR):
+        return None  # deja rendu par fichiers_depuis_html
+    if chemin.startswith(PREFIXE_ANALYTIQUE):
+        return "traceur-inconnu"
+    return None
+
+
+def _href_exploitable(href: str) -> bool:
+    return bool(href) and not href.startswith("#") and not href.startswith("javascript:")
+
+
+def ressources_ignorees_depuis_html(html: str) -> list[Fichier]:
+    """Ressources deliberement non telechargees, mais consignees au manifeste
+    pour rester tracables une fois la plateforme fermee.
+
+    Trois categories, jamais melangees avec ce que fichiers_depuis_html rend
+    deja (aucun doublon entre telecharge et ignore) :
+    - "video" : le traceur multimedia.mp4, dont l'utilisateur a decide de ne
+      jamais telecharger le contenu ;
+    - "traceur-inconnu" : tout /analytique/evenement/<type> que ce module ne
+      sait pas classer -- le garde-fou le plus important du trio, voir
+      PREFIXE_ANALYTIQUE ;
+    - "externe" : un lien hors monPortail, mais seulement s'il est trouve
+      dans le conteneur CLASSE_CORPS_CONTENU (voir sa docstring) -- en son
+      absence, aucun lien externe n'est retenu, plutot que de noyer le
+      manifeste sous le mobilier de plateforme.
+
+    Les traceurs (video, inconnu) sont recoltes sur TOUTE la page, sans
+    ambiguite possible sur le fait qu'il s'agit de ressources de cours ; seuls
+    les liens externes sont restreints au corps. Deduplique par URL (icone
+    puis texte pointent souvent vers le meme lien).
+    """
+    soupe = _soupe(html)
+    ressources: dict[str, Fichier] = {}
+
+    for lien in soupe.find_all("a", href=True):
+        href = lien["href"]
+        if not _href_exploitable(href):
+            continue
+
+        genre = _genre_traceur(href)
+        if genre is None:
+            continue
+
+        url = _decoder_parametre_url(href) or href
+        if url not in ressources:
+            ressources[url] = Fichier(nom=nom_depuis_url(url), url=url, genre=genre)
+
+    corps = soupe.find(class_=CLASSE_CORPS_CONTENU)
+    if corps is not None:
+        for lien in corps.find_all("a", href=True):
+            href = lien["href"]
+            if not _href_exploitable(href):
+                continue
+            if _genre_traceur(href) is not None:
+                continue  # deja consigne comme traceur ci-dessus
+            if url_reelle(href) is not None:
+                continue  # deja rendu par fichiers_depuis_html
+            if href in ressources:
+                continue
+            nom = lien.get_text(strip=True) or href
+            ressources[href] = Fichier(nom=nom, url=href, genre="externe")
+
+    return list(ressources.values())
 
 
 def nom_depuis_url(url: str) -> str:

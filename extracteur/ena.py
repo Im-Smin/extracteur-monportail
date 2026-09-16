@@ -24,6 +24,7 @@ from extracteur.extraction import (
     onglets_depuis_html,
     onglets_selectionnes_depuis_html,
     resultats_depuis_html,
+    ressources_ignorees_depuis_html,
     sections_du_menu,
     session_depuis_libelle,
 )
@@ -956,6 +957,17 @@ class Ena:
         self._assurer_authentifie()
         destination.parent.mkdir(parents=True, exist_ok=True)
         self.session.page.pdf(path=str(destination), format="A4", print_background=True)
+
+    def ressources_ignorees_page_courante(self) -> list:
+        """Ressources deliberement non telechargees (videos, liens externes,
+        traceurs inconnus) de la page DEJA ouverte, sans navigation.
+
+        Meme motif que capturer_pdf_page_courante : l'appelant vient de lire
+        cette page pour ses fichiers, le navigateur y est encore -- une
+        navigation ADF de plus couterait plusieurs secondes pour rien.
+        """
+        self._assurer_authentifie()
+        return ressources_ignorees_depuis_html(self.session.page.content())
 
     def capturer_plan_de_cours(self, cours, destination: Path) -> "str | bool":
         """Imprime le plan de cours en PDF. Retourne le nom de la section qui a

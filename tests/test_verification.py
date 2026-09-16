@@ -109,6 +109,21 @@ def test_verification_taille_non_numerique_ne_plante_pas(tmp_path):
     assert rapport["taille_incorrecte"] == []
 
 
+def test_verification_ignore_les_entrees_non_ok(tmp_path):
+    # CRITIQUE : une ressource ignoree (video, lien externe, traceur inconnu)
+    # n'a jamais ete ecrite sur disque. Sans ce filtre, verifier() la
+    # compterait comme un fichier manquant, et l'archive serait annoncee
+    # incomplete alors qu'elle est parfaitement saine.
+    Manifeste(tmp_path).ajouter(
+        "Documents/Module 1/capsule.mp4", "", "", "/contenu/capsule.mp4", "video"
+    )
+
+    rapport = verifier(tmp_path)
+
+    assert rapport["manquants"] == []
+    assert rapport["taille_incorrecte"] == []
+
+
 def test_verification_sans_manifeste_ne_leve_pas(tmp_path):
     rapport = verifier(tmp_path)
 

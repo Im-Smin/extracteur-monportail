@@ -48,11 +48,17 @@ class Manifeste:
         desambiguisation, comme le faisait l'ancienne implementation, fait
         echouer la comparaison d'url des le deuxieme fichier en collision : sa
         cle tombe sur l'entree du premier, dont l'url ne correspond jamais.
+
+        N'indexe que les entrees de statut "ok" : une ressource ignoree
+        (video, lien externe, traceur inconnu -- voir Fichier.genre) n'a
+        jamais ete ecrite sur disque. La retrouver ici ferait croire a une
+        reprise sur un fichier qui n'a jamais existe.
         """
         if self._index_url is None:
             self._index_url = {}
             for entree in self.charger().values():
-                self._index_url.setdefault(entree.get("url"), entree)
+                if entree.get("statut") == "ok":
+                    self._index_url.setdefault(entree.get("url"), entree)
         return self._index_url.get(url)
 
     def ajouter(self, chemin_relatif, taille, sha256, url, statut="ok") -> None:
@@ -76,7 +82,7 @@ class Manifeste:
             redacteur.writerow(ligne)
 
         entrees[chemin_relatif] = ligne
-        if self._index_url is not None:
+        if self._index_url is not None and statut == "ok":
             self._index_url.setdefault(url, ligne)
 
 

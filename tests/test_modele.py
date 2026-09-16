@@ -54,3 +54,19 @@ def test_dossier_de_session_avec_libelle_vide_reste_lisible():
 
 def test_dossier_de_session_avec_code_court_reste_lisible():
     assert Session(code="2026", libelle="Test").dossier() == "2026"
+
+
+def test_fichier_genre_par_defaut_est_document():
+    # Le defaut preserve tous les appels existants, ecrits avant l'ajout des
+    # ressources ignorees (videos, liens externes, traceurs inconnus).
+    fichier = Fichier(nom="a.pdf", url="/contenu/sitescours/x/a.pdf")
+    assert fichier.genre == "document"
+
+
+def test_fichier_genre_video():
+    fichier = Fichier(
+        nom="capsule.mp4",
+        url="/contenu/sitescours/x/capsule.mp4",
+        genre="video",
+    )
+    assert fichier.genre == "video"
