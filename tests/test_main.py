@@ -1764,3 +1764,62 @@ def test_la_trace_de_reparation_de_page_atteint_le_journal_de_la_fenetre(tmp_pat
     assert lignes[-1] == "page reinitialisee apres un echec de navigation"
 
 
+def test_l_archivage_suspend_la_veille_pendant_le_travail(tmp_path, monkeypatch):
+    # Un archivage complet dure parfois plus d'une heure. Si la machine
+    # s'endort, le reseau tombe et la navigation en cours expire -- incident
+    # reellement survenu, qui a coute dix-sept cours sur trente-neuf. Le
+    # gestionnaire doit envelopper le travail, et le relacher a la fin.
+    import contextlib
+
+    appels: list = []
+
+    @contextlib.contextmanager
+    def veille_factice(imprimer=print):
+        appels.append("pose")
+        try:
+            yield True
+        finally:
+            appels.append("relache")
+
+    monkeypatch.setattr("extracteur.__main__.empecher_la_veille", veille_factice)
+
+    code = _tout(
+        tmp_path,
+        session=SessionFactice(),
+        fabrique_ena=lambda _s: EnaDeTest({SESSION_HIVER: [COURS_HIVER]}),
+        imprimer=lambda _t: None,
+        imprimer_erreur=lambda _t: None,
+    )
+
+    assert code == 0
+    assert appels == ["pose", "relache"]
+
+
+def test_la_veille_est_relachee_meme_si_l_archivage_plante(tmp_path, monkeypatch):
+    # Le relachement est dans un finally : un archivage qui echoue ne doit pas
+    # laisser la machine incapable de s'endormir.
+    import contextlib
+
+    appels: list = []
+
+    @contextlib.contextmanager
+    def veille_factice(imprimer=print):
+        appels.append("pose")
+        try:
+            yield True
+        finally:
+            appels.append("relache")
+
+    monkeypatch.setattr("extracteur.__main__.empecher_la_veille", veille_factice)
+
+    _un_seul_cours(
+        "000000",
+        tmp_path,
+        session=SessionFactice(),
+        fabrique_ena=lambda _s: EnaDeTest({SESSION_HIVER: [COURS_HIVER]}),
+        imprimer=lambda _t: None,
+        imprimer_erreur=lambda _t: None,
+    )
+
+    assert appels == ["pose", "relache"]
+

@@ -121,6 +121,13 @@ la fenêtre qu'il a ouverte.
 fichier déjà présent sur le disque n'est jamais retéléchargé. Vous pouvez
 interrompre et reprendre autant de fois que nécessaire.
 
+**La mise en veille est suspendue pendant l'archivage**, et rendue à Windows
+dès la fin. Aucun réglage système n'est modifié : le programme déclare
+seulement « je travaille » (`SetThreadExecutionState`), et Windows libère cet
+état de lui-même à la fermeture, même si le programme plante. Cela n'empêche
+pas un verrouillage manuel de l'écran, qui reste sans conséquence — c'est la
+veille, qui coupe le réseau, qui faisait échouer les navigations.
+
 ## Si vous archivez vers OneDrive ou un dossier synchronisé
 
 C'est nettement plus lent, pour trois raisons qui se cumulent : le filtre de
