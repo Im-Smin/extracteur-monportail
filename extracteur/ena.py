@@ -582,9 +582,42 @@ class Ena:
         # signal de confirmation si le texte du bouton ne peut etre lu a
         # temps (voir _confirmer_session_selectionnee).
         contenu_avant_clic = self.session.page.content()
-        lien.click(timeout=5000)
+        self._cliquer_option_de_session(lien, session)
 
         self._confirmer_session_selectionnee(session, contenu_avant_clic)
+
+    def _cliquer_option_de_session(self, lien, session: Session) -> None:
+        """Clique l'option d'une session, meme quand le bouton du selecteur
+        la recouvre.
+
+        Constate en conditions reelles sur la PREMIERE option du panneau
+        (data-index="0", classe « premier ») : le panneau s'ouvre en
+        chevauchant son propre bouton, et Playwright refuse alors le clic --
+        « <div role="listbox" class="mpo-deroulant-bouton"> intercepts
+        pointer events ». Il a raison : le clic serait parti sur le bouton,
+        qui aurait simplement referme la liste.
+
+        Seule l'option du haut est concernee ; les suivantes, plus bas dans
+        le panneau, ne sont jamais couvertes. Le defaut reste donc invisible
+        tant que la session la plus recente est vide -- et coute une session
+        entiere le jour ou elle ne l'est plus.
+
+        Repli sur dispatch_event, qui declenche le gestionnaire sans passer
+        par le test de recouvrement. Ce n'est pas un pari : l'appelant
+        enchaine sur _confirmer_session_selectionnee, qui verifie que le
+        bouton affiche bien la session demandee. Un evenement parti au
+        mauvais endroit ne peut donc pas passer pour un changement reussi --
+        il devient un echec isole sur cette seule session.
+        """
+        try:
+            lien.click(timeout=5000)
+            return
+        except (ErreurDelaiPlaywright, ErreurPlaywright) as erreur:
+            self.imprimer(
+                f"Option « {session.libelle} » recouverte par le bouton du "
+                f"selecteur : clic envoye directement a l'element. ({erreur})"
+            )
+        lien.dispatch_event("click")
 
     def _confirmer_session_selectionnee(self, session: Session, contenu_avant_clic: str = "") -> None:
         """Attend que le bouton du selecteur affiche le libelle de la
