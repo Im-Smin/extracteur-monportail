@@ -1,11 +1,28 @@
 [project]
 name = "extracteur-monportail"
-version = "0.1.0"
+version = "1.0.0"
+description = "Archive tout votre contenu monPortail (Universite Laval) avant la fermeture de la plateforme"
+readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.12"
+keywords = ["monportail", "ulaval", "archivage", "playwright"]
+classifiers = [
+    "Environment :: Console",
+    "Environment :: X11 Applications",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Natural Language :: French",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Archiving",
+]
 dependencies = [
     "playwright>=1.47",
     "beautifulsoup4>=4.12",
 ]
+
+[project.urls]
+Source = "https://github.com/Im-Smin/extracteur-monportail"
+Issues = "https://github.com/Im-Smin/extracteur-monportail/issues"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
