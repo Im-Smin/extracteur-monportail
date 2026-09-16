@@ -1946,3 +1946,220 @@ def test_ena_ne_confie_plus_aucun_motif_ancre_a_has_text():
         "un motif ancre (f-string commencant par ^ et finissant par $) est "
         "construit dans ena.py -- verifier qu'il n'est pas confie a has_text"
     )
+class PageOngletsLarges(PageFactice):
+    """Un parent ("Racine") portant N feuilles, comme les modules reels de
+    MNO-5000 qui en portent six par en-tete.
+
+    Sert a mesurer le NOMBRE de navigations, pas leur resultat : c'est la
+    grandeur qui distingue un parcours lineaire d'un parcours quadratique, et
+    donc quelques secondes de quelques heures sur un cours entier.
+    """
+
+    NOMBRE_FEUILLES = 6
+
+    def _barre_feuilles(self, selectionnee: str) -> str:
+        spans = []
+        for numero in range(1, self.NOMBRE_FEUILLES + 1):
+            id_feuille = f"1{numero}"
+            classe = "ul_customizablePanelTabbed_tab"
+            if id_feuille == selectionnee:
+                classe += " p_AFSelected"
+            spans.append(
+                f'<span _ulitemid="r1:0:page:t1:z1:t{id_feuille}" class="{classe}">'
+                f'<a class="ul_customizablePanelTabbed_tab-link" href="#" '
+                f'title="Feuille {numero}">Feuille {numero}</a></span>'
+            )
+        return '<div class="ul_customizablePanelTabbed_tabs">' + "".join(spans) + "</div>"
+
+    def _html(self, id_feuille: str) -> str:
+        parent = (
+            '<div class="ul_customizablePanelTabbed_tabs">'
+            '<span _ulitemid="r1:0:page:t1" class="ul_customizablePanelTabbed_tab p_AFSelected">'
+            '<a class="ul_customizablePanelTabbed_tab-link" href="#" title="Racine">Racine</a>'
+            "</span></div>"
+        )
+        return parent + self._barre_feuilles(id_feuille)
+
+    def content(self):
+        from urllib.parse import parse_qs, urlsplit
+
+        id_page = parse_qs(urlsplit(self.url).query).get("idPage", [None])[0]
+        # Le parent "1" et l'absence d'idPage redescendent sur la premiere
+        # feuille, comme le serveur ADF reel (regle 3 de la doc).
+        if id_page in (None, "1"):
+            id_page = "11"
+        return self._html(id_page)
+
+
+def test_pages_du_module_ne_demande_jamais_deux_fois_la_meme_page():
+    # Defaut constate en conditions reelles : `vus` retient l'identifiant
+    # REELLEMENT servi, jamais celui demande. Un onglet parent, qui redescend
+    # toujours sur une feuille, n'entre donc jamais dans `vus` -- et se fait
+    # re-enfiler a chaque nouvelle page decouverte. Meme chose pour les
+    # feuilles voisines pas encore visitees. Le parcours termine, mais le
+    # nombre de navigations croit avec le carre du nombre d'onglets : sur un
+    # cours reel, des heures la ou quelques minutes suffisent, et l'operateur
+    # voit defiler indefiniment les memes noms d'en-tetes.
+    session = SessionFactice({})
+    session.page = PageOngletsLarges({})
+    ena = Ena(session)
+
+    ena.pages_du_module(Module(id_site="100001", id_module="1310231", titre="Module large"))
+
+    demandes = session.page.visitees
+    assert len(demandes) == len(set(demandes)), (
+        f"{len(demandes)} navigations pour {len(set(demandes))} pages distinctes : "
+        f"{[d.split('idPage=')[-1] for d in demandes]}"
+    )
+
+
+def test_pages_du_module_visite_au_plus_une_fois_chaque_onglet():
+    # Borne haute explicite : une page par onglet declare (6 feuilles + 1
+    # parent), plus la visite initiale sans idPage. Sans cette borne, rien ne
+    # signalerait un retour a un parcours quadratique.
+    session = SessionFactice({})
+    session.page = PageOngletsLarges({})
+    ena = Ena(session)
+
+    pages = ena.pages_du_module(Module(id_site="100001", id_module="1310231", titre="Module large"))
+
+    # Borne serree a dessein : la visite initiale sans idPage, la descente
+    # dans le parent, et une visite par feuille restante. Un cran de plus et
+    # le test cesserait de voir la re-demande de l'identifiant deja servi.
+    assert len(pages) == PageOngletsLarges.NOMBRE_FEUILLES
+    assert len(session.page.visitees) <= PageOngletsLarges.NOMBRE_FEUILLES + 1
+
+
+def test_pages_du_module_parcours_large_trouve_toutes_les_feuilles():
+    # Contre-epreuve : la deduplication ne doit pas faire perdre de feuille.
+    session = SessionFactice({})
+    session.page = PageOngletsLarges({})
+    ena = Ena(session)
+
+    pages = ena.pages_du_module(Module(id_site="100001", id_module="1310231", titre="Module large"))
+
+    assert {p.id_page for p in pages} == {
+        f"1{n}" for n in range(1, PageOngletsLarges.NOMBRE_FEUILLES + 1)
+    }
+    assert all(p.chemin[0] == "Racine" for p in pages)
+class PageOngletsQuiNeChangentJamais(PageFactice):
+    """DOM qui declare beaucoup d'onglets distincts, mais sert toujours la
+    meme feuille -- ce que ferait un serveur qui ignore l'idPage demande.
+
+    Aucune page nouvelle n'est donc jamais retenue : un garde-fou compte sur
+    le nombre de pages RETENUES ne se declencherait jamais, et le parcours
+    enchainerait les allers-retours reseau en silence. C'est pourquoi la
+    borne compte les navigations.
+    """
+
+    NOMBRE_ONGLETS = 400
+
+    def content(self):
+        spans = []
+        for numero in range(1, self.NOMBRE_ONGLETS + 1):
+            classe = "ul_customizablePanelTabbed_tab"
+            if numero == 1:
+                classe += " p_AFSelected"
+            spans.append(
+                f'<span _ulitemid="r1:0:page:t{numero}" class="{classe}">'
+                f'<a class="ul_customizablePanelTabbed_tab-link" href="#" '
+                f'title="Onglet {numero}">Onglet {numero}</a></span>'
+            )
+        return '<div class="ul_customizablePanelTabbed_tabs">' + "".join(spans) + "</div>"
+
+
+def test_pages_du_module_borne_les_navigations_meme_sans_page_nouvelle():
+    # Le cas que la borne doit reellement attraper : le serveur resert
+    # toujours le meme onglet quel que soit l'idPage demande. Une seule page
+    # est retenue, mais des centaines de navigations sont enfilees. Comptee
+    # sur les pages retenues, la borne resterait muette et l'archivage
+    # paraitrait bloque.
+    session = SessionFactice({})
+    session.page = PageOngletsQuiNeChangentJamais({})
+    ena = Ena(session)
+
+    with pytest.raises(TropDePagesDansUnModule):
+        ena.pages_du_module(Module(id_site="100001", id_module="1310231", titre="M"))
+
+    assert len(session.page.visitees) <= LIMITE_PAGES_MODULE + 1
+class PageDeuxSectionsAvecSousOnglets(PageFactice):
+    """Deux en-tetes ("Section A", "Section B"), chacun portant trois
+    sous-onglets -- la forme reelle des modules de MNO-5000.
+
+    Reproduit les deux regles du serveur ADF (voir docs/api-monportail.md,
+    etape 3) : demander un en-tete redescend sur son premier sous-onglet, et
+    demander un sous-onglet le sert directement.
+    """
+
+    SOUS = {"1": ["11", "12", "13"], "2": ["21", "22", "23"]}
+    TITRES = {
+        "1": "Section A", "2": "Section B",
+        "11": "A-un", "12": "A-deux", "13": "A-trois",
+        "21": "B-un", "22": "B-deux", "23": "B-trois",
+    }
+
+    def _parent_de(self, id_page: str) -> str:
+        return id_page[0]
+
+    def content(self):
+        from urllib.parse import parse_qs, urlsplit
+
+        id_page = parse_qs(urlsplit(self.url).query).get("idPage", [None])[0]
+        if id_page in (None, "1"):
+            id_page = "11"
+        elif id_page == "2":
+            id_page = "21"
+
+        parent = self._parent_de(id_page)
+        entetes = "".join(
+            f'<span _ulitemid="r1:0:page:t{p}" class="ul_customizablePanelTabbed_tab'
+            f'{" p_AFSelected" if p == parent else ""}">'
+            f'<a class="ul_customizablePanelTabbed_tab-link" href="#" '
+            f'title="{self.TITRES[p]}">{self.TITRES[p]}</a></span>'
+            for p in ("1", "2")
+        )
+        feuilles = "".join(
+            f'<span _ulitemid="r1:0:page:t{parent}:z{parent}:t{f}" '
+            f'class="ul_customizablePanelTabbed_tab'
+            f'{" p_AFSelected" if f == id_page else ""}">'
+            f'<a class="ul_customizablePanelTabbed_tab-link" href="#" '
+            f'title="{self.TITRES[f]}">{self.TITRES[f]}</a></span>'
+            for f in self.SOUS[parent]
+        )
+        return (
+            f'<div class="ul_customizablePanelTabbed_tabs">{entetes}</div>'
+            f'<div class="ul_customizablePanelTabbed_tabs">{feuilles}</div>'
+        )
+
+
+def test_pages_du_module_termine_une_section_avant_de_passer_a_la_suivante():
+    # L'ordre demande explicitement : faire une section, chacun de ses
+    # onglets, puis passer a la suivante. Un parcours en largeur couvrirait
+    # tout aussi, mais en alternant entre les en-tetes -- ce qui, sur un cours
+    # reel, donne a l'operateur l'impression que l'archivage tourne en rond.
+    session = SessionFactice({})
+    session.page = PageDeuxSectionsAvecSousOnglets({})
+    ena = Ena(session)
+
+    pages = ena.pages_du_module(Module(id_site="100001", id_module="1310231", titre="M"))
+
+    sections = [p.chemin[0] for p in pages]
+    # Chaque section apparait d'un seul tenant : autant de blocs que de
+    # sections distinctes, jamais de retour en arriere.
+    blocs = [nom for indice, nom in enumerate(sections) if indice == 0 or nom != sections[indice - 1]]
+    assert blocs == ["Section A", "Section B"], sections
+    assert len(pages) == 6
+
+
+def test_pages_du_module_deux_sections_trouve_toutes_les_feuilles():
+    # Contre-epreuve de l'ordre : ranger n'autorise pas a perdre une feuille.
+    session = SessionFactice({})
+    session.page = PageDeuxSectionsAvecSousOnglets({})
+    ena = Ena(session)
+
+    pages = ena.pages_du_module(Module(id_site="100001", id_module="1310231", titre="M"))
+
+    assert {p.chemin for p in pages} == {
+        ("Section A", "A-un"), ("Section A", "A-deux"), ("Section A", "A-trois"),
+        ("Section B", "B-un"), ("Section B", "B-deux"), ("Section B", "B-trois"),
+    }

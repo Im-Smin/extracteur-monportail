@@ -56,6 +56,12 @@ class Onglet:
     id_page: str
     titre: str
     rang: int = 0
+    # Niveau dans la hierarchie d'onglets, deduit du nombre de segments du
+    # _ulitemid : 1 pour un en-tete, 2 pour un sous-onglet, etc. Sert a
+    # parcourir un module section par section -- finir tous les onglets de
+    # l'en-tete courant avant de passer au suivant -- plutot qu'en largeur,
+    # qui alterne entre les en-tetes et donne l'impression de tourner en rond.
+    profondeur: int = 1
 
 
 @dataclass(frozen=True)
