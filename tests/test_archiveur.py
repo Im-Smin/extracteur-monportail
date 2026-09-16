@@ -69,6 +69,17 @@ class EnaFactice:
 
     def capturer_pdf(self, chemin, destination):
         self.pdf_captures.append(destination)
+        self._ecrire_pdf(destination)
+
+    def capturer_pdf_page_courante(self, destination):
+        # Meme trace et memes echecs simules que capturer_pdf : pour tous les
+        # tests qui ne portent PAS sur le rechargement, les deux voies sont
+        # interchangeables. Voir EnaQuiDistingueLesCaptures pour celui qui les
+        # distingue.
+        self.pdf_captures.append(destination)
+        self._ecrire_pdf(destination)
+
+    def _ecrire_pdf(self, destination):
         if destination.name in self._erreur_capture_pdf_pour:
             raise ErreurPlaywright(f"impression impossible : {destination.name}")
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -590,6 +601,13 @@ class EnaMenuAvecEchecPartiel(EnaFactice):
         super().__init__()
         self.session = SessionFacticeMenu(page)
 
+    def capturer_pdf_page_courante(self, destination):
+        # Delegue a la page factice, dont pdf() echoue au premier appel : la
+        # doublure de base reussirait toujours, et ce test porte precisement
+        # sur l'isolation d'une impression ratee.
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        self.session.page.pdf(path=str(destination), format="A4", print_background=True)
+
     def modules(self, cours):
         return []
 
@@ -932,3 +950,60 @@ def test_arborescence_des_depots_existants_inchangee(tmp_path):
         / "travail.docx"
     )
     assert attendu.exists()
+
+
+class EnaQuiDistingueLesCaptures(EnaAvecPages):
+    """Separe les captures PDF qui ont exige une navigation de celles prises
+    sur la page deja ouverte, pour mesurer les rechargements inutiles."""
+
+    def __init__(self, pages, fichiers_par_id_page):
+        super().__init__(pages, fichiers_par_id_page)
+        self.captures_avec_navigation = []
+        self.captures_sur_page_courante = []
+
+    def capturer_pdf(self, chemin, destination):
+        self.captures_avec_navigation.append(destination.name)
+        super().capturer_pdf(chemin, destination)
+
+    def capturer_pdf_page_courante(self, destination):
+        self.captures_sur_page_courante.append(destination.name)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"%PDF-1.4 factice")
+
+
+def test_la_page_lue_pour_ses_fichiers_est_imprimee_sans_rechargement(tmp_path):
+    # Chaque navigation est un aller-retour ADF de plusieurs secondes. La
+    # lecture des fichiers d'une page y amene deja le navigateur : recharger
+    # la meme URL pour l'imprimer doublait le cout de chaque module. Constate
+    # en conditions reelles, l'operateur voyant la meme page se charger
+    # plusieurs fois de suite.
+    pages = [
+        PageDeModule(id_page="1", chemin=("Section A",)),
+        PageDeModule(id_page="2", chemin=("Section B",)),
+    ]
+    ena = EnaQuiDistingueLesCaptures(pages=pages, fichiers_par_id_page={"1": [], "2": []})
+
+    Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
+
+    assert sorted(ena.captures_sur_page_courante) == [
+        "Module 1 - Section A.pdf",
+        "Module 1 - Section B.pdf",
+    ]
+    assert [n for n in ena.captures_avec_navigation if n.startswith("Module 1")] == []
+
+
+def test_une_page_illisible_est_quand_meme_imprimee_par_navigation(tmp_path):
+    # Quand la lecture des fichiers a echoue, le navigateur n'est PAS sur la
+    # bonne page : imprimer la page courante produirait un PDF d'une autre
+    # page, silencieusement faux. Il faut alors naviguer.
+    pages = [PageDeModule(id_page="1", chemin=("Section A",))]
+    ena = EnaQuiDistingueLesCaptures(pages=pages, fichiers_par_id_page={"1": []})
+    ena._erreur_id_page = "1"
+
+    Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
+
+    assert ena.captures_sur_page_courante == []
+    # Filtre sur la page de module : le cours capture aussi les pages de
+    # synthese des evaluations, qui passent par le meme chemin.
+    assert "Module 1 - Section A.pdf" in ena.captures_avec_navigation
+
