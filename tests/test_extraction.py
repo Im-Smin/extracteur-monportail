@@ -8,6 +8,7 @@ from extracteur.extraction import (
     onglets_depuis_html,
     onglets_selectionnes_depuis_html,
     resultats_depuis_html,
+    ressources_ignorees_depuis_html,
     sections_du_menu,
     session_depuis_libelle,
     url_reelle,
@@ -161,6 +162,108 @@ def test_fichiers_preservent_les_plus_dans_les_noms():
     fichiers = fichiers_depuis_html(html)
     assert len(fichiers) == 1
     assert fichiers[0].nom == "fichier+plus.pdf"
+
+
+# Traceur de video releve en inspection reelle : meme forme de double
+# encodage que LIEN_TRACEUR, mais un prefixe /analytique/evenement/ distinct
+# (multimedia.mp4), jamais telecharge sur decision de l'utilisateur.
+LIEN_VIDEO = (
+    "/analytique/evenement/multimedia.mp4?idFichier=140274666&idSite=100001"
+    "&url=%2Fcontenu%2Fsitescours%2F040%2F04000%2F202601%2Fsite100001"
+    "%2Fmodules1434431%2Fmodule1795743%2Fpage4874493%2Fbloccontenu5204222"
+    "%2Fcapsule-1.mp4"
+    "%3Fidentifiant%3D0a981dbdc4212d59737bc2e400fd0d39076480bd"
+)
+URL_REELLE_VIDEO = (
+    "/contenu/sitescours/040/04000/202601/site100001/modules1434431"
+    "/module1795743/page4874493/bloccontenu5204222/capsule-1.mp4"
+    "?identifiant=0a981dbdc4212d59737bc2e400fd0d39076480bd"
+)
+
+# Traceur d'analytique dont le type ("sondage") n'est reconnu ni comme
+# fichier telechargeable (PREFIXES_TRACEUR) ni comme video (multimedia.mp4) :
+# le garde-fou qui doit signaler tout traceur non classe.
+LIEN_TRACEUR_INCONNU = (
+    "/analytique/evenement/sondage?idFichier=999&idSite=100001"
+    "&url=%2Fcontenu%2Fsitescours%2Fx%2Fsondage.html"
+)
+
+
+def test_ressources_ignorees_page_sans_lien_rend_vide():
+    assert ressources_ignorees_depuis_html("<html><body>rien ici</body></html>") == []
+
+
+def test_ressources_ignorees_video_seule():
+    html = f'<a href="{LIEN_VIDEO}">Capsule 1</a>'
+    ressources = ressources_ignorees_depuis_html(html)
+    assert len(ressources) == 1
+    assert ressources[0].genre == "video"
+    assert ressources[0].nom == "capsule-1.mp4"
+    assert ressources[0].url == URL_REELLE_VIDEO
+
+
+def test_ressources_ignorees_video_plus_document_ne_rend_pas_le_document():
+    # Le document est deja rendu par fichiers_depuis_html : le rendre ici
+    # aussi produirait un doublon entre telecharge et ignore.
+    html = f'<a href="{LIEN_VIDEO}">Capsule 1</a><a href="{LIEN_TRACEUR}">Document</a>'
+    ressources = ressources_ignorees_depuis_html(html)
+    assert len(ressources) == 1
+    assert ressources[0].genre == "video"
+
+
+def test_ressources_ignorees_traceur_inconnu():
+    # C'est le garde-fou qui compte le plus : sans lui, un futur traceur
+    # disparaitrait en silence, comme les videos avant l'ajout de ce module.
+    html = f'<a href="{LIEN_TRACEUR_INCONNU}">Sondage</a>'
+    ressources = ressources_ignorees_depuis_html(html)
+    assert len(ressources) == 1
+    assert ressources[0].genre == "traceur-inconnu"
+    assert ressources[0].nom == "sondage.html"
+
+
+def test_ressources_ignorees_lien_externe_dans_le_corps():
+    html = (
+        '<div class="ul_customizablePanelTabbed_body">'
+        '<a href="https://www.oiq.qc.ca/doc.pdf">Document de l\'ordre</a>'
+        "</div>"
+    )
+    ressources = ressources_ignorees_depuis_html(html)
+    assert len(ressources) == 1
+    assert ressources[0].genre == "externe"
+    assert ressources[0].nom == "Document de l'ordre"
+    assert ressources[0].url == "https://www.oiq.qc.ca/doc.pdf"
+
+
+def test_ressources_ignorees_lien_externe_hors_du_corps_ignore():
+    # Piege mesure : Outlook et le mobilier de plateforme vivent hors du
+    # conteneur de corps. Les consigner noierait le manifeste de doublons.
+    html = (
+        '<a href="https://outlook.office.com/mail">Courriel</a>'
+        '<div class="ul_customizablePanelTabbed_body"></div>'
+    )
+    assert ressources_ignorees_depuis_html(html) == []
+
+
+def test_ressources_ignorees_absence_du_conteneur_de_corps():
+    # Mieux vaut manquer un lien externe que tout prendre en son absence.
+    html = '<a href="https://www.oiq.qc.ca/doc.pdf">Document</a>'
+    assert ressources_ignorees_depuis_html(html) == []
+
+
+def test_ressources_ignorees_dedoublonne_par_url():
+    # Cas reel : une icone puis un texte pointent vers le meme traceur.
+    html = f'<a href="{LIEN_VIDEO}"></a><a href="{LIEN_VIDEO}">Capsule 1</a>'
+    assert len(ressources_ignorees_depuis_html(html)) == 1
+
+
+def test_ressources_ignorees_ignore_ancre_et_javascript():
+    html = (
+        '<div class="ul_customizablePanelTabbed_body">'
+        '<a href="#">Haut de page</a>'
+        '<a href="javascript:void(0)">Cliquer</a>'
+        "</div>"
+    )
+    assert ressources_ignorees_depuis_html(html) == []
 
 
 def test_resultats_ligne_d_evaluation():

@@ -37,6 +37,12 @@ def verifier(racine: Path) -> dict:
     disque ne correspond pas a celle consignee. Une taille illisible n'entre
     ni dans l'une ni dans l'autre : elle est simplement hors de portee du
     controle, pas une anomalie constatee.
+
+    CRITIQUE : seules les entrees de statut "ok" sont controlees. Une
+    ressource ignoree (video, lien externe, traceur inconnu -- voir
+    Fichier.genre) n'a jamais ete ecrite sur disque ; sans ce filtre, chacune
+    serait comptee comme un fichier manquant, et une archive parfaitement
+    saine serait annoncee incomplete.
     """
     racine = Path(racine)
     entrees = Manifeste(racine).charger()
@@ -45,6 +51,9 @@ def verifier(racine: Path) -> dict:
     taille_incorrecte: list[str] = []
 
     for relatif, ligne in entrees.items():
+        if ligne.get("statut") != "ok":
+            continue
+
         chemin_str = chemin_long(racine / relatif)
         if not os.path.exists(chemin_str):
             manquants.append(relatif)

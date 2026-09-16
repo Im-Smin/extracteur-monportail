@@ -249,17 +249,66 @@ class Archiveur:
             )
 
     def _parcourir_le_menu(self, cours, base: Path) -> None:
-        from extracteur.extraction import fichiers_depuis_html
+        from extracteur.extraction import fichiers_depuis_html, ressources_ignorees_depuis_html
 
         def traiter(libelle, html):
             dossier = base / "Documents" / _segment(libelle)
             for fichier in fichiers_depuis_html(html):
                 self._recuperer(cours, fichier, dossier)
+            # Le HTML de la section est deja en main : aucune navigation
+            # supplementaire n'est necessaire pour en tirer les ressources
+            # ignorees, contrairement au repere par idPage des modules.
+            self._consigner_ignorees(cours, ressources_ignorees_depuis_html(html), dossier)
 
             cible = base / "Pages" / _segment(f"{libelle}.pdf")
             self._capturer_page_courante(cours, cible)
 
         self.ena.parcourir_menu(cours, traiter)
+
+    def _consigner_page_courante(self, cours, dossier: Path) -> None:
+        """Ressources ignorees (videos, liens externes, traceurs inconnus) de
+        la page DEJA affichee, consignees sans navigation supplementaire ni
+        telechargement.
+
+        Isolee comme _capturer_page_courante : une lecture ratee ne coute que
+        cette page, jamais le module ni le cours. SessionExpiree n'est jamais
+        isolee ici : elle doit remonter jusqu'a archiver(), qui met la file en
+        pause plutot que de la traiter comme un echec ordinaire.
+        """
+        try:
+            ressources = self.ena.ressources_ignorees_page_courante()
+        except SessionExpiree:
+            raise
+        except ErreurPlaywright as erreur:
+            self.resultat.echecs.append(
+                Echec(cours=cours.dossier(), element=dossier.name, cause=str(erreur))
+            )
+            return
+        self._consigner_ignorees(cours, ressources, dossier)
+
+    def _consigner_ignorees(self, cours, ressources, dossier: Path) -> None:
+        """Inscrit au manifeste les ressources deliberement non telechargees,
+        sans jamais rien ecrire sur disque pour elles.
+
+        Le chemin consigne est celui ou le fichier SERAIT alle -- le dossier
+        de la page, plus son nom -- pour que l'utilisateur sache a quel cours
+        et a quel onglet une ressource ignoree se rattache, une fois la
+        plateforme fermee. Taille et empreinte restent vides : rien n'a ete
+        telecharge, il n'y a rien a mesurer.
+
+        Isolee comme le reste de l'archivage : une ressource qui ne peut pas
+        etre consignee (ecriture du manifeste bloquee, par exemple) ne doit
+        jamais couter le module ni le cours.
+        """
+        for ressource in ressources:
+            nom = tronquer(nom_sur(ressource.nom))
+            relatif = self._relatif(dossier / nom)
+            try:
+                self.manifeste.ajouter(relatif, "", "", ressource.url, statut=ressource.genre)
+            except OSError as erreur:
+                self.resultat.echecs.append(
+                    Echec(cours=cours.dossier(), element=nom, cause=str(erreur), url=ressource.url)
+                )
 
     def _capturer_page_courante(self, cours, destination: Path) -> None:
         """Imprime la page telle qu'elle est deja affichee, sans renaviguer.
@@ -363,6 +412,7 @@ class Archiveur:
 
         if sur_la_page:
             self._capturer_page_courante(cours, cible_pdf)
+            self._consigner_page_courante(cours, dossier)
         else:
             # Lecture echouee : le navigateur n'est PAS sur la bonne page.
             # Imprimer la page courante produirait un PDF d'apparence valide
@@ -413,6 +463,12 @@ class Archiveur:
         fichier, ni l'evaluation ni le cours. Le telechargement des pieces
         jointes deja trouvees est lui-meme isole fichier par fichier, via
         _recuperer/_telecharger.
+
+        obtenir_fichiers vient de naviguer vers `chemin` : le navigateur y
+        est encore juste apres cet appel, ce qui permet de consigner les
+        ressources ignorees de cette meme page sans navigation
+        supplementaire -- avant que capturer_pdf, plus bas, ne navigue a
+        nouveau pour l'impression.
         """
         try:
             fichiers = obtenir_fichiers(evaluation)
@@ -425,6 +481,7 @@ class Archiveur:
         else:
             for fichier in fichiers:
                 self._recuperer(cours, fichier, dossier)
+            self._consigner_page_courante(cours, dossier)
 
         destination = dossier / nom_pdf
         if destination.exists():

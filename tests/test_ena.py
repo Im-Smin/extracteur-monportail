@@ -2192,3 +2192,39 @@ def test_capturer_pdf_page_courante_refuse_une_page_non_authentifiee(tmp_path):
     with pytest.raises(SessionExpiree):
         ena.capturer_pdf_page_courante(tmp_path / "sortie.pdf")
 
+
+def test_ressources_ignorees_page_courante_ne_navigue_pas():
+    # Meme motif que capturer_pdf_page_courante : le navigateur est deja sur
+    # la bonne page (on vient d'y lire les fichiers), la recharger couterait
+    # un aller-retour ADF de plusieurs secondes pour rien.
+    lien_video = (
+        "/analytique/evenement/multimedia.mp4?idFichier=1&idSite=100001"
+        "&url=%2Fcontenu%2Fsitescours%2Fx%2Fcapsule.mp4"
+    )
+    session = SessionFactice({})
+    ena = Ena(session)
+    session.page.goto(
+        "https://sitescours.monportail.ulaval.ca/ena/site/module?idSite=100001&idModule=1"
+    )
+    session.page._html = f'<a href="{lien_video}">Capsule</a>'
+    session.page.content = lambda: session.page._html
+    avant = len(session.page.visitees)
+
+    ressources = ena.ressources_ignorees_page_courante()
+
+    assert len(session.page.visitees) == avant
+    assert len(ressources) == 1
+    assert ressources[0].genre == "video"
+
+
+def test_ressources_ignorees_page_courante_refuse_une_page_non_authentifiee():
+    # Meme garde-fou que capturer_pdf_page_courante : sans lui, une session
+    # expiree ferait lire silencieusement la page de connexion, rendant une
+    # liste vide de ressources ignorees plutot que de signaler l'interruption.
+    session = SessionFactice({})
+    session.page = PageNonAuthentifiee({})
+    ena = Ena(session)
+
+    with pytest.raises(SessionExpiree):
+        ena.ressources_ignorees_page_courante()
+

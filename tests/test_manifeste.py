@@ -27,6 +27,16 @@ def test_par_url_retrouve_l_entree(tmp_path):
     assert Manifeste(tmp_path).par_url("/contenu/inconnu.pdf") is None
 
 
+def test_par_url_ignore_les_entrees_non_ok(tmp_path):
+    # Une ressource ignoree (video, lien externe, traceur inconnu) n'a jamais
+    # ete ecrite sur disque : l'indexer par url ferait croire a une reprise
+    # sur un fichier qui n'existe pas.
+    manifeste = Manifeste(tmp_path)
+    manifeste.ajouter("Documents/capsule.mp4", "", "", "/contenu/capsule.mp4", "video")
+
+    assert Manifeste(tmp_path).par_url("/contenu/capsule.mp4") is None
+
+
 def test_deja_archive(tmp_path):
     manifeste = Manifeste(tmp_path)
     manifeste.ajouter("a.pdf", 1, "x", "/contenu/a.pdf", "ok")

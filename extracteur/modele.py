@@ -86,6 +86,12 @@ class PageDeModule:
 class Fichier:
     nom: str
     url: str
+    # "document" (telecharge, comportement d'avant ce champ), "video" (traceur
+    # multimedia.mp4, jamais telechargee sur decision de l'utilisateur),
+    # "externe" (lien hors monPortail trouve dans le corps du contenu), ou
+    # "traceur-inconnu" (garde-fou : un traceur d'analytique que le code ne
+    # sait pas encore classer -- voir extraction.ressources_ignorees_depuis_html).
+    genre: str = "document"
 
     def est_interne(self) -> bool:
         """Vrai si la ressource est hebergee par monPortail et doit etre telechargee."""

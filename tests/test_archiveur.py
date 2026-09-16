@@ -24,6 +24,7 @@ class EnaFactice:
         fichiers_description=None,
         fichiers_resultats_evaluation=None,
         erreur_capture_pdf_pour=(),
+        ressources_ignorees=None,
     ):
         self._fichiers = fichiers or []
         self._depots = depots if depots is not None else []
@@ -32,6 +33,7 @@ class EnaFactice:
         self._fichiers_description = fichiers_description or []
         self._fichiers_resultats_evaluation = fichiers_resultats_evaluation or []
         self._erreur_capture_pdf_pour = erreur_capture_pdf_pour
+        self._ressources_ignorees = ressources_ignorees or []
         self.pdf_captures = []
         self.plans_captures = []
 
@@ -78,6 +80,9 @@ class EnaFactice:
         # distingue.
         self.pdf_captures.append(destination)
         self._ecrire_pdf(destination)
+
+    def ressources_ignorees_page_courante(self):
+        return self._ressources_ignorees
 
     def _ecrire_pdf(self, destination):
         if destination.name in self._erreur_capture_pdf_pour:
@@ -389,6 +394,119 @@ def test_trop_de_pages_dans_un_module_est_isole(tmp_path):
     # Le reste du cours (plan de cours, evaluations...) reste archive.
     base = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique"
     assert (base / "Plan de cours" / "plan-de-cours.pdf").exists()
+
+
+# --- Consignation des ressources ignorees (videos, liens externes, traceurs
+# inconnus) : jamais telechargees, mais tracees au manifeste avec statut
+# egal a leur genre, chemin, taille et sha256 vides. ---
+
+
+def test_video_consignee_au_manifeste_sans_telechargement(tmp_path):
+    from extracteur.manifeste import Manifeste
+
+    video = Fichier(
+        nom="capsule.mp4",
+        url="/contenu/sitescours/x/capsule.mp4?identifiant=a",
+        genre="video",
+    )
+    ena = EnaFactice(ressources_ignorees=[video])
+
+    resultat = Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
+
+    dossier = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "Documents" / "Module 1"
+    assert not (dossier / "capsule.mp4").exists()
+    assert resultat.fichiers_ecrits == 0
+
+    entrees = Manifeste(tmp_path).charger()
+    relatif = str((dossier / "capsule.mp4").relative_to(tmp_path)).replace("\\", "/")
+    assert entrees[relatif]["statut"] == "video"
+    assert entrees[relatif]["url"] == video.url
+    assert entrees[relatif]["taille"] == ""
+    assert entrees[relatif]["sha256"] == ""
+
+
+def test_deux_videos_dans_un_module_produisent_deux_lignes_de_manifeste(tmp_path):
+    # Ce que l'utilisateur verifiera : un module portant deux capsules video
+    # produit deux lignes de manifeste, statut=video, avec leur url reelle.
+    # Sans evaluation ici, pour isoler le seul point d'accrochage du module :
+    # EnaFactice rend les memes ressources ignorees a chaque page consultee.
+    class EnaModuleAvecDeuxVideos(EnaFactice):
+        def evaluations(self, cours):
+            return []
+
+    premiere = Fichier(nom="c1.mp4", url="/contenu/sitescours/x/c1.mp4", genre="video")
+    seconde = Fichier(nom="c2.mp4", url="/contenu/sitescours/x/c2.mp4", genre="video")
+    ena = EnaModuleAvecDeuxVideos(ressources_ignorees=[premiere, seconde])
+
+    Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
+
+    from extracteur.manifeste import Manifeste
+
+    entrees = Manifeste(tmp_path).charger()
+    lignes_video = [ligne for ligne in entrees.values() if ligne["statut"] == "video"]
+    assert len(lignes_video) == 2
+    assert {ligne["url"] for ligne in lignes_video} == {premiere.url, seconde.url}
+
+
+def test_lien_externe_et_traceur_inconnu_consignes_avec_leur_genre(tmp_path):
+    from extracteur.manifeste import Manifeste
+
+    externe = Fichier(nom="Doc de l'ordre", url="https://www.oiq.qc.ca/doc.pdf", genre="externe")
+    inconnu = Fichier(nom="sondage.html", url="/contenu/sitescours/x/sondage.html", genre="traceur-inconnu")
+    ena = EnaFactice(ressources_ignorees=[externe, inconnu])
+
+    Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
+
+    entrees = Manifeste(tmp_path).charger()
+    statuts = {ligne["statut"] for ligne in entrees.values()}
+    assert "externe" in statuts
+    assert "traceur-inconnu" in statuts
+
+
+def test_verifier_ne_signale_aucune_anomalie_sur_des_videos_ignorees(tmp_path):
+    # Preuve integrale demandee : --verifier sur une archive ne comportant
+    # que des ressources ignorees doit rendre zero anomalie.
+    from extracteur.verification import verifier
+
+    video = Fichier(nom="capsule.mp4", url="/contenu/sitescours/x/capsule.mp4", genre="video")
+    ena = EnaFactice(ressources_ignorees=[video])
+    Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
+
+    rapport = verifier(tmp_path)
+
+    assert rapport["manquants"] == []
+    assert rapport["taille_incorrecte"] == []
+
+
+def test_ressource_ignoree_illisible_au_manifeste_n_emporte_pas_le_module(tmp_path):
+    # Isolation : une ressource ignoree qui ne peut pas etre consignee (ici,
+    # l'ecriture du manifeste echoue) ne doit jamais couter le module ni le
+    # cours -- meme principe que le reste de l'archivage.
+    class ManifesteQuiRefuseLesIgnorees:
+        def __init__(self, appels):
+            self._appels = appels
+
+        def par_url(self, url):
+            return None
+
+        def ajouter(self, chemin_relatif, taille, sha256, url, statut="ok"):
+            self._appels.append(statut)
+            if statut != "ok":
+                raise OSError("manifeste verrouille")
+
+    fichier = Fichier(nom="a.pdf", url="/contenu/sitescours/x/a.pdf?identifiant=a")
+    video = Fichier(nom="capsule.mp4", url="/contenu/sitescours/x/capsule.mp4", genre="video")
+    ena = EnaFactice([fichier], ressources_ignorees=[video])
+    archiveur = Archiveur(ena, transport_ok, tmp_path, queue.Queue())
+    appels = []
+    archiveur.manifeste = ManifesteQuiRefuseLesIgnorees(appels)
+
+    resultat = archiveur.archiver([COURS])
+
+    dossier = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "Documents" / "Module 1"
+    assert (dossier / "a.pdf").exists()
+    assert resultat.fichiers_ecrits == 1
+    assert any(e.element == "capsule.mp4" for e in resultat.echecs)
 
 
 def test_evenements_emis(tmp_path):
