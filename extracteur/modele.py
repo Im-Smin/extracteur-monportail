@@ -44,6 +44,39 @@ class Module:
 
 
 @dataclass(frozen=True)
+class Onglet:
+    """Un onglet de la barre d'une page de module (voir docs/api-monportail.md,
+    etape 3 : « Général », « Contenu du module », etc.).
+
+    id_page est l'identifiant qu'il faut passer en parametre idPage de l'URL
+    du module pour visiter cet onglet precis : sans lui, le serveur ADF sert
+    un onglet imprevisible (le dernier consulte dans la session).
+    """
+
+    id_page: str
+    titre: str
+    rang: int = 0
+
+
+@dataclass(frozen=True)
+class PageDeModule:
+    """Une page reellement servie par le parcours en largeur des onglets
+    d'un module (voir Ena.pages_du_module et docs/api-monportail.md, etape 3).
+
+    chemin est la suite des titres d'onglets selectionnes menant a cette
+    page, du niveau 1 vers le plus profond -- tuple vide pour un module qui
+    ne porte aucune barre d'onglets (comportement d'avant l'ajout des
+    onglets, conserve tel quel : une seule page, sans sous-dossier).
+    id_page est None dans ce meme cas ; sinon l'identifiant de la feuille
+    reellement servie, a repasser tel quel a Ena.fichiers_du_module et a
+    URL.module pour revisiter exactement cette page.
+    """
+
+    id_page: str | None
+    chemin: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class Fichier:
     nom: str
     url: str
