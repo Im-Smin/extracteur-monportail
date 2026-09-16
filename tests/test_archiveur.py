@@ -7,7 +7,7 @@ from playwright.sync_api import Error as ErreurPlaywright
 
 from extracteur.archiveur import Archiveur
 from extracteur.manifeste import COLONNES
-from extracteur.modele import Cours, Depot, Evaluation, Fichier, Module, Note, Session
+from extracteur.modele import Cours, Depot, Evaluation, Fichier, Module, Note, PageDeModule, Session
 from extracteur.telechargement import ErreurPermanente, SessionExpiree
 
 SESSION = Session(code="202601", libelle="Hiver 2026")
@@ -40,8 +40,14 @@ class EnaFactice:
             raise self._erreur
         return [Module(id_site=cours.id_site, id_module="1", titre="Module 1")]
 
-    def fichiers_du_module(self, module):
+    def fichiers_du_module(self, module, id_page=None):
         return self._fichiers
+
+    def pages_du_module(self, module):
+        # Module monte sans barre d'onglets par defaut : conserve le
+        # comportement de tous les tests existants, ecrits avant l'ajout des
+        # onglets (une seule page racine, sans chemin).
+        return [PageDeModule(id_page=None, chemin=())]
 
     def evaluations(self, cours):
         return [Evaluation(id_site=cours.id_site, id_evaluation="9", titre="TP1")]
@@ -217,6 +223,161 @@ def test_pages_capturees_en_pdf(tmp_path):
     ena = EnaFactice()
     Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
     assert any("Pages" in str(p) for p in ena.pdf_captures)
+
+
+class EnaAvecPages(EnaFactice):
+    """Module dont pages_du_module rend plusieurs pages (onglets simples ou
+    imbriques -- voir docs/api-monportail.md, etape 3) : fichiers_du_module
+    est cable sur id_page pour rendre le bon contenu par page, comme le
+    ferait ena.py en session reelle. `erreur_id_page`, quand fourni, fait
+    echouer fichiers_du_module (navigation Playwright) pour cette seule page
+    -- reproduit une page illisible sans affecter les autres."""
+
+    def __init__(self, pages, fichiers_par_id_page, erreur_id_page=None):
+        super().__init__()
+        self._pages = pages
+        self._fichiers_par_id_page = fichiers_par_id_page
+        self._erreur_id_page = erreur_id_page
+
+    def pages_du_module(self, module):
+        return self._pages
+
+    def fichiers_du_module(self, module, id_page=None):
+        if id_page is not None and id_page == self._erreur_id_page:
+            raise ErreurPlaywright(f"page illisible : idPage={id_page}")
+        return self._fichiers_par_id_page.get(id_page, [])
+
+
+def test_module_sans_onglets_garde_l_arborescence_actuelle(tmp_path):
+    # Un module sans barre d'onglets est un montage legitime : comportement
+    # inchange, aucun sous-dossier d'onglet ne doit apparaitre.
+    fichier = Fichier(nom="a.pdf", url="/contenu/sitescours/x/a.pdf?identifiant=a")
+    ena = EnaFactice([fichier])
+
+    Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
+
+    base = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique"
+    assert (base / "Documents" / "Module 1" / "a.pdf").exists()
+    assert (base / "Pages" / "Module 1.pdf").exists()
+    assert not (base / "Documents" / "Module 1" / "Général").exists()
+
+
+def test_module_avec_un_seul_niveau_d_onglets_range_fichiers_et_pdf_par_onglet(tmp_path):
+    fichier_general = Fichier(nom="a.pdf", url="/contenu/sitescours/x/a.pdf?identifiant=a")
+    fichier_contenu = Fichier(nom="b.pdf", url="/contenu/sitescours/x/b.pdf?identifiant=b")
+    pages = [
+        PageDeModule(id_page="1", chemin=("Général",)),
+        PageDeModule(id_page="2", chemin=("Contenu du module",)),
+    ]
+    ena = EnaAvecPages(
+        pages=pages,
+        fichiers_par_id_page={"1": [fichier_general], "2": [fichier_contenu]},
+    )
+
+    resultat = Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
+
+    base = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique"
+    assert (base / "Documents" / "Module 1" / "Général" / "a.pdf").exists()
+    assert (base / "Documents" / "Module 1" / "Contenu du module" / "b.pdf").exists()
+    assert (base / "Pages" / "Module 1 - Général.pdf").exists()
+    assert (base / "Pages" / "Module 1 - Contenu du module.pdf").exists()
+    assert resultat.fichiers_ecrits == 2
+
+
+def test_module_avec_onglets_imbriques_range_fichiers_et_pdf_sur_deux_niveaux(tmp_path):
+    # GMC-1000 (idSite=146001, idModule=1310231) : deux niveaux d'onglets
+    # empiles, avec deux feuilles distinctes ("Vues orthogonales", "Coupes")
+    # partageant le meme onglet de niveau 1 ("Théorie et dessin à la main"),
+    # et un onglet de niveau 1 sans enfant ("AutoCAD").
+    fichier_vues = Fichier(nom="vues.pdf", url="/contenu/sitescours/x/vues.pdf?identifiant=a")
+    fichier_coupes = Fichier(nom="coupes.pdf", url="/contenu/sitescours/x/coupes.pdf?identifiant=b")
+    fichier_autocad = Fichier(nom="dwg.pdf", url="/contenu/sitescours/x/dwg.pdf?identifiant=c")
+    pages = [
+        PageDeModule(id_page="3550445", chemin=("Théorie et dessin à la main", "Vues orthogonales")),
+        PageDeModule(id_page="3550448", chemin=("Théorie et dessin à la main", "Coupes")),
+        PageDeModule(id_page="3550451", chemin=("AutoCAD",)),
+    ]
+    ena = EnaAvecPages(
+        pages=pages,
+        fichiers_par_id_page={
+            "3550445": [fichier_vues],
+            "3550448": [fichier_coupes],
+            "3550451": [fichier_autocad],
+        },
+    )
+
+    resultat = Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
+
+    base = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Documents" / "Module 1"
+    assert (base / "Théorie et dessin à la main" / "Vues orthogonales" / "vues.pdf").exists()
+    assert (base / "Théorie et dessin à la main" / "Coupes" / "coupes.pdf").exists()
+    assert (base / "AutoCAD" / "dwg.pdf").exists()
+
+    pages_pdf = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique" / "Pages"
+    assert (pages_pdf / "Module 1 - Théorie et dessin à la main - Vues orthogonales.pdf").exists()
+    assert (pages_pdf / "Module 1 - Théorie et dessin à la main - Coupes.pdf").exists()
+    assert (pages_pdf / "Module 1 - AutoCAD.pdf").exists()
+    assert resultat.fichiers_ecrits == 3
+
+
+def test_page_de_module_en_echec_est_isolee_des_autres_pages_du_module(tmp_path):
+    # Une page illisible ne doit couter qu'elle, ni les autres pages du meme
+    # module, ni le module, ni le cours.
+    fichier_contenu = Fichier(nom="b.pdf", url="/contenu/sitescours/x/b.pdf?identifiant=b")
+    pages = [
+        PageDeModule(id_page="1", chemin=("Général",)),
+        PageDeModule(id_page="2", chemin=("Contenu du module",)),
+    ]
+    ena = EnaAvecPages(
+        pages=pages,
+        fichiers_par_id_page={"2": [fichier_contenu]},
+        erreur_id_page="1",
+    )
+
+    resultat = Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
+
+    assert any(e.element == "Module 1 - Général" for e in resultat.echecs)
+    base = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique"
+    assert (base / "Documents" / "Module 1" / "Contenu du module" / "b.pdf").exists()
+    assert not (base / "Documents" / "Module 1" / "Général").exists()
+
+
+def test_session_expiree_pendant_une_page_de_module_ne_devient_pas_echec_ordinaire(tmp_path):
+    # Meme garde-fou que pour la boucle des modules : une session expiree
+    # pendant la lecture d'une page de module doit remonter intacte, jamais
+    # avalee par l'isolation par page ni par cours.
+    class EnaSessionExpireeSurPage(EnaAvecPages):
+        def fichiers_du_module(self, module, id_page=None):
+            raise SessionExpiree("page de connexion")
+
+    pages = [PageDeModule(id_page="1", chemin=("Général",))]
+    ena = EnaSessionExpireeSurPage(pages=pages, fichiers_par_id_page={})
+    evenements = queue.Queue()
+    archiveur = Archiveur(ena, transport_ok, tmp_path, evenements)
+
+    with pytest.raises(SessionExpiree):
+        archiveur.archiver([COURS])
+
+    assert archiveur.resultat.echecs == []
+
+
+def test_trop_de_pages_dans_un_module_est_isole(tmp_path):
+    # Une structure d'onglets pathologique ou cyclique (TropDePagesDansUnModule,
+    # voir ena.py) ne doit couter que ce module, jamais le reste du cours.
+    from extracteur.ena import TropDePagesDansUnModule
+
+    class EnaAvecTropDePages(EnaFactice):
+        def pages_du_module(self, module):
+            raise TropDePagesDansUnModule("module 1 : plus de 60 pages retenues")
+
+    resultat = Archiveur(
+        EnaAvecTropDePages(), transport_ok, tmp_path, queue.Queue()
+    ).archiver([COURS])
+
+    assert any(e.element == "Module 1" for e in resultat.echecs)
+    # Le reste du cours (plan de cours, evaluations...) reste archive.
+    base = tmp_path / "2026-1 Hiver" / "PHI-3900 Éthique"
+    assert (base / "Plan de cours" / "plan-de-cours.pdf").exists()
 
 
 def test_evenements_emis(tmp_path):

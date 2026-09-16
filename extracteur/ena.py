@@ -21,20 +21,46 @@ from extracteur.extraction import (
     est_commande_adf,
     fichiers_depuis_html,
     modules_depuis_html,
+    onglets_depuis_html,
+    onglets_selectionnes_depuis_html,
     resultats_depuis_html,
     sections_du_menu,
     session_depuis_libelle,
 )
-from extracteur.modele import Cours, Evaluation, Session
+from extracteur.modele import Cours, Evaluation, PageDeModule, Session
 from extracteur.telechargement import SessionExpiree
 
 BASE = "https://sitescours.monportail.ulaval.ca"
-ONGLET_CONTENU = "text=Contenu du module"
 
 # Marqueur textuel confirmant qu'une page est bien un plan de cours, et non
 # une redirection tombee sur l'accueil. Compare sans accents ni casse : voir
 # _contient_marqueur_plan_de_cours.
 MARQUEUR_PLAN_DE_COURS = "plan de cours"
+
+# Borne dure de securite sur le nombre de pages DISTINCTES retenues par
+# Ena.pages_du_module. L'algorithme (parcours en largeur par idPage, indexe
+# par la feuille reellement servie) termine de lui-meme des que l'ensemble
+# des feuilles vues couvre toute la hierarchie reelle -- fini par
+# construction sur un module reel (GMC-1000 : 3 onglets de niveau 1 x
+# jusqu'a 6 de niveau 2, soit 18 feuilles). Une structure qui ne se
+# stabiliserait jamais (bogue de ce parcours, ou DOM totalement inattendu)
+# ne doit pas pour autant bloquer indefiniment tout l'archivage du cours sur
+# un seul module : voir TropDePagesDansUnModule.
+LIMITE_PAGES_MODULE = 60
+
+
+class TropDePagesDansUnModule(Exception):
+    """Le parcours des onglets d'un module (Ena.pages_du_module) a retenu
+    plus de LIMITE_PAGES_MODULE pages distinctes sans jamais se stabiliser.
+
+    En usage normal, le parcours termine de lui-meme : l'ensemble des pages
+    deja vues est fini et empeche tout cycle. Au-dela de cette borne, soit la
+    structure d'onglets observee est pathologique, soit le DOM ne correspond
+    plus a ce que ce parcours attend. Continuer indefiniment bloquerait tout
+    l'archivage du cours sur un seul module ; on leve donc bruyamment, charge
+    a l'appelant (Archiveur) de consigner un Echec isole sur ce seul module
+    et de poursuivre les autres.
+    """
 
 
 class URL:
@@ -49,8 +75,18 @@ class URL:
         return f"/ena/site/modules?idSite={id_site}"
 
     @staticmethod
-    def module(id_site: str, id_module: str) -> str:
-        return f"/ena/site/module?idSite={id_site}&idModule={id_module}&editionModule=false"
+    def module(id_site: str, id_module: str, id_page: str | None = None) -> str:
+        """URL de la page d'un module, sur un onglet precis si id_page est fourni.
+
+        Sans idPage, le serveur ADF sert l'onglet imprevisible (le dernier
+        consulte dans la session) : voir docs/api-monportail.md, etape 3. Les
+        appels existants, sans id_page, produisent l'URL exacte d'avant ce
+        parametre.
+        """
+        base = f"/ena/site/module?idSite={id_site}&idModule={id_module}&editionModule=false"
+        if id_page:
+            return f"{base}&idPage={id_page}"
+        return base
 
     @staticmethod
     def evaluations(id_site: str) -> str:
@@ -706,19 +742,78 @@ class Ena:
         self._assurer_authentifie()
         return modules_depuis_html(html, cours.id_site)
 
-    def fichiers_du_module(self, module) -> list:
-        self._visiter(URL.module(module.id_site, module.id_module))
+    def fichiers_du_module(self, module, id_page: str | None = None) -> list:
+        """Fichiers d'un module, sur un onglet precis si id_page est fourni.
+
+        L'onglet est adressable par URL (voir docs/api-monportail.md, etape
+        3) : aucun clic ADF n'est necessaire. Sans id_page, l'onglet servi
+        est celui par defaut du serveur ADF -- comportement d'avant l'ajout
+        des onglets, conserve pour les appelants qui ne les distinguent pas.
+        """
+        html = self._visiter(URL.module(module.id_site, module.id_module, id_page))
         self._assurer_authentifie()
+        return fichiers_depuis_html(html)
 
-        # L'onglet « Contenu du module » est un lien ADF : les documents ne
-        # sont pas dans le DOM avant le clic. Son absence n'est pas une erreur.
-        try:
-            self.session.page.click(ONGLET_CONTENU, timeout=5000)
-            self.session.page.wait_for_timeout(1500)
-        except (ErreurDelaiPlaywright, ErreurPlaywright):
-            pass
+    def pages_du_module(self, module) -> list[PageDeModule]:
+        """Parcours en largeur des onglets d'un module, par identifiant de
+        page, et rend une PageDeModule par feuille reellement atteinte.
 
-        return fichiers_depuis_html(self.session.page.content())
+        Une page de module peut porter plusieurs barres d'onglets empilees
+        (voir docs/api-monportail.md, etape 3) : une barre de second niveau
+        n'existe dans le DOM que si son onglet parent, au niveau precedent,
+        est selectionne. On ne peut donc pas tout enumerer d'une seule
+        visite ; ce parcours visite chaque onglet decouvert par son propre
+        idPage pour reveler les niveaux plus profonds qu'il ne peut pas
+        encore voir.
+
+        Naviguer vers l'idPage d'un onglet PARENT redescend automatiquement
+        sur sa premiere feuille (verifie en inspection reelle, regle 3) :
+        l'identifiant demande (id_demande) et celui reellement servi
+        (id_reel, lu dans le DOM apres navigation via
+        onglets_selectionnes_depuis_html) peuvent donc differer. `vus` est
+        indexe par id_reel, jamais par id_demande, pour reconnaitre ces
+        redescentes vers une feuille deja traitee et ne pas la retraiter :
+        sans cette distinction, la file ne se viderait jamais.
+
+        Un module sans aucune barre d'onglets est un montage legitime (voir
+        docs/api-monportail.md) : rend une liste a un seul element
+        (id_page=None, chemin=()), comportement d'avant l'ajout des onglets,
+        conserve tel quel.
+
+        Leve TropDePagesDansUnModule des que LIMITE_PAGES_MODULE pages
+        distinctes ont ete retenues sans que la file ne se soit videe : voir
+        sa docstring pour ce que cette borne protege.
+        """
+        a_visiter: list[str | None] = [None]
+        vus: set[str | None] = set()
+        pages: list[PageDeModule] = []
+
+        while a_visiter:
+            if len(pages) >= LIMITE_PAGES_MODULE:
+                raise TropDePagesDansUnModule(
+                    f"module {module.id_module} : plus de "
+                    f"{LIMITE_PAGES_MODULE} pages d'onglets distinctes "
+                    "retenues -- structure pathologique ou cyclique."
+                )
+
+            id_demande = a_visiter.pop(0)
+            html = self._visiter(URL.module(module.id_site, module.id_module, id_demande))
+            self._assurer_authentifie()
+
+            chaine = onglets_selectionnes_depuis_html(html)
+            id_reel = chaine[-1].id_page if chaine else None
+
+            if id_reel in vus:
+                continue
+            vus.add(id_reel)
+
+            pages.append(PageDeModule(id_page=id_reel, chemin=tuple(o.titre for o in chaine)))
+
+            for onglet in onglets_depuis_html(html):
+                if onglet.id_page not in vus:
+                    a_visiter.append(onglet.id_page)
+
+        return pages
 
     def evaluations(self, cours) -> list:
         html = self._visiter(URL.evaluations(cours.id_site))

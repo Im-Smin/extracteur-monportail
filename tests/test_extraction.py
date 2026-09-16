@@ -5,6 +5,8 @@ from extracteur.extraction import (
     fichiers_depuis_html,
     modules_depuis_html,
     nom_depuis_url,
+    onglets_depuis_html,
+    onglets_selectionnes_depuis_html,
     resultats_depuis_html,
     sections_du_menu,
     session_depuis_libelle,
@@ -858,6 +860,254 @@ def test_depots_depuis_html_html_reel_boite_de_depot_phi3900():
 
 def test_depots_depuis_html_page_sans_tableau():
     assert depots_depuis_html("<p>Aucun document</p>") == []
+
+
+# Fragment HTML reel de la barre d'onglets d'une page de module, releve par
+# inspection directe du site (voir docs/api-monportail.md, etape 3). L'onglet
+# actif porte en plus la classe p_AFSelected ; le nom vit dans l'attribut
+# title du lien, jamais dans son texte (innerText est parfois vide).
+HTML_BARRE_ONGLETS = """
+<div class="ul_customizablePanelTabbed_tabs" id="r1:0:page:tabs::tabs">
+  <span _ulitemid="r1:0:page:t4874492" class="ul_customizablePanelTabbed_tab" style="z-index:4">
+    <span class="ul_customizablePanelTabbed_tab-content">
+      <a id="r1:0:page:t4874492::a" class="ul_customizablePanelTabbed_tab-link" href="#" title="Général">Général</a>
+    </span>
+  </span>
+  <span _ulitemid="r1:0:page:t4874493" class="ul_customizablePanelTabbed_tab p_AFSelected" style="z-index:4">
+    <span class="ul_customizablePanelTabbed_tab-content">
+      <a id="r1:0:page:t4874493::a" class="ul_customizablePanelTabbed_tab-link" href="#" title="Contenu du module">Contenu du module</a>
+    </span>
+  </span>
+</div>
+"""
+
+
+def test_onglets_depuis_html_barre_absente():
+    # Un module monte sans barre d'onglets est legitime (voir
+    # docs/api-monportail.md) : rendre [] plutot que de planter.
+    assert onglets_depuis_html("<html><body>Sans onglets</body></html>") == []
+
+
+def test_onglets_depuis_html_un_seul_onglet():
+    html = """
+    <div class="ul_customizablePanelTabbed_tabs">
+      <span _ulitemid="r1:0:page:t4874493" class="ul_customizablePanelTabbed_tab p_AFSelected">
+        <a class="ul_customizablePanelTabbed_tab-link" href="#" title="Contenu du module">Contenu du module</a>
+      </span>
+    </div>
+    """
+    onglets = onglets_depuis_html(html)
+    assert len(onglets) == 1
+    assert onglets[0].id_page == "4874493"
+    assert onglets[0].titre == "Contenu du module"
+    assert onglets[0].rang == 0
+
+
+def test_onglets_depuis_html_plusieurs_onglets_dans_l_ordre_du_dom():
+    onglets = onglets_depuis_html(HTML_BARRE_ONGLETS)
+    assert len(onglets) == 2
+    assert onglets[0].id_page == "4874492"
+    assert onglets[0].titre == "Général"
+    assert onglets[0].rang == 0
+    assert onglets[1].id_page == "4874493"
+    assert onglets[1].titre == "Contenu du module"
+    assert onglets[1].rang == 1
+
+
+def test_onglets_depuis_html_ignore_un_ulitemid_sans_idpage_exploitable():
+    # _ulitemid malforme (pas de suffixe "t<chiffres>") : l'onglet est ignore,
+    # jamais de plantage -- une barre a moitie lue reste preferable a un
+    # arret complet de l'extraction.
+    html = """
+    <div class="ul_customizablePanelTabbed_tabs">
+      <span _ulitemid="r1:0:page:tabs" class="ul_customizablePanelTabbed_tab">
+        <a class="ul_customizablePanelTabbed_tab-link" href="#" title="Fantôme">Fantôme</a>
+      </span>
+      <span _ulitemid="r1:0:page:t4874493" class="ul_customizablePanelTabbed_tab p_AFSelected">
+        <a class="ul_customizablePanelTabbed_tab-link" href="#" title="Contenu du module">Contenu du module</a>
+      </span>
+    </div>
+    """
+    onglets = onglets_depuis_html(html)
+    assert len(onglets) == 1
+    assert onglets[0].id_page == "4874493"
+    assert onglets[0].rang == 0
+
+
+def test_onglets_depuis_html_ignore_un_ulitemid_absent():
+    html = """
+    <div class="ul_customizablePanelTabbed_tabs">
+      <span class="ul_customizablePanelTabbed_tab">
+        <a class="ul_customizablePanelTabbed_tab-link" href="#" title="Sans identifiant">Sans identifiant</a>
+      </span>
+    </div>
+    """
+    assert onglets_depuis_html(html) == []
+
+
+def test_onglets_depuis_html_repli_sur_le_texte_du_lien_si_title_absent():
+    # innerText est parfois vide sur le DOM reel, mais l'inverse (title
+    # absent, texte present) doit rester exploitable plutot que de perdre
+    # l'onglet.
+    html = """
+    <div class="ul_customizablePanelTabbed_tabs">
+      <span _ulitemid="r1:0:page:t4874493" class="ul_customizablePanelTabbed_tab">
+        <a class="ul_customizablePanelTabbed_tab-link" href="#">Contenu du module</a>
+      </span>
+    </div>
+    """
+    onglets = onglets_depuis_html(html)
+    assert len(onglets) == 1
+    assert onglets[0].titre == "Contenu du module"
+
+
+def test_onglets_depuis_html_repli_sur_l_idpage_si_title_et_texte_absents():
+    html = """
+    <div class="ul_customizablePanelTabbed_tabs">
+      <span _ulitemid="r1:0:page:t4874493" class="ul_customizablePanelTabbed_tab">
+        <a class="ul_customizablePanelTabbed_tab-link" href="#"></a>
+      </span>
+    </div>
+    """
+    onglets = onglets_depuis_html(html)
+    assert len(onglets) == 1
+    assert onglets[0].titre == "4874493"
+
+
+# Reconstitution d'une page de module a deux barres d'onglets empilees,
+# GMC-1000 (idSite=146001, idModule=1310231), inspection reelle du 2026-09-15.
+# Seuls trois _ulitemid ont ete verifies directement : "r1:0:page:t3550444"
+# (niveau 1, "Théorie et dessin à la main", parent selectionne),
+# "r1:0:page:t3550444:z3550444:t3550445" (niveau 2, "Vues orthogonales",
+# premiere feuille -- confirmee par la redescente automatique depuis
+# idPage=3550444) et son suffixe "t3550448" (niveau 2, "Coupes", confirme
+# directement selectionnable). Les autres identifiants de ce fragment
+# (AutoCAD, SolidWorks, et les onglets de niveau 2 autres que Vues
+# orthogonales/Coupes) sont des reconstructions plausibles, non verifiees
+# individuellement, pour completer le fragment dans la meme forme que le
+# fragment plat deja fourni.
+HTML_BARRES_ONGLETS_IMBRIQUEES = """
+<div class="ul_customizablePanelTabbed_tabs" id="r1:0:page:tabs::tabs">
+  <span _ulitemid="r1:0:page:t3550444" class="ul_customizablePanelTabbed_tab p_AFSelected">
+    <a class="ul_customizablePanelTabbed_tab-link" href="#" title="Théorie et dessin à la main">Théorie et dessin à la main</a>
+  </span>
+  <span _ulitemid="r1:0:page:t3550451" class="ul_customizablePanelTabbed_tab">
+    <a class="ul_customizablePanelTabbed_tab-link" href="#" title="AutoCAD">AutoCAD</a>
+  </span>
+  <span _ulitemid="r1:0:page:t3550452" class="ul_customizablePanelTabbed_tab">
+    <a class="ul_customizablePanelTabbed_tab-link" href="#" title="SolidWorks">SolidWorks</a>
+  </span>
+</div>
+<div class="ul_customizablePanelTabbed_tabs" id="r1:0:page:t3550444:z3550444:tabs::tabs">
+  <span _ulitemid="r1:0:page:t3550444:z3550444:t3550445" class="ul_customizablePanelTabbed_tab p_AFSelected">
+    <a class="ul_customizablePanelTabbed_tab-link" href="#" title="Vues orthogonales">Vues orthogonales</a>
+  </span>
+  <span _ulitemid="r1:0:page:t3550444:z3550444:t3550446" class="ul_customizablePanelTabbed_tab">
+    <a class="ul_customizablePanelTabbed_tab-link" href="#" title="Vues isométriques">Vues isométriques</a>
+  </span>
+  <span _ulitemid="r1:0:page:t3550444:z3550444:t3550447" class="ul_customizablePanelTabbed_tab">
+    <a class="ul_customizablePanelTabbed_tab-link" href="#" title="Vues manquantes">Vues manquantes</a>
+  </span>
+  <span _ulitemid="r1:0:page:t3550444:z3550444:t3550448" class="ul_customizablePanelTabbed_tab">
+    <a class="ul_customizablePanelTabbed_tab-link" href="#" title="Coupes">Coupes</a>
+  </span>
+  <span _ulitemid="r1:0:page:t3550444:z3550444:t3550449" class="ul_customizablePanelTabbed_tab">
+    <a class="ul_customizablePanelTabbed_tab-link" href="#" title="Cotation">Cotation</a>
+  </span>
+  <span _ulitemid="r1:0:page:t3550444:z3550444:t3550450" class="ul_customizablePanelTabbed_tab">
+    <a class="ul_customizablePanelTabbed_tab-link" href="#" title="Vues auxiliaires">Vues auxiliaires</a>
+  </span>
+</div>
+"""
+
+
+def test_onglets_depuis_html_ignore_le_premier_segment_t_d_un_ulitemid_imbrique():
+    # Un onglet de second niveau porte plusieurs segments "t<chiffres>" dans
+    # son _ulitemid ("...:t3550444:z3550444:t3550445") : l'idPage utile est
+    # le DERNIER, jamais le premier (qui designe l'onglet parent).
+    onglets = onglets_depuis_html(HTML_BARRES_ONGLETS_IMBRIQUEES)
+    coupes = next(o for o in onglets if o.titre == "Coupes")
+    assert coupes.id_page == "3550448"
+
+
+def test_onglets_depuis_html_rend_les_onglets_de_toutes_les_barres_empilees():
+    # Une page de module peut porter plusieurs barres empilees : la barre de
+    # second niveau n'existe dans le DOM que si son onglet parent est
+    # selectionne. onglets_depuis_html doit rendre les onglets des DEUX
+    # barres, pas seulement la premiere -- sans quoi le parcours (ena.py) ne
+    # decouvrirait jamais les onglets de second niveau.
+    onglets = onglets_depuis_html(HTML_BARRES_ONGLETS_IMBRIQUEES)
+    assert len(onglets) == 9  # 3 de niveau 1 + 6 de niveau 2
+    assert [o.id_page for o in onglets] == [
+        "3550444", "3550451", "3550452",
+        "3550445", "3550446", "3550447", "3550448", "3550449", "3550450",
+    ]
+    assert [o.rang for o in onglets] == list(range(9))
+
+
+def test_onglets_selectionnes_depuis_html_barre_absente():
+    assert onglets_selectionnes_depuis_html("<html><body>Sans onglets</body></html>") == []
+
+
+def test_onglets_selectionnes_depuis_html_un_seul_niveau():
+    # Un seul niveau selectionne ("Contenu du module" porte p_AFSelected,
+    # pas "Général") : la chaine ne contient qu'un element.
+    onglets = onglets_selectionnes_depuis_html(HTML_BARRE_ONGLETS)
+    assert len(onglets) == 1
+    assert onglets[0].id_page == "4874493"
+    assert onglets[0].titre == "Contenu du module"
+    assert onglets[0].rang == 0
+
+
+def test_onglets_selectionnes_depuis_html_deux_niveaux_dans_l_ordre_de_profondeur():
+    # Chemin exact verifie par inspection reelle sur idPage=3550448 :
+    # ["Théorie et dessin à la main", "Coupes"] -- mais ici HTML_BARRES_...
+    # a "Vues orthogonales" comme feuille selectionnee (premiere feuille par
+    # defaut, voir la regle de redescente automatique).
+    chaine = onglets_selectionnes_depuis_html(HTML_BARRES_ONGLETS_IMBRIQUEES)
+    assert [o.titre for o in chaine] == ["Théorie et dessin à la main", "Vues orthogonales"]
+    assert [o.id_page for o in chaine] == ["3550444", "3550445"]
+    assert [o.rang for o in chaine] == [0, 1]
+
+
+def test_onglets_selectionnes_depuis_html_niveau_sans_span_selectionne_est_ignore():
+    # Aucun span p_AFSelected dans la seconde barre (DOM change, ou etat
+    # transitoire) : ce niveau est simplement absent de la chaine plutot que
+    # de planter ou d'inventer un titre.
+    html = """
+    <div class="ul_customizablePanelTabbed_tabs">
+      <span _ulitemid="r1:0:page:t1" class="ul_customizablePanelTabbed_tab p_AFSelected">
+        <a class="ul_customizablePanelTabbed_tab-link" href="#" title="Niveau 1">Niveau 1</a>
+      </span>
+    </div>
+    <div class="ul_customizablePanelTabbed_tabs">
+      <span _ulitemid="r1:0:page:t1:z1:t2" class="ul_customizablePanelTabbed_tab">
+        <a class="ul_customizablePanelTabbed_tab-link" href="#" title="Niveau 2 non selectionne">Niveau 2 non selectionne</a>
+      </span>
+    </div>
+    """
+    chaine = onglets_selectionnes_depuis_html(html)
+    assert [o.titre for o in chaine] == ["Niveau 1"]
+
+
+def test_onglets_selectionnes_depuis_html_ulitemid_malforme_sur_le_selectionne_est_ignore():
+    # Le span selectionne du premier niveau a un _ulitemid malforme : ce
+    # niveau est ignore, mais le niveau suivant (independant) reste lu.
+    html = """
+    <div class="ul_customizablePanelTabbed_tabs">
+      <span _ulitemid="r1:0:page:tabs" class="ul_customizablePanelTabbed_tab p_AFSelected">
+        <a class="ul_customizablePanelTabbed_tab-link" href="#" title="Fantôme">Fantôme</a>
+      </span>
+    </div>
+    <div class="ul_customizablePanelTabbed_tabs">
+      <span _ulitemid="r1:0:page:t1:z1:t2" class="ul_customizablePanelTabbed_tab p_AFSelected">
+        <a class="ul_customizablePanelTabbed_tab-link" href="#" title="Niveau 2">Niveau 2</a>
+      </span>
+    </div>
+    """
+    chaine = onglets_selectionnes_depuis_html(html)
+    assert [o.titre for o in chaine] == ["Niveau 2"]
+    assert chaine[0].rang == 0
 
 
 def test_depots_depuis_html_travail_individuel_sans_colonne_depose_par():

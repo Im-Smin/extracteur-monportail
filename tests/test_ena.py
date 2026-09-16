@@ -9,11 +9,13 @@ from extracteur.ena import (
     CANDIDATS_DIAGNOSTIC_SESSIONS,
     DELAI_OBSERVATION_MINIMALE_STABILISATION_MS,
     INTERVALLE_SONDAGE_STABILISATION_MS,
+    LIMITE_PAGES_MODULE,
     URL,
     Ena,
     SelecteurSessionsIllisible,
     SelecteurSessionsIndisponible,
     SelecteurSessionsInstable,
+    TropDePagesDansUnModule,
 )
 from extracteur.modele import Cours, Evaluation, Module, Session
 from extracteur.telechargement import SessionExpiree
@@ -221,6 +223,22 @@ def test_urls_canoniques_sont_bien_formees():
     )
     assert URL.evaluation_resultats("181216", "1035434") == (
         "/ena/site/evaluation?idSite=181216&idEvaluation=1035434&onglet=resultats"
+    )
+
+
+def test_url_module_ajoute_idpage_quand_fourni():
+    # Sans idPage explicite, le serveur ADF sert un onglet imprevisible (le
+    # dernier consulte dans la session) : voir docs/api-monportail.md, etape 3.
+    assert URL.module("181216", "1795743", "4874493") == (
+        "/ena/site/module?idSite=181216&idModule=1795743"
+        "&editionModule=false&idPage=4874493"
+    )
+
+
+def test_url_module_sans_idpage_reste_identique():
+    # Les appels existants, sans idPage, ne doivent pas changer d'URL.
+    assert URL.module("181216", "1795743") == (
+        "/ena/site/module?idSite=181216&idModule=1795743&editionModule=false"
     )
 
 
@@ -518,6 +536,177 @@ def test_fichiers_du_module_tolere_un_onglet_contenu_introuvable():
     fichiers = ena.fichiers_du_module(Module(id_site="181216", id_module="1795743", titre="M"))
 
     assert [f.nom for f in fichiers] == ["doc.pdf"]
+
+
+def test_fichiers_du_module_visite_l_idpage_quand_fourni():
+    # Sans idPage, le serveur ADF sert un onglet imprevisible : chaque onglet
+    # doit etre visite par sa propre URL.
+    ena = Ena(SessionFactice({}))
+    ena.fichiers_du_module(
+        Module(id_site="181216", id_module="1795743", titre="M"), "4874493"
+    )
+    assert "idPage=4874493" in ena.session.page.visitees[0]
+
+
+def test_pages_du_module_module_sans_onglets_rend_une_seule_page_racine():
+    # Un module monte sans barre d'onglets est legitime (voir
+    # docs/api-monportail.md) : comportement d'avant l'ajout des onglets,
+    # conserve tel quel -- une seule page, sans chemin.
+    ena = Ena(SessionFactice({}))
+    pages = ena.pages_du_module(Module(id_site="181216", id_module="1795743", titre="M"))
+    assert [(p.id_page, p.chemin) for p in pages] == [(None, ())]
+
+
+def test_pages_du_module_leve_session_expiree_si_page_non_authentifiee():
+    # Sans ce garde-fou, une session expiree rendrait une page de connexion
+    # vide, lue comme "un seul module sans onglets" : une archive
+    # silencieusement incomplete.
+    ena = Ena(SessionFactice({}))
+    ena.session.page = PageNonAuthentifiee({})
+
+    with pytest.raises(SessionExpiree):
+        ena.pages_du_module(Module(id_site="181216", id_module="1795743", titre="M"))
+
+
+class PageParcoursOngletsImbriques(PageFactice):
+    """Reconstitution simplifiee de GMC-1000 (idSite=146001, idModule=1310231
+    -- voir docs/api-monportail.md, etape 3) : deux niveaux d'onglets, le
+    niveau 2 ("Avancé") portant deux feuilles ("Sous A", "Sous B").
+
+    Sans idPage, sert "Général" (feuille de premier niveau, sans second
+    niveau). idPage=2 (le parent "Avancé") redescend automatiquement sur sa
+    premiere feuille "Sous A" (regle 3 de docs/api-monportail.md), exactement
+    comme idPage=21 directement. idPage=22 selectionne "Sous B" directement
+    (regle 4)."""
+
+    HTML_GENERAL = (
+        '<div class="ul_customizablePanelTabbed_tabs">'
+        '<span _ulitemid="r1:0:page:t1" class="ul_customizablePanelTabbed_tab p_AFSelected">'
+        '<a class="ul_customizablePanelTabbed_tab-link" href="#" title="Général">Général</a>'
+        "</span>"
+        '<span _ulitemid="r1:0:page:t2" class="ul_customizablePanelTabbed_tab">'
+        '<a class="ul_customizablePanelTabbed_tab-link" href="#" title="Avancé">Avancé</a>'
+        "</span>"
+        "</div>"
+    )
+    HTML_AVANCE_SOUS_A = (
+        '<div class="ul_customizablePanelTabbed_tabs">'
+        '<span _ulitemid="r1:0:page:t1" class="ul_customizablePanelTabbed_tab">'
+        '<a class="ul_customizablePanelTabbed_tab-link" href="#" title="Général">Général</a>'
+        "</span>"
+        '<span _ulitemid="r1:0:page:t2" class="ul_customizablePanelTabbed_tab p_AFSelected">'
+        '<a class="ul_customizablePanelTabbed_tab-link" href="#" title="Avancé">Avancé</a>'
+        "</span>"
+        "</div>"
+        '<div class="ul_customizablePanelTabbed_tabs">'
+        '<span _ulitemid="r1:0:page:t2:z2:t21" class="ul_customizablePanelTabbed_tab p_AFSelected">'
+        '<a class="ul_customizablePanelTabbed_tab-link" href="#" title="Sous A">Sous A</a>'
+        "</span>"
+        '<span _ulitemid="r1:0:page:t2:z2:t22" class="ul_customizablePanelTabbed_tab">'
+        '<a class="ul_customizablePanelTabbed_tab-link" href="#" title="Sous B">Sous B</a>'
+        "</span>"
+        "</div>"
+    )
+    HTML_AVANCE_SOUS_B = (
+        '<div class="ul_customizablePanelTabbed_tabs">'
+        '<span _ulitemid="r1:0:page:t1" class="ul_customizablePanelTabbed_tab">'
+        '<a class="ul_customizablePanelTabbed_tab-link" href="#" title="Général">Général</a>'
+        "</span>"
+        '<span _ulitemid="r1:0:page:t2" class="ul_customizablePanelTabbed_tab p_AFSelected">'
+        '<a class="ul_customizablePanelTabbed_tab-link" href="#" title="Avancé">Avancé</a>'
+        "</span>"
+        "</div>"
+        '<div class="ul_customizablePanelTabbed_tabs">'
+        '<span _ulitemid="r1:0:page:t2:z2:t21" class="ul_customizablePanelTabbed_tab">'
+        '<a class="ul_customizablePanelTabbed_tab-link" href="#" title="Sous A">Sous A</a>'
+        "</span>"
+        '<span _ulitemid="r1:0:page:t2:z2:t22" class="ul_customizablePanelTabbed_tab p_AFSelected">'
+        '<a class="ul_customizablePanelTabbed_tab-link" href="#" title="Sous B">Sous B</a>'
+        "</span>"
+        "</div>"
+    )
+
+    def __init__(self):
+        super().__init__({})
+        self._html_par_id_page = {
+            "1": self.HTML_GENERAL,
+            "2": self.HTML_AVANCE_SOUS_A,
+            "21": self.HTML_AVANCE_SOUS_A,
+            "22": self.HTML_AVANCE_SOUS_B,
+        }
+
+    def content(self):
+        from urllib.parse import parse_qs, urlsplit
+
+        id_page = parse_qs(urlsplit(self.url).query).get("idPage", [None])[0]
+        return self._html_par_id_page.get(id_page, self.HTML_GENERAL)
+
+
+def test_pages_du_module_parcourt_les_onglets_imbriques_par_idpage():
+    # Un clic code en dur sur un seul onglet perdrait "Sous A" et "Sous B" :
+    # le parcours doit visiter chaque onglet decouvert, y compris ceux qui
+    # ne sont reveles qu'apres etre descendu dans un onglet parent.
+    session = SessionFactice({})
+    session.page = PageParcoursOngletsImbriques()
+    ena = Ena(session)
+
+    pages = ena.pages_du_module(Module(id_site="181216", id_module="1310231", titre="Module 1"))
+
+    releve = {(p.id_page, p.chemin) for p in pages}
+    assert releve == {
+        ("1", ("Général",)),
+        ("21", ("Avancé", "Sous A")),
+        ("22", ("Avancé", "Sous B")),
+    }
+    # Chaque feuille a bien ete visitee par sa propre URL, jamais par un clic.
+    assert any("idPage=22" in u for u in session.page.visitees)
+
+
+class PageCycleInfini(PageFactice):
+    """Simule une structure d'onglets pathologique : chaque page visitee se
+    pretend etre une nouvelle feuille distincte (compteur toujours
+    croissant) et decouvre toujours un nouvel onglet a visiter -- l'ensemble
+    des pages vues ne se stabilise donc jamais. Sert a verifier la borne dure
+    de securite (LIMITE_PAGES_MODULE)."""
+
+    def __init__(self):
+        super().__init__({})
+        self.compteur = 0
+
+    def goto(self, url, **_):
+        super().goto(url, **_)
+        self.compteur += 1
+
+    def content(self):
+        n = self.compteur
+        return (
+            '<div class="ul_customizablePanelTabbed_tabs">'
+            f'<span _ulitemid="r1:0:page:t{n}" class="ul_customizablePanelTabbed_tab p_AFSelected">'
+            f'<a class="ul_customizablePanelTabbed_tab-link" href="#" title="Page {n}">Page {n}</a>'
+            "</span>"
+            f'<span _ulitemid="r1:0:page:t{n + 1}" class="ul_customizablePanelTabbed_tab">'
+            f'<a class="ul_customizablePanelTabbed_tab-link" href="#" title="Page {n + 1}">Page {n + 1}</a>'
+            "</span>"
+            "</div>"
+        )
+
+
+def test_pages_du_module_leve_si_la_borne_de_securite_est_atteinte():
+    # Le nombre d'identifiants reels d'un module est fini en usage normal :
+    # une structure qui ne se stabilise jamais (bogue, ou DOM totalement
+    # inattendu) ne doit pas bloquer tout l'archivage du cours en bouclant
+    # indefiniment. On leve bruyamment plutot que de deviner.
+    session = SessionFactice({})
+    session.page = PageCycleInfini()
+    ena = Ena(session)
+
+    with pytest.raises(TropDePagesDansUnModule):
+        ena.pages_du_module(Module(id_site="181216", id_module="1795743", titre="M"))
+
+    # La borne s'applique au nombre de pages DISTINCTES retenues, pas au
+    # nombre brut de navigations : elle s'arrete des qu'elle est atteinte,
+    # jamais avant.
+    assert session.page.compteur >= LIMITE_PAGES_MODULE
 
 
 class LienFactice:

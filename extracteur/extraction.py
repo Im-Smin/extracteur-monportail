@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from bs4 import BeautifulSoup
 
-from extracteur.modele import Cours, Depot, Fichier, Module, Note, Session
+from extracteur.modele import Cours, Depot, Fichier, Module, Note, Onglet, Session
 
 # Deux traceurs d'analytique observes : les fichiers de module, et le plan de
 # cours (releve sur /portail/cours). Les deux encodent l'URL reelle dans le
@@ -103,6 +103,114 @@ def modules_depuis_html(html: str, id_site: str) -> list[Module]:
             )
 
     return list(modules.values())
+
+
+# Barre d'onglets d'une page de module (voir docs/api-monportail.md, etape
+# 3) : chaque onglet est un span.ul_customizablePanelTabbed_tab, portant son
+# identifiant dans l'attribut _ulitemid sous la forme "<prefixe>:t<idPage>"
+# (onglet de premier niveau) ou "<prefixe>:t<idParent>:z<n>:t<idPage>" (onglet
+# imbrique, sous un onglet parent selectionne) : l'idPage utile est toujours
+# le DERNIER segment "t<chiffres>", jamais le premier qui designe le parent.
+#
+# Une page de module peut porter PLUSIEURS barres empilees : une barre de
+# second niveau n'existe dans le DOM que si son onglet parent, au niveau
+# precedent, est selectionne. On ne peut donc pas decouvrir toute la
+# hierarchie d'une seule lecture -- c'est au parcours (Ena.pages_du_module)
+# de visiter chaque onglet decouvert ici pour reveler les niveaux plus
+# profonds qu'il ne peut pas encore voir.
+CLASSE_BARRE_ONGLETS = "ul_customizablePanelTabbed_tabs"
+CLASSE_ONGLET = "ul_customizablePanelTabbed_tab"
+CLASSE_ONGLET_SELECTIONNE = "p_AFSelected"
+CLASSE_LIEN_ONGLET = "ul_customizablePanelTabbed_tab-link"
+
+# Ancre en fin de chaine ($) : rend bien le DERNIER segment "t<chiffres>",
+# meme quand _ulitemid en contient plusieurs (onglet imbrique). Un _ulitemid
+# absent ou d'une autre forme ne peut pas etre rattache a un onglet reel : on
+# ignore silencieusement ce span plutot que de planter, une barre a moitie
+# lue restant preferable a un arret complet.
+MOTIF_ID_PAGE_ONGLET = re.compile(r":t(\d+)$")
+
+
+def _onglet_depuis_span(span, rang: int) -> Onglet | None:
+    """Onglet porte par un span.ul_customizablePanelTabbed_tab, ou None si
+    son _ulitemid n'expose aucun idPage exploitable (voir MOTIF_ID_PAGE_ONGLET)."""
+    ulitemid = span.get("_ulitemid") or ""
+    correspondance = MOTIF_ID_PAGE_ONGLET.search(ulitemid)
+    if not correspondance:
+        return None
+    id_page = correspondance.group(1)
+
+    lien = span.find("a", class_=CLASSE_LIEN_ONGLET)
+    titre = None
+    if lien is not None:
+        titre = lien.get("title") or lien.get_text(strip=True) or None
+    titre = titre or id_page
+
+    return Onglet(id_page=id_page, titre=titre, rang=rang)
+
+
+def onglets_depuis_html(html: str) -> list[Onglet]:
+    """Onglets de TOUTES les barres presentes sur la page (« Général »,
+    « Contenu du module », mais aussi les onglets de second niveau si leur
+    barre est deja visible), dans l'ordre du DOM : barre de premier niveau
+    avant celle de second niveau, etc.
+
+    Le nom vit dans l'attribut title du lien, jamais dans son texte : releve
+    en inspection reelle, innerText y est parfois vide. A defaut de title, on
+    replie sur le texte du lien, puis sur l'idPage lui-meme -- un onglet sans
+    aucun nom lisible reste preferable a un onglet perdu.
+
+    Une page de module sans aucune barre d'onglets est un montage legitime
+    (voir docs/api-monportail.md) : rend [] plutot que de planter.
+    """
+    onglets: list[Onglet] = []
+    for barre in _soupe(html).find_all("div", class_=CLASSE_BARRE_ONGLETS):
+        for span in barre.find_all("span", class_=CLASSE_ONGLET):
+            onglet = _onglet_depuis_span(span, rang=len(onglets))
+            if onglet is not None:
+                onglets.append(onglet)
+    return onglets
+
+
+def onglets_selectionnes_depuis_html(html: str) -> list[Onglet]:
+    """Chaine des onglets selectionnes (classe p_AFSelected), un par barre
+    presente, dans l'ordre de profondeur : le premier element est le niveau
+    1, le dernier est la feuille reellement servie par le serveur ADF apres
+    navigation (voir docs/api-monportail.md, etape 3, regles 3 et 4).
+
+    Fonction separee plutot qu'un champ "chemin" sur Onglet : la liste plate
+    rendue par onglets_depuis_html enumere des candidats a visiter, sans lien
+    de parente entre eux (les onglets d'une meme barre sont des freres
+    interchangeables). Cette chaine, elle, n'a de sens que pour la page
+    COURANTE au moment de la lecture : elle decrit le chemin emprunte pour y
+    arriver, pas les onglets eux-memes. Sert deux besoins du parcours en
+    largeur (Ena.pages_du_module) a partir d'une seule lecture du DOM : le
+    titre de chaque niveau, pour nommer Documents/ et Pages/, et
+    l'identifiant de la feuille, pour reconnaitre qu'une redescente
+    automatique (regle 3) est retombee sur une page deja traitee.
+
+    Rend [] si la page ne porte aucune barre d'onglets. Rend une chaine plus
+    courte que le nombre reel de barres si un niveau ne porte aucun span
+    selectionne exploitable, ou un _ulitemid malforme sur son span
+    selectionne (DOM change) : mieux vaut un chemin partiel -- les niveaux
+    suivants, independants, restent lus -- que de planter ou d'inventer un
+    niveau.
+    """
+    chaine: list[Onglet] = []
+    for barre in _soupe(html).find_all("div", class_=CLASSE_BARRE_ONGLETS):
+        selectionne = None
+        for span in barre.find_all("span", class_=CLASSE_ONGLET):
+            if CLASSE_ONGLET_SELECTIONNE in (span.get("class") or []):
+                selectionne = span
+                break
+        if selectionne is None:
+            continue
+
+        onglet = _onglet_depuis_span(selectionne, rang=len(chaine))
+        if onglet is not None:
+            chaine.append(onglet)
+
+    return chaine
 
 
 def fichiers_depuis_html(html: str) -> list[Fichier]:

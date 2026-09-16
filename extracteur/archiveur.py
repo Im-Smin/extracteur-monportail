@@ -151,12 +151,7 @@ class Archiveur:
 
         modules = self.ena.modules(cours)
         for module in modules:
-            dossier = base / "Documents" / _segment(module.titre or module.id_module)
-            for fichier in self.ena.fichiers_du_module(module):
-                self._recuperer(cours, fichier, dossier)
-
-            cible_pdf = base / "Pages" / _segment(f"{module.titre or module.id_module}.pdf")
-            self._capturer(cours, module, cible_pdf)
+            self._archiver_module(cours, module, base)
 
         evaluations = self.ena.evaluations(cours)
         if evaluations:
@@ -289,13 +284,83 @@ class Archiveur:
                 Echec(cours=cours.dossier(), element=destination.name, cause=f"PDF : {erreur}")
             )
 
-    def _capturer(self, cours, module, destination: Path) -> None:
+    def _archiver_module(self, cours, module, base: Path) -> None:
+        """Toutes les pages d'un module : la racine seule s'il ne porte aucun
+        onglet, sinon chaque feuille de sa hierarchie d'onglets, eventuellement
+        imbriquee (voir Ena.pages_du_module et docs/api-monportail.md,
+        etape 3).
+
+        Isolee comme _archiver_page_evaluation : une structure d'onglets
+        illisible ou pathologique (TropDePagesDansUnModule) ne coute que ce
+        module, jamais les autres modules ni le reste du cours. SessionExpiree
+        n'est jamais isolee ici : elle doit remonter intacte jusqu'a
+        archiver(), qui met la file en pause plutot que de traiter une
+        session expiree comme un module en echec ordinaire.
+        """
+        from extracteur.ena import TropDePagesDansUnModule
+
+        nom_module = module.titre or module.id_module
+        try:
+            pages = self.ena.pages_du_module(module)
+        except SessionExpiree:
+            raise
+        except (ErreurPlaywright, TropDePagesDansUnModule) as erreur:
+            self.resultat.echecs.append(
+                Echec(cours=cours.dossier(), element=nom_module, cause=str(erreur))
+            )
+            return
+
+        for page in pages:
+            self._archiver_page_de_module(cours, module, page, base)
+
+    def _archiver_page_de_module(self, cours, module, page, base: Path) -> None:
+        """Fichiers et capture PDF d'une page reelle du module : la racine
+        (page.chemin vide) si le module ne porte aucun onglet, sinon une
+        feuille de sa hierarchie -- page.chemin porte les titres des onglets
+        traverses, du niveau 1 vers le plus profond.
+
+        Isolee comme _archiver_page_evaluation : un echec ici (navigation
+        Playwright) ne coute que cette page, jamais les autres pages du
+        module ni le reste du cours.
+
+        Appelle fichiers_du_module avec un seul argument (module) quand
+        page.id_page est None -- exactement l'appel d'avant l'ajout des
+        onglets -- plutot que de toujours passer id_page=None explicitement :
+        preserve la compatibilite d'implementations de Ena qui ne
+        distinguent pas encore les onglets.
+        """
+        nom_module = module.titre or module.id_module
+        nom_complet = " - ".join([nom_module, *page.chemin])
+
+        dossier = base / "Documents" / _segment(nom_module)
+        for titre in page.chemin:
+            dossier = dossier / _segment(titre)
+
+        try:
+            if page.id_page is None:
+                fichiers = self.ena.fichiers_du_module(module)
+            else:
+                fichiers = self.ena.fichiers_du_module(module, page.id_page)
+        except SessionExpiree:
+            raise
+        except ErreurPlaywright as erreur:
+            self.resultat.echecs.append(
+                Echec(cours=cours.dossier(), element=nom_complet, cause=str(erreur))
+            )
+        else:
+            for fichier in fichiers:
+                self._recuperer(cours, fichier, dossier)
+
+        cible_pdf = base / "Pages" / _segment(f"{nom_complet}.pdf")
+        self._capturer(cours, module, cible_pdf, id_page=page.id_page)
+
+    def _capturer(self, cours, module, destination: Path, id_page: str | None = None) -> None:
         if destination.exists():
             return
         try:
             from extracteur.ena import URL
 
-            self.ena.capturer_pdf(URL.module(module.id_site, module.id_module), destination)
+            self.ena.capturer_pdf(URL.module(module.id_site, module.id_module, id_page), destination)
         # Meme isolation que pour le plan de cours : une capture de page ratee
         # ne doit pas emporter les autres modules ni le reste du cours.
         except (ErreurPlaywright, OSError) as erreur:

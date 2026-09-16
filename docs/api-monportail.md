@@ -36,7 +36,7 @@ Vérifié :
 
 - `GET monportail.ulaval.ca/etudes/v1/sessions/courante/` avec cookies seuls →
   `401 AuthentificationRequiseException`. Le jeton porteur est requis.
-- `GET sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=181216` avec
+- `GET sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100001` avec
   cookies seuls → `200`. Aucun jeton nécessaire sur ce domaine.
 
 Conséquence pratique : le téléchargement des fichiers de cours ne demande que
@@ -56,12 +56,12 @@ Test décisif — toutes ces URL renvoient **exactement la même page d'amorçag
 9 747 octets**, sans aucun contenu de cours :
 
 ```
-/ena/site/accueil?idSite=181216
-/ena/site/accueil?idSite=181216&_js=true
-/ena/site/accueil?idSite=181216&_js=true&idPage=4874490
-/ena/site/plandecours?idSite=181216
-/ena/site/evaluations?idSite=181216
-/ena/site/depots?idSite=181216
+/ena/site/accueil?idSite=100001
+/ena/site/accueil?idSite=100001&_js=true
+/ena/site/accueil?idSite=100001&_js=true&idPage=4874490
+/ena/site/plandecours?idSite=100001
+/ena/site/evaluations?idSite=100001
+/ena/site/depots?idSite=100001
 (et 14 autres chemins devinés : tous identiques)
 ```
 
@@ -88,9 +88,9 @@ contenant un sélecteur de session et la liste des sites de cette session.
 C'est la source d'énumération de l'historique : parcourir les options du
 sélecteur, relever les `idSite` de chaque session.
 
-Sites relevés pour Hiver 2026 : `181216` (PHI-3900), `183033` (GIN-3320),
-`181638` (MED-1100). Autres `idSite` vus sur le tableau de bord : `162134`,
-`159476`, `162283`, `149047`, `148734`, `153770`.
+Sites relevés pour Hiver 2026 : `100001` (ABC-1000), `100002` (DEF-2000),
+`100005` (VWX-8000). Autres `idSite` vus sur le tableau de bord : `100008`,
+`159476`, `162283`, `100006`, `100007`, `153770`.
 
 ## 5. Les fichiers de contenu ont des URL directes
 
@@ -98,7 +98,7 @@ Observé sur les ressources chargées par une page de cours :
 
 ```
 https://sitescours.monportail.ulaval.ca/contenu/sitescours/040/04000/202601/
-  site181216/accueil/bloctexte1226860/ressourcestexte/
+  site100001/accueil/bloctexte1226860/ressourcestexte/
   PHI3900 - Bandeau - H2026 (1).png?identifiant=aa0676083b62...
 ```
 
@@ -115,12 +115,12 @@ peut pas être deviné, il doit être relevé dans le DOM de la page.
 
 ## 6. Structure d'un site de cours
 
-Menu de gauche observé sur PHI-3900 : Introduction, Plan de cours, Informations
+Menu de gauche observé sur ABC-1000 : Introduction, Plan de cours, Informations
 générales, Description du cours, Feuille de route, Évaluations et résultats,
 Matériel didactique, Bibliographie. Une barre d'outils distincte donne accès aux
 autres fonctions du site.
 
-Chaque page porte un `idPage` (exemple : `4874490` pour l'accueil de PHI-3900),
+Chaque page porte un `idPage` (exemple : `4874490` pour l'accueil de ABC-1000),
 visible dans l'URL affichée mais sans effet lors d'un appel HTTP direct.
 
 ### Piège à ne jamais déclencher : `cmdObtenirPlanCours`
@@ -157,7 +157,7 @@ Sur `monportail.ulaval.ca`, avec jeton porteur :
 - `GET /etudes/v1/inscriptions/<idUtilisateur>/statuts/sessions/<AAAASS>/?format=complet`
 - `GET /api/utilisateur/preferences`
 
-Identifiants du dossier : IDUL `jamof7`, identifiant utilisateur mpo `6294113`.
+Identifiants du dossier : IDUL `<votre-idul>`, identifiant utilisateur mpo `<votre-identifiant-mpo>`.
 Codes de session au format `AAAASS` : `202601` = Hiver 2026, `202609` = Automne
 2026, `202605` = Été 2026.
 
@@ -186,24 +186,100 @@ fiable de chaque section, à préférer au clic dans le menu.
 La page `modules` liste les modules du cours. Chaque ligne est un vrai lien :
 
 ```
-/ena/site/module?idSite=181216&idModule=1795743&editionModule=false
+/ena/site/module?idSite=100001&idModule=1795743&editionModule=false
 ```
 
 `editionModule=false` force la vue en consultation. À conserver tel quel.
 
-### Étape 3 — l'onglet « Contenu du module »
+### Étape 3 — les onglets d'une page de module
 
-Une page de module a deux onglets : « Général » (texte de présentation) et
-« Contenu du module » (les documents). L'onglet est un lien ADF `href="#"` :
-**il faut le cliquer**, les documents ne sont pas dans le DOM avant.
+**Relevé le 15 septembre 2026 par inspection directe de JKL-4000 (`idSite=100003`)
+et ABC-1000 (`idSite=100001`). Corrige une description antérieure fausse, qui
+ne décrivait qu'un cas particulier et a causé une perte de contenu silencieuse.**
+
+Une page de module porte une barre d'onglets, dont le nombre et les noms varient
+d'un cours à l'autre — et d'un module à l'autre :
+
+| Cours | Onglets |
+|---|---|
+| ABC-1000, module 1 | Général, Contenu du module |
+| JKL-4000, module 1 | Notes de cours, Exercices 3e édition, Exercices 2e édition |
+| (capture utilisateur) | Présentation, Théorie, Travaux pratiques |
+
+Les trois montages utilisent **le même composant**. Ne jamais cibler un onglet
+par son nom : il faut les énumérer.
+
+#### DOM de la barre d'onglets
+
+```html
+<div class="ul_customizablePanelTabbed_tabs" id="r1:0:page:tabs::tabs">
+  <span _ulitemid="r1:0:page:t4874492" class="ul_customizablePanelTabbed_tab">
+    <span class="ul_customizablePanelTabbed_tab-content">
+      <a id="r1:0:page:t4874492::a" class="ul_customizablePanelTabbed_tab-link"
+         href="#" title="Général">Général</a>
+    </span>
+  </span>
+  <span _ulitemid="r1:0:page:t4874493" class="ul_customizablePanelTabbed_tab p_AFSelected">
+    ... title="Contenu du module" ...
+  </span>
+</div>
+```
+
+- Conteneur : `div.ul_customizablePanelTabbed_tabs`
+- Un onglet : `span.ul_customizablePanelTabbed_tab`, l'onglet actif portant en
+  plus `p_AFSelected`
+- L'identifiant vit dans l'attribut `_ulitemid`, sous la forme
+  `<préfixe>:t<idPage>` — `r1:0:page:t4874493` → `idPage=4874493`
+- Le nom d'onglet se lit dans l'attribut `title` du lien, **pas** dans son texte :
+  `innerText` est parfois vide selon l'état de rendu.
+
+#### L'onglet est adressable par URL — pas besoin de cliquer
+
+```
+/ena/site/module?idSite=<idSite>&idModule=<idModule>&editionModule=false&idPage=<idPage>
+```
+
+Vérifié sur les deux cours : naviguer avec `idPage` sélectionne bien l'onglet
+correspondant (`p_AFSelected` se déplace) et sert son contenu. C'est le même
+principe que `&onglet=` pour les évaluations. Le clic ADF décrit dans la
+version précédente de ce document est inutile.
+
+#### Piège : sans `idPage`, l'onglet servi est imprévisible
+
+Trois navigations successives vers la même URL **sans** `idPage` ont servi
+`idPage=3608113`, puis `3608112`, puis `3608113` : le serveur ADF réaffiche le
+dernier onglet consulté dans la session. Il ne s'agit donc pas du « premier
+onglet » ni d'un défaut stable — un extracteur qui ne précise pas `idPage`
+archive un onglet arbitraire.
+
+#### Coût mesuré de l'omission
+
+JKL-4000, module 1, fichiers distincts par onglet :
+
+| Onglet | `idPage` | Fichiers |
+|---|---|---|
+| Notes de cours | 3608111 | 2 |
+| Exercices 3e édition | 3608112 | 11 |
+| Exercices 2e édition | 3608113 | 4 |
+
+17 fichiers au total, dont un seul onglet était récupéré — et pas toujours le
+même. Sur ABC-1000 l'onglet « Général » ne porte aucun fichier et « Contenu du
+module » en porte un : c'est ce cours de phase 0 qui avait donné l'impression
+qu'un clic sur un nom d'onglet suffisait.
+
+#### Doublons de liens
+
+Chaque fichier apparaît deux fois dans le DOM (lien sur l'icône et lien sur le
+texte), pointant vers la même URL. La déduplication par URL du manifeste s'en
+charge déjà.
 
 ### Étape 4 — les liens de fichiers passent par un traceur
 
 ```
 /analytique/evenement/fichier
   ?idFichier=140274665
-  &idSite=181216
-  &url=%2Fcontenu%2Fsitescours%2F040%2F04000%2F202601%2Fsite181216
+  &idSite=100001
+  &url=%2Fcontenu%2Fsitescours%2F040%2F04000%2F202601%2Fsite100001
        %2Fmodules1434431%2Fmodule1795743%2Fpage4874493%2Fbloccontenu5204221
        %2FCours_1_-_Introduction-janvier%25202026.pptx
        %3Fidentifiant%3D0a981dbdc4212d59737bc2e400fd0d39076480bc
@@ -231,7 +307,7 @@ sans être suivis.
 
 ## 7ter. Évaluations, dépôts et notes — URL déterministes
 
-Relevé sur GIN-3320 (`idSite=183033`). Ce sont les URL les plus précieuses du
+Relevé sur DEF-2000 (`idSite=100002`). Ce sont les URL les plus précieuses du
 projet, car elles couvrent le cœur du périmètre.
 
 ```
@@ -257,9 +333,9 @@ ni les mêmes entrées, ni les mêmes libellés pour une même fonction.
 
 | Site | Menu observé |
 |---|---|
-| PHI-3900 (181216) | Introduction, Plan de cours, Informations générales, Description du cours, **Feuille de route**, Évaluations et résultats, Matériel didactique, Bibliographie |
-| GIN-3320 (183033) | Introduction, Informations générales, Description du cours, **Contenu et activités**, Évaluations et résultats, Matériel didactique, Médiagraphie et annexes, Plan de cours |
-| Formation EDI (149047) | Introduction, Concepts de base, Six biais, Comportements inclusifs, Boite à outils, Crédits et remerciements |
+| ABC-1000 (100001) | Introduction, Plan de cours, Informations générales, Description du cours, **Feuille de route**, Évaluations et résultats, Matériel didactique, Bibliographie |
+| DEF-2000 (100002) | Introduction, Informations générales, Description du cours, **Contenu et activités**, Évaluations et résultats, Matériel didactique, Médiagraphie et annexes, Plan de cours |
+| Formation EDI (100006) | Introduction, Concepts de base, Six biais, Comportements inclusifs, Boite à outils, Crédits et remerciements |
 
 « Feuille de route » et « Contenu et activités » désignent la même chose. Le
 troisième site n'a ni plan de cours, ni évaluations, ni modules au sens des deux
@@ -279,7 +355,7 @@ accélérateur, jamais l'inverse.
 
 ### Le principe qui rend le projet faisable : les libellés varient, les URL non
 
-Vérifié : `/ena/site/modules?idSite=183033` répond correctement sur GIN-3320 —
+Vérifié : `/ena/site/modules?idSite=100002` répond correctement sur DEF-2000 —
 7 modules, même schéma `/ena/site/module?...&idModule=...` — **alors que ce site
 nomme la section « Contenu et activités »** et non « Feuille de route ».
 
@@ -295,7 +371,7 @@ Les deux se parcourent par `/ena/site/modules?idSite=<idSite>`.
 
 ## 7quinquies. Structure réelle des dépôts et des évaluations
 
-Relevé sur PHI-3900 (`idSite=181216`), à partir de captures fournies par
+Relevé sur ABC-1000 (`idSite=100001`), à partir de captures fournies par
 l'utilisateur.
 
 ### Onglets d'une évaluation
@@ -358,7 +434,7 @@ viser cette page, et non la liste des évaluations.
 
 ### Structure du « Sommaire des résultats »
 
-`/ena/site/resultats?idSite=<id>`. Relevé sur PHI-3900. **Quatre** colonnes :
+`/ena/site/resultats?idSite=<id>`. Relevé sur ABC-1000. **Quatre** colonnes :
 
 | Colonne | Contenu | Exemples |
 |---|---|---|
