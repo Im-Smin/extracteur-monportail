@@ -2328,3 +2328,98 @@ def test_visiter_fait_passer_son_canal_d_affichage_a_la_reparation():
     assert session.appels_reinitialisation == 1
     assert session.imprimer_recu == journal.append
 
+
+class LocatorOptionRecouverteFactice(LocatorOptionsSessionsFactice):
+    """Reproduit l'incident reel sur la PREMIERE option du panneau : le
+    bouton du selecteur la recouvre, Playwright refuse le clic
+    (« intercepts pointer events »), mais dispatch_event l'atteint.
+
+    Les options suivantes, plus bas dans le panneau, ne sont jamais
+    couvertes : seule celle du haut echoue, ce qui rendait le defaut
+    invisible tant que la session la plus recente etait vide.
+    """
+
+    def filter(self, has_text=None):
+        correspondants = self.libelles
+        if has_text is not None:
+            correspondants = [libelle for libelle in self.libelles if has_text.search(libelle)]
+        return LocatorOptionRecouverteFactice(self.page, correspondants)
+
+    @property
+    def first(self):
+        page = self.page
+        libelles = self.libelles
+
+        class LienRecouvert:
+            def click(self, **_kwargs):
+                raise ErreurPlaywright(
+                    'Timeout 5000ms exceeded. <div role="listbox" '
+                    'class="mpo-deroulant-bouton"> intercepts pointer events'
+                )
+
+            def dispatch_event(self, _type):
+                if not libelles:
+                    raise ErreurDelaiPlaywright("Timeout 5000ms exceeded.")
+                page.session_selectionnee = libelles[0].strip()
+
+        return LienRecouvert()
+
+
+class PageAvecPremiereOptionRecouverte(PageAvecSelecteurSessions):
+    def locator(self, selecteur):
+        if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS:
+            return LocatorOptionRecouverteFactice(self, self.libelles_sessions)
+        return super().locator(selecteur)
+
+
+def test_une_option_recouverte_par_le_bouton_est_quand_meme_cliquee():
+    # Incident reel : la session la plus recente, premiere du panneau, etait
+    # perdue parce que le bouton du selecteur recouvrait son point de clic.
+    # Sans le repli, la session entiere est sautee -- sans consequence quand
+    # elle est vide, mais tout son contenu serait perdu sinon.
+    page = PageAvecPremiereOptionRecouverte(
+        ["Hiver 2027", "Hiver 2026"],
+        html_par_session={"Hiver 2027": "<html>cours de Hiver 2027</html>"},
+    )
+    session_navigateur = SessionFactice({})
+    session_navigateur.page = page
+    ena = Ena(session_navigateur, imprimer=lambda _t: None)
+
+    ena._selectionner_session(Session(code="202701", libelle="Hiver 2027"))
+
+    assert page.session_selectionnee == "Hiver 2027"
+
+
+def test_le_repli_de_clic_est_annonce_dans_le_journal():
+    # Un repli silencieux masquerait que le DOM de la plateforme a bouge :
+    # l'operateur doit voir que le clic normal n'a pas suffi.
+    journal: list = []
+    page = PageAvecPremiereOptionRecouverte(
+        ["Hiver 2027"], html_par_session={"Hiver 2027": "<html></html>"}
+    )
+    session_navigateur = SessionFactice({})
+    session_navigateur.page = page
+    ena = Ena(session_navigateur, imprimer=journal.append)
+
+    ena._selectionner_session(Session(code="202701", libelle="Hiver 2027"))
+
+    assert any("recouverte" in ligne for ligne in journal)
+    assert any("intercepts pointer events" in ligne for ligne in journal)
+
+
+def test_le_clic_normal_reste_le_chemin_par_defaut():
+    # Contre-epreuve : quand rien ne recouvre l'option, aucun repli ne doit
+    # se declencher et rien ne doit apparaitre au journal.
+    journal: list = []
+    page = PageAvecSelecteurSessions(
+        ["Hiver 2026"], html_par_session={"Hiver 2026": "<html></html>"}
+    )
+    session_navigateur = SessionFactice({})
+    session_navigateur.page = page
+    ena = Ena(session_navigateur, imprimer=journal.append)
+
+    ena._selectionner_session(Session(code="202601", libelle="Hiver 2026"))
+
+    assert page.session_selectionnee == "Hiver 2026"
+    assert journal == []
+
