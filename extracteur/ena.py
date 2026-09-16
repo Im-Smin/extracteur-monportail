@@ -935,6 +935,25 @@ class Ena:
     def capturer_pdf(self, chemin: str, destination: Path) -> None:
         self._visiter(chemin)
         self._assurer_authentifie()
+        self.capturer_pdf_page_courante(destination)
+
+    def capturer_pdf_page_courante(self, destination: Path) -> None:
+        """Imprime la page DEJA ouverte, sans navigation.
+
+        Chaque navigation est un aller-retour ADF de plusieurs secondes. Quand
+        l'appelant vient de lire une page -- pour ses fichiers, par exemple --
+        le navigateur y est encore : la recharger pour l'imprimer doublait le
+        cout de chaque module, l'operateur voyant la meme page se charger
+        plusieurs fois de suite.
+
+        L'appelant doit donc s'etre assure qu'il est bien sur la page voulue.
+        S'il ne peut pas le garantir -- une lecture qui a echoue laisse le
+        navigateur ailleurs -- il doit passer par capturer_pdf, qui navigue :
+        imprimer la mauvaise page produirait un PDF d'apparence valide au
+        contenu faux, exactement le genre de manque invisible que ce projet
+        cherche a eviter.
+        """
+        self._assurer_authentifie()
         destination.parent.mkdir(parents=True, exist_ok=True)
         self.session.page.pdf(path=str(destination), format="A4", print_background=True)
 

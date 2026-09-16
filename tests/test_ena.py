@@ -2163,3 +2163,32 @@ def test_pages_du_module_deux_sections_trouve_toutes_les_feuilles():
         ("Section A", "A-un"), ("Section A", "A-deux"), ("Section A", "A-trois"),
         ("Section B", "B-un"), ("Section B", "B-deux"), ("Section B", "B-trois"),
     }
+
+
+def test_capturer_pdf_page_courante_ne_navigue_pas(tmp_path):
+    # Chaque navigation est un aller-retour ADF de plusieurs secondes. Quand
+    # l'appelant vient de lire une page, le navigateur y est deja : recharger
+    # la meme URL pour l'imprimer doublait le cout de chaque module.
+    session = SessionFactice({})
+    ena = Ena(session)
+    session.page.goto(
+        "https://sitescours.monportail.ulaval.ca/ena/site/module?idSite=100001&idModule=1"
+    )
+    avant = len(session.page.visitees)
+
+    ena.capturer_pdf_page_courante(tmp_path / "sortie.pdf")
+
+    assert len(session.page.visitees) == avant
+
+
+def test_capturer_pdf_page_courante_refuse_une_page_non_authentifiee(tmp_path):
+    # Sans ce garde-fou, une session expiree produirait un PDF de la page de
+    # connexion : un fichier d'apparence valide, au contenu faux, et une
+    # archive silencieusement trouee -- exactement ce que ce projet evite.
+    session = SessionFactice({})
+    session.page = PageNonAuthentifiee({})
+    ena = Ena(session)
+
+    with pytest.raises(SessionExpiree):
+        ena.capturer_pdf_page_courante(tmp_path / "sortie.pdf")
+

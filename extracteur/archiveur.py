@@ -264,9 +264,14 @@ class Archiveur:
     def _capturer_page_courante(self, cours, destination: Path) -> None:
         """Imprime la page telle qu'elle est deja affichee, sans renaviguer.
 
-        Le repli par le menu n'a pas d'identifiant de module ou d'evaluation
-        vers lequel renaviguer : la seule capture possible est celle de l'etat
-        courant du navigateur, deja porte par ena.session.page.
+        Deux appelants, une seule raison : le navigateur est deja sur la bonne
+        page et la recharger serait un aller-retour ADF de plusieurs secondes
+        pour rien.
+        - Le repli par le menu n'a de toute facon aucun identifiant vers
+          lequel renaviguer : l'etat courant du navigateur est la seule
+          capture possible.
+        - Une page d'onglet de module vient d'etre lue pour ses fichiers, donc
+          le navigateur y est encore (voir _archiver_page_de_module).
 
         Isolee comme _capturer : ena.parcourir_menu n'intercepte que le clic,
         pas l'appel a cette fonction de traitement. Sans cette isolation, une
@@ -277,8 +282,7 @@ class Archiveur:
         if destination.exists():
             return
         try:
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            self.ena.session.page.pdf(path=str(destination), format="A4", print_background=True)
+            self.ena.capturer_pdf_page_courante(destination)
         except (ErreurPlaywright, OSError) as erreur:
             self.resultat.echecs.append(
                 Echec(cours=cours.dossier(), element=destination.name, cause=f"PDF : {erreur}")
@@ -336,23 +340,37 @@ class Archiveur:
         for titre in page.chemin:
             dossier = dossier / _segment(titre)
 
+        cible_pdf = base / "Pages" / _segment(f"{nom_complet}.pdf")
+        # La lecture des fichiers amene deja le navigateur sur cette page. On
+        # l'imprime donc AVANT de telecharger quoi que ce soit, tant qu'elle
+        # est encore affichee, plutot que de la recharger apres : une
+        # navigation ADF coute plusieurs secondes, et il y en a une par page
+        # d'onglet. `sur_la_page` dit si cette garantie tient encore.
+        sur_la_page = False
+        fichiers: list = []
         try:
             if page.id_page is None:
                 fichiers = self.ena.fichiers_du_module(module)
             else:
                 fichiers = self.ena.fichiers_du_module(module, page.id_page)
+            sur_la_page = True
         except SessionExpiree:
             raise
         except ErreurPlaywright as erreur:
             self.resultat.echecs.append(
                 Echec(cours=cours.dossier(), element=nom_complet, cause=str(erreur))
             )
-        else:
-            for fichier in fichiers:
-                self._recuperer(cours, fichier, dossier)
 
-        cible_pdf = base / "Pages" / _segment(f"{nom_complet}.pdf")
-        self._capturer(cours, module, cible_pdf, id_page=page.id_page)
+        if sur_la_page:
+            self._capturer_page_courante(cours, cible_pdf)
+        else:
+            # Lecture echouee : le navigateur n'est PAS sur la bonne page.
+            # Imprimer la page courante produirait un PDF d'apparence valide
+            # au contenu faux -- on navigue explicitement.
+            self._capturer(cours, module, cible_pdf, id_page=page.id_page)
+
+        for fichier in fichiers:
+            self._recuperer(cours, fichier, dossier)
 
     def _capturer(self, cours, module, destination: Path, id_page: str | None = None) -> None:
         if destination.exists():
