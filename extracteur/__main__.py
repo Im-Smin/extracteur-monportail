@@ -106,6 +106,7 @@ from extracteur.ena import Ena, SelecteurSessionsIllisible
 from extracteur.manifeste import ecrire_rapport
 from extracteur.modele import Echec, Resultat
 from extracteur.telechargement import SessionExpiree
+from extracteur.veille import empecher_la_veille
 from extracteur.verification import creer_zip, verifier
 
 NOM_RAPPORT = "_rapport.html"
@@ -574,6 +575,14 @@ def _un_seul_cours(
     contexte: dict = {}
 
     def travailler() -> None:
+        # L'etat anti-veille vaut pour le FIL appelant : il se pose donc ici,
+        # dans le fil qui archive, et non dans le fil principal qui ne fait
+        # que vider la file d'affichage. Voir extracteur.veille pour pourquoi
+        # ce n'est pas un reglage systeme a restaurer.
+        with empecher_la_veille(imprimer=imprimer):
+            _travailler_vraiment()
+
+    def _travailler_vraiment() -> None:
         try:
             session.ouvrir()
             imprimer(MESSAGE_INVITATION_CONNEXION)
@@ -783,6 +792,14 @@ def _archiver_plusieurs_sessions(
     contexte: dict = {}
 
     def travailler() -> None:
+        # L'etat anti-veille vaut pour le FIL appelant : il se pose donc ici,
+        # dans le fil qui archive, et non dans le fil principal qui ne fait
+        # que vider la file d'affichage. Voir extracteur.veille pour pourquoi
+        # ce n'est pas un reglage systeme a restaurer.
+        with empecher_la_veille(imprimer=imprimer):
+            _travailler_vraiment()
+
+    def _travailler_vraiment() -> None:
         try:
             session.ouvrir()
             imprimer(MESSAGE_INVITATION_CONNEXION)
