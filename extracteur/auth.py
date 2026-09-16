@@ -372,6 +372,58 @@ class SessionNavigateur:
         except ErreurPlaywright:
             pass
 
+    def reinitialiser_page(self, imprimer=print) -> None:
+        """Ferme la page courante et en ouvre une neuve depuis le meme
+        contexte, pour annuler toute navigation en vol apres l'echec d'un
+        `goto`.
+
+        Incident reel qui motive ce remede : un `goto` qui expire (Timeout)
+        laisse la page dans un etat de navigation qui ne se resorbe jamais
+        toute seule. Le `goto` suivant entre alors en conflit ("Navigation
+        ... is interrupted by another navigation"), puis meme la simple
+        lecture du contenu finit par echouer definitivement ("Page.content:
+        Unable to retrieve content because the page is navigating and
+        changing the content") -- pour TOUTES les navigations suivantes, sur
+        tous les cours suivants. 17 cours sur 39 ont ete perdus ainsi lors
+        d'un archivage reel : l'isolation par cours attrapait bien
+        l'exception a chaque fois, mais la ressource partagee (la page)
+        n'etait jamais reparee, si bien que cette isolation ne protegeait
+        plus rien des le premier incident.
+
+        Les temoins d'authentification (cookies) vivent dans le CONTEXTE
+        Playwright, pas dans la page : fermer la page et en ouvrir une
+        neuve depuis le meme contexte ne deconnecte donc jamais la session,
+        et la page neuve n'a par construction aucune navigation en vol.
+
+        Robuste a un etat deja degrade : si la fermeture de l'ancienne page
+        echoue (elle est deja morte, par exemple), on continue quand meme et
+        on ouvre la nouvelle -- seul compte le resultat final, une page
+        saine. Si le CONTEXTE lui-meme est ferme, en revanche, aucune page
+        saine n'est possible : on leve une erreur claire plutot que de
+        rendre self.page inutilisable en silence.
+
+        `imprimer` est injectable pour les tests, comme dans
+        attendre_connexion. En usage normal (valeur par defaut), la
+        reparation est visible dans le journal : un archivage qui se repare
+        tout seul sans le dire masquerait un signe de faiblesse reel de la
+        plateforme.
+        """
+        if self.contexte is None or self.contexte.is_closed():
+            raise RuntimeError(
+                "impossible de reinitialiser la page : le contexte du "
+                "navigateur est deja ferme."
+            )
+
+        ancienne_page = self.page
+        if ancienne_page is not None:
+            try:
+                ancienne_page.close()
+            except ErreurPlaywright:
+                pass
+
+        self.page = self.contexte.new_page()
+        imprimer("page reinitialisee apres un echec de navigation")
+
     def _pages_du_contexte(self) -> list:
         """Pages a examiner : toutes celles connues du contexte, ou a
         defaut la seule page capturee (repli pour les doublures de test qui

@@ -2228,3 +2228,103 @@ def test_ressources_ignorees_page_courante_refuse_une_page_non_authentifiee():
     with pytest.raises(SessionExpiree):
         ena.ressources_ignorees_page_courante()
 
+
+# --- _visiter se repare une seule fois apres un echec de navigation ---
+#
+# Incident reel : un goto qui expire (Timeout) laisse la page dans un etat de
+# navigation qui ne se resorbe jamais toute seule. Le goto suivant entre en
+# conflit, puis meme la lecture du contenu finit par echouer definitivement.
+# Sans reparation, cette page cassee sert a TOUTES les navigations
+# suivantes : 17 cours sur 39 perdus ainsi lors d'un archivage reel, alors
+# que l'isolation par cours attrapait pourtant bien chaque exception -- la
+# ressource partagee, elle, n'etait jamais reparee.
+
+
+class PageCassee(PageFactice):
+    """Simule une page dont goto() echoue systematiquement, comme un vrai
+    Timeout Playwright qui laisse la page dans un etat de navigation qui ne
+    se resorbe jamais toute seule."""
+
+    def goto(self, url, **_):
+        raise ErreurDelaiPlaywright("Timeout 30000ms exceeded.")
+
+
+class SessionAvecReinitialisation(SessionFactice):
+    """Simule SessionNavigateur.reinitialiser_page() : remplace la page
+    cassee par une page saine, comme le ferait une vraie reinitialisation
+    (fermeture de la page, ouverture d'une neuve dans le meme contexte)."""
+
+    def __init__(self, page_cassee, page_saine):
+        self.page = page_cassee
+        self._page_saine = page_saine
+        self.appels_reinitialisation = 0
+
+    def reinitialiser_page(self, imprimer=print):
+        self.appels_reinitialisation += 1
+        self.imprimer_recu = imprimer
+        self.page = self._page_saine
+
+
+def test_visiter_se_repare_une_fois_apres_un_echec_de_navigation():
+    # Sans le correctif, le premier goto() leve et _visiter laisse
+    # l'exception remonter directement : la page cassee n'est jamais
+    # remplacee, et resterait cassee pour tous les cours suivants.
+    page_cassee = PageCassee({})
+    page_saine = PageFactice({"/ena/site/modules": "<html>ok</html>"})
+    session = SessionAvecReinitialisation(page_cassee, page_saine)
+    ena = Ena(session)
+
+    html = ena._visiter("/ena/site/modules?idSite=1")
+
+    assert html == "<html>ok</html>"
+    assert session.appels_reinitialisation == 1
+    assert session.page is page_saine
+
+
+class SessionAvecReinitialisationInsuffisante(SessionFactice):
+    """Meme mecanisme que SessionAvecReinitialisation, mais la page neuve est
+    tout aussi cassee : verifie qu'aucune boucle ne se met en place, et que
+    l'exception finit par remonter telle quelle."""
+
+    def __init__(self, page_cassee):
+        self.page = page_cassee
+        self.appels_reinitialisation = 0
+
+    def reinitialiser_page(self, imprimer=print):
+        # imprimer accepte et ignore : l'interface reelle le porte
+        # pour que la trace atteigne la fenetre graphique.
+        self.appels_reinitialisation += 1
+        self.page = PageCassee({})
+
+
+def test_visiter_ne_boucle_pas_si_la_reprise_echoue_aussi():
+    session = SessionAvecReinitialisationInsuffisante(PageCassee({}))
+    ena = Ena(session)
+
+    with pytest.raises(ErreurPlaywright):
+        ena._visiter("/ena/site/modules?idSite=1")
+
+    # Un seul rejeu, jamais une boucle : la reparation n'a ete tentee qu'une
+    # fois avant que l'exception ne remonte.
+    assert session.appels_reinitialisation == 1
+
+
+def test_visiter_fait_passer_son_canal_d_affichage_a_la_reparation():
+    # La trace « page reinitialisee » doit atterrir la ou l'utilisateur
+    # regarde. En console c'est la sortie standard, mais dans la fenetre
+    # graphique c'est son journal -- et le coeur y pose son propre canal sur
+    # l'objet Ena (voir extracteur.__main__). Si _visiter appelle
+    # reinitialiser_page sans le transmettre, la reparation redevient
+    # invisible pour qui archive depuis la fenetre : une execution qui se
+    # repare en silence empeche de voir que la plateforme faiblit.
+    journal: list = []
+    session = SessionAvecReinitialisation(
+        PageCassee({}), PageFactice({"/ena/site/modules": "<html>ok</html>"})
+    )
+    ena = Ena(session, imprimer=journal.append)
+
+    ena._visiter("/ena/site/modules?idSite=1")
+
+    assert session.appels_reinitialisation == 1
+    assert session.imprimer_recu == journal.append
+

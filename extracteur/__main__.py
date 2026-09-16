@@ -583,6 +583,13 @@ def _un_seul_cours(
             imprimer("Connexion detectee.")
 
             ena = fabrique_ena(session)
+            # La trace d'une reparation de page doit atterrir la ou
+            # l'utilisateur regarde : la fenetre graphique, pas une
+            # sortie standard qu'elle n'affiche pas. setattr plutot
+            # qu'un argument de construction : fabrique_ena est
+            # appelee avec le seul objet session, y compris par les
+            # doublures de test, qui ignorent simplement l'attribut.
+            setattr(ena, "imprimer", imprimer)
             archiveur = Archiveur(ena, session.transport, destination, evenements)
             # Stocke la reference AVANT _chercher_cours, pas seulement avant
             # archiver() : _chercher_cours enumere lui-meme sessions et
@@ -785,6 +792,13 @@ def _archiver_plusieurs_sessions(
             imprimer("Connexion detectee.")
 
             ena = fabrique_ena(session)
+            # La trace d'une reparation de page doit atterrir la ou
+            # l'utilisateur regarde : la fenetre graphique, pas une
+            # sortie standard qu'elle n'affiche pas. setattr plutot
+            # qu'un argument de construction : fabrique_ena est
+            # appelee avec le seul objet session, y compris par les
+            # doublures de test, qui ignorent simplement l'attribut.
+            setattr(ena, "imprimer", imprimer)
             archiveur = Archiveur(ena, session.transport, destination, evenements)
             # Stocke la reference AVANT resoudre_sessions : c'est deja le
             # tout premier appel reseau (ena.sessions_disponibles, via
@@ -1145,19 +1159,32 @@ def _zip_mode(destination: Path, imprimer=print) -> int:
     """Compresse une archive deja sur disque en un fichier .zip, en console.
 
     Ne telecharge rien et ne se connecte jamais a monPortail. Le fichier
-    compresse est ecrit a cote du dossier archive, jamais dedans, pour ne
-    jamais avoir a s'exclure de son propre contenu.
+    compresse est d'abord tente A COTE du dossier archive, jamais dedans, ce
+    qui evite le plus souvent d'avoir a s'exclure de son propre contenu.
+
+    Si cette premiere ecriture echoue (OSError), on reessaie A L'INTERIEUR
+    du dossier de destination : ecrire a cote demande les droits
+    d'administrateur quand ce dossier est directement a la racine d'un
+    disque, cas reel constate ("C:\\Archive test" -> "C:\\Archive test.zip",
+    [Errno 13] Permission denied). creer_zip sait deja s'exclure de son
+    propre contenu (voir sa docstring), ce second essai est donc sur. Si les
+    deux emplacements echouent, le comportement d'avant est conserve :
+    message d'echec explicite, code de sortie non nul.
     """
     if not destination.is_dir():
         print(f"ECHEC : dossier introuvable : {destination}", file=sys.stderr)
         return 1
 
-    cible = destination.parent / f"{destination.name}.zip"
+    cible_a_cote = destination.parent / f"{destination.name}.zip"
     try:
-        creer_zip(destination, cible)
-    except OSError as erreur:
-        print(f"ECHEC : {erreur}", file=sys.stderr)
-        return 1
+        cible = creer_zip(destination, cible_a_cote)
+    except OSError as erreur_a_cote:
+        cible_dedans = destination / f"{destination.name}.zip"
+        try:
+            cible = creer_zip(destination, cible_dedans)
+        except OSError:
+            print(f"ECHEC : {erreur_a_cote}", file=sys.stderr)
+            return 1
 
     imprimer(f"Archive compressee : {cible}")
     return 0

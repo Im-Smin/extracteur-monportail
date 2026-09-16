@@ -269,6 +269,16 @@ def executer_archivage(
     archive qu'on sait tronquee fabriquerait un fichier d'apparence
     definitive alors qu'il suffit de relancer pour la completer.
 
+    Le ZIP est d'abord tente A COTE du dossier (nom_du_zip). Si cette
+    ecriture echoue (OSError), on reessaie A L'INTERIEUR du dossier de
+    destination : ecrire a cote demande les droits d'administrateur quand ce
+    dossier est directement a la racine d'un disque, cas reel constate
+    ("C:\\Archive test" -> "C:\\Archive test.zip", [Errno 13] Permission
+    denied). creer_zip sait deja s'exclure de son propre contenu, ce second
+    essai est donc sur. Si les deux emplacements echouent, le comportement
+    d'avant est conserve : message explicite, archivage tout de meme
+    considere reussi, commande de rattrapage donnee.
+
     Ne leve jamais : toute exception inattendue est rendue dans l'etat, pour
     que la fenetre puisse la montrer au lieu de mourir en silence dans son
     fil de travail.
@@ -325,16 +335,32 @@ def executer_archivage(
     try:
         etat["chemin_zip"] = compresser(Path(destination), cible)
         imprimer(f"Archive compressee : {etat['chemin_zip']}")
-    except OSError as erreur:
-        # L'archivage lui-meme a reussi : un ZIP manquant ne doit pas effacer
-        # ce resultat, seulement etre dit clairement. Le dossier reste
-        # compressible a part, par le mode --zip.
-        commande = f'python -m extracteur --zip --destination "{destination}"'
-        imprimer_erreur(
-            f"ATTENTION : la compression a echoue ({erreur}). Tous les fichiers sont "
-            f"bien dans {destination} ; relancez la compression seule avec :\n  {commande}"
+    except OSError as erreur_a_cote:
+        # Ecrire A COTE du dossier demande les droits d'administrateur quand
+        # ce dossier est directement a la racine d'un disque (constate en
+        # usage reel : destination "C:\Archive test", ZIP vise a
+        # "C:\Archive test.zip" -> [Errno 13] Permission denied). creer_zip
+        # sait deja s'exclure de son propre contenu (voir sa docstring) :
+        # ecrire DEDANS est donc une deuxieme tentative sure, avant
+        # d'abandonner completement la compression.
+        cible_dedans = Path(destination) / f"{Path(destination).name}.zip"
+        imprimer(
+            f"Compression a cote du dossier impossible ({erreur_a_cote}) ; "
+            f"nouvel essai a l'interieur du dossier, vers {cible_dedans} ..."
         )
-        etat["code"] = etat["code"] or 1
+        try:
+            etat["chemin_zip"] = compresser(Path(destination), cible_dedans)
+            imprimer(f"Archive compressee : {etat['chemin_zip']}")
+        except OSError as erreur:
+            # L'archivage lui-meme a reussi : un ZIP manquant ne doit pas
+            # effacer ce resultat, seulement etre dit clairement. Le dossier
+            # reste compressible a part, par le mode --zip.
+            commande = f'python -m extracteur --zip --destination "{destination}"'
+            imprimer_erreur(
+                f"ATTENTION : la compression a echoue ({erreur}). Tous les fichiers sont "
+                f"bien dans {destination} ; relancez la compression seule avec :\n  {commande}"
+            )
+            etat["code"] = etat["code"] or 1
 
     return etat
 

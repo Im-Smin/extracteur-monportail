@@ -359,6 +359,43 @@ def test_executer_survit_a_un_zip_qui_echoue(tmp_path):
     assert "--zip" in texte
 
 
+def test_executer_reessaie_le_zip_dans_le_dossier_si_a_cote_echoue(tmp_path):
+    # Ecrire A COTE du dossier archive demande les droits d'administrateur
+    # quand ce dossier est directement a la racine d'un disque (ex.
+    # "C:\\Archive test" -> "C:\\Archive test.zip", constate en usage reel :
+    # [Errno 13] Permission denied). creer_zip sait deja s'exclure de son
+    # propre contenu (voir sa docstring) : ecrire DEDANS est donc une
+    # deuxieme tentative sure, avant d'abandonner completement la
+    # compression.
+    modes = ModesFactices(code=0, resultat=Resultat(fichiers_ecrits=10))
+    lignes, ecrire = _sortie()
+    tentatives: list = []
+
+    def compresser_qui_echoue_a_cote(racine, cible):
+        tentatives.append(cible)
+        if cible.parent == racine:
+            return cible
+        raise PermissionError("[Errno 13] Permission denied")
+
+    etat = executer_archivage(
+        PORTEE_TOUT,
+        "",
+        tmp_path / "Archive",
+        ecrire,
+        ecrire,
+        modes=modes.dictionnaire(),
+        compresser=compresser_qui_echoue_a_cote,
+    )
+
+    cible_a_cote = tmp_path / "Archive.zip"
+    cible_dedans = tmp_path / "Archive" / "Archive.zip"
+    assert tentatives == [cible_a_cote, cible_dedans]
+    assert etat["chemin_zip"] == cible_dedans
+    assert etat["code"] == 0
+    texte = "\n".join(lignes)
+    assert str(cible_dedans) in texte
+
+
 def test_executer_ne_laisse_jamais_remonter_une_exception(tmp_path):
     def mode_qui_explose(argument, **reste):
         raise RuntimeError("playwright a disparu")

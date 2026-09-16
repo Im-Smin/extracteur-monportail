@@ -1383,6 +1383,35 @@ def test_zip_mode_echec_d_ecriture_rend_code_non_nul(tmp_path, monkeypatch, caps
     assert "disque plein" in capsys.readouterr().err
 
 
+def test_zip_mode_reessaie_dans_le_dossier_si_a_cote_echoue(tmp_path, monkeypatch):
+    # Ecrire A COTE du dossier demande les droits d'administrateur quand ce
+    # dossier est directement a la racine d'un disque (constate en usage
+    # reel : destination "C:\\Archive test" -> ZIP vise a
+    # "C:\\Archive test.zip", [Errno 13] Permission denied). creer_zip sait
+    # deja s'exclure de son propre contenu : ecrire DEDANS est donc une
+    # deuxieme tentative sure.
+    archive = tmp_path / "Archive"
+    archive.mkdir()
+    tentatives: list = []
+
+    def creer_zip_qui_echoue_a_cote(racine, cible):
+        tentatives.append(cible)
+        if cible.parent == racine:
+            return cible
+        raise PermissionError("[Errno 13] Permission denied")
+
+    monkeypatch.setattr("extracteur.__main__.creer_zip", creer_zip_qui_echoue_a_cote)
+    lignes = []
+
+    code = _zip_mode(archive, imprimer=lignes.append)
+
+    cible_a_cote = tmp_path / "Archive.zip"
+    cible_dedans = archive / "Archive.zip"
+    assert tentatives == [cible_a_cote, cible_dedans]
+    assert code == 0
+    assert any(str(cible_dedans) in ligne for ligne in lignes)
+
+
 # --- verification finale branchee sur --un-seul-cours, --session et --tout ---
 
 
@@ -1707,3 +1736,31 @@ def test_session_annulation_pendant_l_enumeration_n_ecrit_aucun_zip_possible(tmp
 
     assert code == 1
     assert recu == []
+
+
+def test_la_trace_de_reparation_de_page_atteint_le_journal_de_la_fenetre(tmp_path):
+    # Une execution qui se repare en silence empeche de voir que la
+    # plateforme faiblit. La trace doit donc atterrir la ou l'utilisateur
+    # regarde -- le journal de la fenetre graphique -- et non sur une sortie
+    # standard qu'elle n'affiche pas.
+    ena = EnaDeTest({SESSION_HIVER: [COURS_HIVER]})
+    session = SessionFactice()
+    lignes: list = []
+
+    _tout(
+        tmp_path,
+        session=session,
+        fabrique_ena=lambda _s: ena,
+        imprimer=lignes.append,
+        imprimer_erreur=lignes.append,
+    )
+
+    # Le coeur a bien pose son canal d'affichage sur l'objet Ena : c'est lui
+    # que _visiter passera a reinitialiser_page le jour d'un incident.
+    # Compare par egalite, jamais par identite : lignes.append rend un nouvel
+    # objet de methode liee a chaque acces.
+    assert ena.imprimer == lignes.append
+    ena.imprimer("page reinitialisee apres un echec de navigation")
+    assert lignes[-1] == "page reinitialisee apres un echec de navigation"
+
+

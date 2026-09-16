@@ -295,13 +295,54 @@ class Ena:
     CLASSE_OPTION_SESSION = "mpo-deroulant-elem"
     SELECTEUR_OPTIONS_SESSIONS_CLASSE = f'a.{CLASSE_OPTION_SESSION}:not({SELECTEUR_SESSIONS} a)'
 
-    def __init__(self, session):
+    def __init__(self, session, imprimer=print):
         self.session = session
+        # Ou raconter une reparation de page. Attribut plutot que parametre
+        # obligatoire : les appelants construisent Ena via fabrique_ena(session),
+        # a un seul argument. L'interface graphique y pose son propre canal
+        # apres construction, sans quoi la trace partirait sur une sortie
+        # standard que sa fenetre n'affiche pas -- et une execution qui se
+        # repare en silence empecherait de voir que la plateforme faiblit.
+        self.imprimer = imprimer
 
     def _visiter(self, chemin: str) -> str:
+        """Navigue vers `chemin` et rend le HTML rendu par le serveur.
+
+        Point de passage UNIQUE de toute navigation du programme : c'est ce
+        qui permet a la reparation ci-dessous de couper une cascade a la
+        racine, plutot que de la laisser se propager en silence a tous les
+        cours suivants. Incident reel qui motive cette reparation : un
+        `goto` qui expire (Timeout) laisse la page dans un etat de
+        navigation qui ne se resorbe jamais toute seule -- le `goto`
+        suivant entre alors en conflit, puis meme la lecture du contenu
+        finit par echouer definitivement. 17 cours sur 39 ont ete perdus
+        ainsi lors d'un archivage reel : l'isolation par cours attrapait
+        bien chaque exception, mais la page cassee, elle, n'etait jamais
+        reparee -- cette isolation ne protegeait donc plus rien des le
+        premier incident.
+
+        On se repare donc UNE SEULE fois, jamais en boucle : sur
+        ErreurPlaywright (delai depasse compris), on demande une page
+        neuve au meme contexte (SessionNavigateur.reinitialiser_page, qui
+        conserve les temoins d'authentification), puis on rejoue la meme
+        navigation. Si cette reprise echoue a son tour, l'exception remonte
+        telle quelle : l'isolation par cours (Archiveur.archiver) fait
+        alors son travail, et le cours suivant repart sur une page saine
+        plutot que d'heriter d'une page cassee.
+
+        self.session.page est relu a chaque etape, jamais capture dans une
+        variable locale avant la reparation : reinitialiser_page() remplace
+        cet objet par une page neuve, et une reference gardee avant l'appel
+        continuerait de pointer sur la page cassee.
+        """
         url = chemin if chemin.startswith("http") else BASE + chemin
-        self.session.page.goto(url, wait_until="networkidle")
-        return self.session.page.content()
+        try:
+            self.session.page.goto(url, wait_until="networkidle")
+            return self.session.page.content()
+        except ErreurPlaywright:
+            self.session.reinitialiser_page(imprimer=self.imprimer)
+            self.session.page.goto(url, wait_until="networkidle")
+            return self.session.page.content()
 
     def _assurer_authentifie(self) -> None:
         """Leve SessionExpiree si la page n'est plus authentifiee.

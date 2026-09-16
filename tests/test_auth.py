@@ -57,6 +57,10 @@ class PageFactice:
         """Simule la fermeture reelle de la fenetre par l'utilisateur."""
         self._fermee = True
 
+    def close(self):
+        """Simule Page.close(), appelee par reinitialiser_page()."""
+        self._fermee = True
+
     def title(self):
         """Simule Page.title()."""
         if self._titre_leve is not None:
@@ -1013,3 +1017,76 @@ def test_attendre_connexion_titre_inaccessible_n_interrompt_pas_les_autres_pages
     assert "login.microsoftonline.com [" not in ligne
     # ...ni l'affichage du titre de l'autre page.
     assert "login.live.com [Choisissez un compte]" in ligne
+
+
+# --- SessionNavigateur.reinitialiser_page : remede a un incident reel ---
+#
+# Un goto qui expire (Timeout) laisse la page dans un etat de navigation qui
+# ne se resorbe jamais toute seule : le goto suivant entre en conflit, puis
+# meme la lecture du contenu finit par echouer definitivement. Constate en
+# archivage reel : 17 cours sur 39 n'ont recupere que leur plan de cours,
+# tout le reste perdu par cette cascade. reinitialiser_page() ferme la page
+# cassee et en ouvre une neuve depuis le MEME contexte -- les temoins
+# d'authentification vivent dans le contexte, pas dans la page.
+
+
+def test_reinitialiser_page_remplace_la_page_par_une_page_neuve_du_meme_contexte():
+    """La page courante est fermee, et self.page pointe ensuite sur la page
+    neuve rendue par le contexte -- jamais sur l'ancienne, cassee."""
+    ancienne_page = PageFactice("https://sitescours.monportail.ulaval.ca/une/page")
+    contexte = ContextePersistantFactice("dossier-profil", headless=True, accept_downloads=True)
+
+    session = SessionNavigateurTestable(ancienne_page)
+    session.contexte = contexte
+
+    session.reinitialiser_page(imprimer=lambda _m: None)
+
+    assert ancienne_page.is_closed() is True
+    assert session.page is not ancienne_page
+    assert session.page in contexte.pages
+
+
+def test_reinitialiser_page_tolere_l_echec_de_fermeture_de_l_ancienne_page():
+    """Si fermer l'ancienne page echoue (elle est deja morte), la
+    reinitialisation continue quand meme et ouvre la nouvelle page -- une
+    ressource deja cassee ne doit jamais empecher sa propre reparation."""
+    ancienne_page = PageFactice("https://sitescours.monportail.ulaval.ca/une/page")
+    ancienne_page.close = _leve(ErreurPlaywright("la page est deja fermee"))
+    contexte = ContextePersistantFactice("dossier-profil", headless=True, accept_downloads=True)
+
+    session = SessionNavigateurTestable(ancienne_page)
+    session.contexte = contexte
+
+    session.reinitialiser_page(imprimer=lambda _m: None)
+
+    assert session.page is not ancienne_page
+    assert session.page in contexte.pages
+
+
+def test_reinitialiser_page_leve_une_erreur_claire_si_le_contexte_est_ferme():
+    """Sans contexte vivant, aucune page saine n'est possible : une erreur
+    explicite vaut mieux qu'une page inutilisable rendue en silence."""
+    ancienne_page = PageFactice("https://sitescours.monportail.ulaval.ca/une/page")
+    contexte = ContextePersistantFactice("dossier-profil", headless=True, accept_downloads=True)
+    contexte.close()
+
+    session = SessionNavigateurTestable(ancienne_page)
+    session.contexte = contexte
+
+    with pytest.raises(RuntimeError):
+        session.reinitialiser_page(imprimer=lambda _m: None)
+
+
+def test_reinitialiser_page_emet_une_trace_visible():
+    """Sans cette trace, un archivage qui se repare tout seul masquerait un
+    signe de faiblesse reel de la plateforme."""
+    ancienne_page = PageFactice("https://sitescours.monportail.ulaval.ca/une/page")
+    contexte = ContextePersistantFactice("dossier-profil", headless=True, accept_downloads=True)
+
+    session = SessionNavigateurTestable(ancienne_page)
+    session.contexte = contexte
+    messages = []
+
+    session.reinitialiser_page(imprimer=messages.append)
+
+    assert any("reinitialis" in message for message in messages)
