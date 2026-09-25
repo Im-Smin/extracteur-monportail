@@ -1125,3 +1125,44 @@ def test_une_page_illisible_est_quand_meme_imprimee_par_navigation(tmp_path):
     # synthese des evaluations, qui passent par le meme chemin.
     assert "Module 1 - Section A.pdf" in ena.captures_avec_navigation
 
+
+class EnaSansAucunContenu(EnaFactice):
+    """Site lu sans aucun module, evaluation, note ni section de menu :
+    exactement ce qu'avaient donne quatre cours reels lus trop tot."""
+
+    def modules(self, cours):
+        return []
+
+    def evaluations(self, cours):
+        return []
+
+    def resultats(self, cours):
+        return []
+
+    def parcourir_menu(self, cours, action):
+        return 0
+
+
+def test_un_cours_sans_aucun_contenu_est_un_echec_au_rapport(tmp_path):
+    # Quatre cours reels ressortis avec leur seul plan de cours, et pas une
+    # ligne au rapport. Un site de cours porte toujours au moins un module,
+    # une evaluation ou une section : n'en trouver aucun est une lecture
+    # ratee, a signaler.
+    from extracteur.archiveur import MESSAGE_COURS_SANS_CONTENU
+
+    resultat = Archiveur(EnaSansAucunContenu(), transport_ok, tmp_path, queue.Queue()).archiver([COURS])
+
+    assert [e.cause for e in resultat.echecs] == [MESSAGE_COURS_SANS_CONTENU]
+    assert resultat.echecs[0].element == "(cours entier)"
+
+
+def test_un_cours_avec_seulement_des_notes_n_est_pas_un_echec(tmp_path):
+    # Contre-epreuve : des notes suffisent a prouver que le site a ete lu.
+    class EnaAvecNotesSeulement(EnaSansAucunContenu):
+        def resultats(self, cours):
+            return [Note(evaluation="Examen", note="80")]
+
+    resultat = Archiveur(EnaAvecNotesSeulement(), transport_ok, tmp_path, queue.Queue()).archiver([COURS])
+
+    assert not any(e.element == "(cours entier)" for e in resultat.echecs)
+
