@@ -1394,7 +1394,7 @@ def test_zip_mode_reessaie_dans_le_dossier_si_a_cote_echoue(tmp_path, monkeypatc
     archive.mkdir()
     tentatives: list = []
 
-    def creer_zip_qui_echoue_a_cote(racine, cible):
+    def creer_zip_qui_echoue_a_cote(racine, cible, **_options):
         tentatives.append(cible)
         if cible.parent == racine:
             return cible

@@ -808,3 +808,48 @@ def test_le_texte_d_accueil_mentionne_l_auteur_et_la_collaboration():
     assert "Im-Smin" in en_tete
     assert "Claude" in en_tete
 
+
+def _dossier_a_compresser(racine):
+    racine.mkdir()
+    for numero in range(5):
+        (racine / f"f{numero}.txt").write_text("contenu " * 100, encoding="utf-8")
+    return racine
+
+
+def test_la_compression_affiche_sa_progression_dans_le_journal(tmp_path, monkeypatch):
+    # Incident reel : 7,6 Go compresses sans le moindre message pendant pres
+    # d'une demi-heure. L'utilisateur a cru a un plantage.
+    monkeypatch.setattr("extracteur.verification.INTERVALLE_PROGRESSION_FICHIERS", 2)
+    racine = _dossier_a_compresser(tmp_path / "Archive")
+    modes = ModesFactices(code=0, resultat=Resultat(fichiers_ecrits=5))
+    lignes, ecrire = _sortie()
+
+    etat = executer_archivage(PORTEE_TOUT, "", racine, ecrire, ecrire, modes=modes.dictionnaire())
+
+    assert etat["chemin_zip"] is not None
+    progression = [ligne for ligne in lignes if "Compression :" in ligne]
+    assert progression, lignes
+    assert "5 / 5 fichiers" in progression[-1]
+
+
+def test_arreter_pendant_la_compression_ne_plante_pas(tmp_path):
+    # Le bouton Arreter doit rester operant pendant la compression. L'arret
+    # est une demande de l'utilisateur, pas une erreur : aucun plantage,
+    # aucun ZIP partiel, et la commande de rattrapage est donnee.
+    import threading
+
+    racine = _dossier_a_compresser(tmp_path / "Archive")
+    annulation = threading.Event()
+    modes = ModesFactices(code=0, resultat=Resultat(fichiers_ecrits=5), effet=annulation.set)
+    lignes, ecrire = _sortie()
+
+    etat = executer_archivage(
+        PORTEE_TOUT, "", racine, ecrire, ecrire, annulation=annulation, modes=modes.dictionnaire()
+    )
+
+    assert etat["chemin_zip"] is None
+    assert not (tmp_path / "Archive.zip").exists()
+    assert not (tmp_path / "Archive.zip.part").exists()
+    assert any("arretee a votre demande" in ligne for ligne in lignes)
+    assert any("--zip" in ligne for ligne in lignes)
+

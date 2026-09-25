@@ -1,3 +1,4 @@
+import pytest
 """Verification finale d'une archive face a son manifeste, et mise en ZIP.
 
 Aucun de ces tests ne touche au reseau : tout se joue sur des dossiers
@@ -225,3 +226,140 @@ def test_creation_du_zip_sur_chemin_long(tmp_path):
     relatif_attendu = str((profond / "notes.pdf").relative_to(tmp_path)).replace("\\", "/")
     with zipfile.ZipFile(destination) as archive:
         assert relatif_attendu in archive.namelist()
+# --- compression : rapidite, progression, arret, ecriture atomique ---
+
+
+def _archive_de_test(racine):
+    (racine / "cours").mkdir(parents=True)
+    (racine / "cours" / "notes.txt").write_text("texte " * 2000, encoding="utf-8")
+    (racine / "cours" / "diapos.pdf").write_bytes(b"%PDF-1.4 " + bytes(range(256)) * 50)
+    (racine / "cours" / "labo.zip").write_bytes(b"PK" + bytes(range(256)) * 50)
+    return racine
+
+
+def test_les_formats_deja_compresses_sont_stockes_tels_quels(tmp_path):
+    # Mesure reelle sur 7,6 Go : recompresser PDF, PPTX, ZIP... tourne a
+    # 17 Mo/s pour 9 % de gain, contre 258 Mo/s en stockage simple. C'etait
+    # la cause des ~30 minutes de compression prises pour un plantage.
+    import zipfile
+
+    racine = _archive_de_test(tmp_path / "Archive")
+    cible = creer_zip(racine, tmp_path / "Archive.zip")
+
+    with zipfile.ZipFile(cible) as archive:
+        modes = {info.filename: info.compress_type for info in archive.infolist()}
+    assert modes["cours/diapos.pdf"] == zipfile.ZIP_STORED
+    assert modes["cours/labo.zip"] == zipfile.ZIP_STORED
+    # Le texte, lui, se compresse tres bien : on continue de le compresser.
+    assert modes["cours/notes.txt"] == zipfile.ZIP_DEFLATED
+
+
+def test_le_zip_produit_est_integre_et_complet(tmp_path):
+    import zipfile
+
+    racine = _archive_de_test(tmp_path / "Archive")
+    cible = creer_zip(racine, tmp_path / "Archive.zip")
+
+    with zipfile.ZipFile(cible) as archive:
+        assert archive.testzip() is None
+        assert sorted(archive.namelist()) == [
+            "cours/diapos.pdf", "cours/labo.zip", "cours/notes.txt",
+        ]
+        assert archive.read("cours/notes.txt") == (racine / "cours" / "notes.txt").read_bytes()
+
+
+def test_la_progression_est_rapportee_jusqu_au_total(tmp_path, monkeypatch):
+    # Sans signe de vie, une compression de plusieurs minutes ressemble a un
+    # plantage : c'est exactement ce que l'utilisateur a vu.
+    monkeypatch.setattr("extracteur.verification.INTERVALLE_PROGRESSION_FICHIERS", 1)
+    racine = _archive_de_test(tmp_path / "Archive")
+    etapes: list = []
+
+    creer_zip(racine, tmp_path / "Archive.zip", progression=lambda *a: etapes.append(a))
+
+    assert etapes, "aucune progression rapportee"
+    fait, total, octets_faits, octets_total = etapes[-1]
+    assert fait == total == 3
+    assert octets_faits == octets_total > 0
+
+
+def test_l_arret_supprime_le_fichier_partiel(tmp_path):
+    # Le bouton Arreter doit fonctionner pendant la compression, et ne rien
+    # laisser d'incomplet sur le disque.
+    import threading
+
+    from extracteur.verification import CompressionInterrompue
+
+    racine = _archive_de_test(tmp_path / "Archive")
+    annulation = threading.Event()
+    annulation.set()
+    cible = tmp_path / "Archive.zip"
+
+    with pytest.raises(CompressionInterrompue):
+        creer_zip(racine, cible, annulation=annulation)
+
+    assert not cible.exists()
+    assert not (tmp_path / "Archive.zip.part").exists()
+
+
+def test_une_compression_qui_echoue_ne_laisse_pas_de_zip_d_apparence_complete(tmp_path, monkeypatch):
+    # Incident reel : un arret force de l'ancienne version a laisse un ZIP
+    # tronque portant le nom definitif, qui avait l'air complet. L'ecriture
+    # passe desormais par un .part renomme seulement a la fin.
+    import zipfile
+
+    racine = _archive_de_test(tmp_path / "Archive")
+    cible = tmp_path / "Archive.zip"
+    ecrire_original = zipfile.ZipFile.write
+    appels = {"n": 0}
+
+    def ecrire_puis_echouer(self, *args, **kwargs):
+        appels["n"] += 1
+        if appels["n"] == 2:
+            raise OSError("disque plein")
+        return ecrire_original(self, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "write", ecrire_puis_echouer)
+
+    with pytest.raises(OSError):
+        creer_zip(racine, cible)
+
+    assert not cible.exists()
+    assert not (tmp_path / "Archive.zip.part").exists()
+
+
+def test_un_ancien_zip_dans_le_dossier_n_est_pas_avale_par_le_nouveau(tmp_path):
+    # Le repli ecrit le ZIP DANS le dossier quand a cote est interdit (racine
+    # d'un disque). Une execution suivante qui, elle, ecrit a cote ne doit pas
+    # emballer ce vieux ZIP de plusieurs gigaoctets dans le nouveau.
+    import zipfile
+
+    racine = _archive_de_test(tmp_path / "Archive")
+    (racine / "Archive.zip").write_bytes(b"PK ancien zip de plusieurs Go")
+
+    cible = creer_zip(racine, tmp_path / "Archive.zip")
+
+    with zipfile.ZipFile(cible) as archive:
+        assert "Archive.zip" not in archive.namelist()
+
+
+def test_le_nom_definitif_n_apparait_qu_une_fois_la_compression_finie(tmp_path, monkeypatch):
+    # Un processus tue net (fenetre fermee de force, machine eteinte) ne passe
+    # par aucun nettoyage. La seule protection est de n'ecrire sous le nom
+    # definitif qu'a la toute fin : tant que ce nom n'existe pas, personne ne
+    # peut prendre un ZIP tronque pour une archive complete.
+    monkeypatch.setattr("extracteur.verification.INTERVALLE_PROGRESSION_FICHIERS", 1)
+    racine = _archive_de_test(tmp_path / "Archive")
+    cible = tmp_path / "Archive.zip"
+    vu_en_cours: list = []
+
+    def observer(fait, total, *_octets):
+        if fait < total:
+            vu_en_cours.append(cible.exists())
+
+    creer_zip(racine, cible, progression=observer)
+
+    assert vu_en_cours, "aucune etape intermediaire observee"
+    assert not any(vu_en_cours), "le ZIP portait deja son nom definitif en cours d'ecriture"
+    assert cible.exists()
+
