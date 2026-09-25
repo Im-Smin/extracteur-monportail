@@ -51,6 +51,8 @@ LIGNES_JOURNAL_MAX = 5000
 # d'aller chercher ce qui manque a la main pendant que la source existe encore.
 TEXTE_ACCUEIL = """ARCHIVEUR MONPORTAIL
 ====================
+Developpe par Im-Smin, en collaboration avec Claude (Anthropic).
+Logiciel libre sous licence MIT -- github.com/Im-Smin/extracteur-monportail
 
 Ce programme copie sur votre disque tout ce que vous avez sur monPortail,
 avant la fermeture definitive de la plateforme le 1er novembre 2026. Passe

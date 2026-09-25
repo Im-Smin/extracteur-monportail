@@ -799,3 +799,12 @@ def test_le_cycle_complet_commencer_puis_conclure(tmp_path, fenetre_tk):
     assert "Archive.zip" in contenu
     assert str(fenetre.bouton_commencer["state"]) == "normal"
     assert str(fenetre.bouton_arreter["state"]) == "disabled"
+
+
+def test_le_texte_d_accueil_mentionne_l_auteur_et_la_collaboration():
+    # Mention de paternite demandee par l'auteur, en tete du mode d'emploi :
+    # c'est la premiere chose que voit quiconque ouvre l'outil.
+    en_tete = TEXTE_ACCUEIL.split("Ce programme")[0]
+    assert "Im-Smin" in en_tete
+    assert "Claude" in en_tete
+
