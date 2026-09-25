@@ -1,3 +1,4 @@
+import collections
 import queue
 from pathlib import Path
 
@@ -83,12 +84,21 @@ class EnaDeTest:
         return []
 
     def parcourir_menu(self, cours, action):
-        return 0
+        # Un site de cours reel porte toujours au moins une section de menu
+        # (« Introduction ») : un cours sans aucun contenu est desormais
+        # signale comme une lecture ratee (voir MESSAGE_COURS_SANS_CONTENU).
+        # Une section visitee, sans fichier, garde ce cours minimal realiste.
+        action("Introduction", "<html></html>")
+        return 1
 
     def capturer_plan_de_cours(self, cours, destination):
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(b"%PDF-1.4 plan")
         return True
+
+    def capturer_pdf_page_courante(self, destination):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"%PDF-1.4 page")
 
 
 class SessionFactice:
@@ -1822,4 +1832,85 @@ def test_la_veille_est_relachee_meme_si_l_archivage_plante(tmp_path, monkeypatch
     )
 
     assert appels == ["pose", "relache"]
+
+
+# --- session passee lue vide : lecture ratee, jamais un vide silencieux ---
+
+from datetime import date as _date
+
+SEPTEMBRE_2026 = lambda: _date(2026, 9, 25)  # noqa: E731
+SESSION_AUTOMNE_2026 = Session(code="202609", libelle="Automne 2026")
+
+
+class EnaQuiLitVideAuPremierPassage(EnaDeTest):
+    """La liste des cours n'est pas encore rendue au premier passage : c'est
+    l'incident reel d'Automne 2025, lu comme une session vide."""
+
+    def __init__(self, cours_par_session, vide_combien_de_fois=1):
+        super().__init__(cours_par_session)
+        self._vide_restant = {s: vide_combien_de_fois for s in cours_par_session}
+        self.lectures = collections.Counter()
+
+    def sites_de_session(self, session):
+        self.lectures[session] += 1
+        if self._vide_restant.get(session, 0) > 0:
+            self._vide_restant[session] -= 1
+            return []
+        return super().sites_de_session(session)
+
+
+def test_une_session_passee_lue_vide_est_relue_une_fois(tmp_path):
+    ena = EnaQuiLitVideAuPremierPassage({SESSION_AUTOMNE: [COURS_ANCIEN]}, vide_combien_de_fois=1)
+
+    code = _tout(
+        tmp_path, session=SessionFactice(), fabrique_ena=lambda _s: ena,
+        imprimer=lambda _t: None, imprimer_erreur=lambda _t: None, aujourd_hui=SEPTEMBRE_2026,
+    )
+
+    assert ena.lectures[SESSION_AUTOMNE] == 2
+    assert (tmp_path / SESSION_AUTOMNE.dossier() / COURS_ANCIEN.dossier()).exists()
+    assert code == 0
+
+
+def test_une_session_passee_toujours_vide_est_un_echec_au_rapport(tmp_path):
+    # Quatre cours perdus en silence dans un archivage reel : une session
+    # passee sans aucun cours doit apparaitre au rapport et empecher le
+    # verdict « TERMINE », sans pour autant emporter les autres sessions.
+    ena = EnaQuiLitVideAuPremierPassage(
+        {SESSION_AUTOMNE: [COURS_ANCIEN], SESSION_HIVER: [COURS_HIVER]}, vide_combien_de_fois=0
+    )
+    ena._vide_restant[SESSION_AUTOMNE] = 99
+
+    code = _tout(
+        tmp_path, session=SessionFactice(), fabrique_ena=lambda _s: ena,
+        imprimer=lambda _t: None, imprimer_erreur=lambda _t: None, aujourd_hui=SEPTEMBRE_2026,
+    )
+
+    assert code != 0
+    rapport = (tmp_path / "_rapport.html").read_text(encoding="utf-8")
+    assert SESSION_AUTOMNE.libelle in rapport
+    assert "session passee" in rapport
+    # L'autre session a bien ete archivee.
+    assert (tmp_path / SESSION_HIVER.dossier() / COURS_HIVER.dossier()).exists()
+
+
+def test_une_session_courante_vide_n_est_pas_un_echec(tmp_path):
+    # La session en cours peut legitimement etre vide : aucun bruit au
+    # rapport, sinon chaque archivage complet finirait « INCOMPLETE ».
+    ena = EnaDeTest({SESSION_AUTOMNE_2026: [], SESSION_HIVER: [COURS_HIVER]})
+
+    code = _tout(
+        tmp_path, session=SessionFactice(), fabrique_ena=lambda _s: ena,
+        imprimer=lambda _t: None, imprimer_erreur=lambda _t: None, aujourd_hui=SEPTEMBRE_2026,
+    )
+
+    assert code == 0
+
+
+def test_code_session_courante_suit_le_calendrier_universitaire():
+    from extracteur.__main__ import _code_session_courante
+
+    assert _code_session_courante(_date(2026, 2, 1)) == "202601"
+    assert _code_session_courante(_date(2026, 6, 1)) == "202605"
+    assert _code_session_courante(_date(2026, 9, 25)) == "202609"
 

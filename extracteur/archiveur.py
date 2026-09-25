@@ -17,6 +17,13 @@ from extracteur.telechargement import ErreurPermanente, SessionExpiree, telechar
 
 NOM_PLAN_DE_COURS = "plan-de-cours.pdf"
 
+# Voir la fin de Archiveur._archiver_un_cours.
+MESSAGE_COURS_SANS_CONTENU = (
+    "aucun contenu trouve : ni module, ni evaluation, ni section de menu. Le "
+    "site n'a vraisemblablement pas ete lu correctement. Relancez ce cours, "
+    "puis verifiez-le a la main sur monPortail si le probleme persiste."
+)
+
 # Pages de synthese de la section Evaluations et resultats, capturees une
 # seule fois par cours dans Pages/, au meme titre que les pages de module.
 NOM_PAGE_EVALUATIONS = "evaluations.pdf"
@@ -220,7 +227,23 @@ class Archiveur:
         # n'est atteignable qu'en cliquant les entrees de leur propre menu. Sans
         # cette branche, ces cours produiraient un dossier vide.
         if not modules and not evaluations:
-            self._parcourir_le_menu(cours, base)
+            sections = self._parcourir_le_menu(cours, base)
+            if not sections and not notes:
+                # Un site de cours reel porte toujours au moins un module,
+                # une evaluation ou une section de menu. N'en trouver aucun
+                # trahit une lecture ratee (page pas encore rendue, site
+                # inattendu), pas un cours vide. Constate en usage reel :
+                # quatre cours ressortis avec leur seul plan de cours, et
+                # pas une ligne au rapport. Mieux vaut un echec a verifier
+                # qu'un vide qui passe pour normal.
+                self.resultat.echecs.append(
+                    Echec(
+                        cours=cours.dossier(),
+                        element="(cours entier)",
+                        cause=MESSAGE_COURS_SANS_CONTENU,
+                    )
+                )
+                self._emettre("echec", f"{cours.dossier()} : aucun contenu trouve")
 
     def _archiver_plan_de_cours(self, cours, base: Path) -> None:
         """Telecharge le PDF officiel s'il est connu, sinon imprime la page en
@@ -263,7 +286,7 @@ class Archiveur:
             cible = base / "Pages" / _segment(f"{libelle}.pdf")
             self._capturer_page_courante(cours, cible)
 
-        self.ena.parcourir_menu(cours, traiter)
+        return self.ena.parcourir_menu(cours, traiter)
 
     def _consigner_page_courante(self, cours, dossier: Path) -> None:
         """Ressources ignorees (videos, liens externes, traceurs inconnus) de

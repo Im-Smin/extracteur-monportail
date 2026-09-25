@@ -88,6 +88,7 @@ console) :
 """
 
 import argparse
+from datetime import date
 import queue
 import sys
 import threading
@@ -731,6 +732,36 @@ def _un_seul_cours(
     return _code_de_sortie(resultat)
 
 
+def _code_session_courante(aujourd_hui) -> str:
+    """Code AAAASS de la session en cours a la date donnee (09 = automne,
+    05 = ete, 01 = hiver), dans le format de Session.code."""
+    mois = aujourd_hui.month
+    suffixe = "09" if mois >= 9 else "05" if mois >= 5 else "01"
+    return f"{aujourd_hui.year}{suffixe}"
+
+
+def _session_passee(session, aujourd_hui) -> bool:
+    """Vrai si la session est terminee a la date donnee.
+
+    Sert a juger une liste de cours vide. Le selecteur de /portail/cours ne
+    propose que les sessions ou l'etudiant est inscrit, plus la session
+    courante et la suivante : une session PASSEE qui s'y trouve a donc au
+    moins un cours. La lire vide trahit une lecture ratee, pas une realite --
+    constate en usage reel sur Automne 2025, quatre cours perdus en silence.
+    La session courante et les suivantes, elles, peuvent legitimement etre
+    vides.
+    """
+    return session.code < _code_session_courante(aujourd_hui)
+
+
+MESSAGE_SESSION_PASSEE_VIDE = (
+    "aucun cours lu pour une session passee, meme apres une seconde lecture. "
+    "Le selecteur ne propose que les sessions ou vous etiez inscrit : cette "
+    "session a donc des cours que la page n'a pas affiches a temps. Relancez "
+    "l'archivage ; ce qui est deja sur le disque ne sera pas retelecharge."
+)
+
+
 def _archiver_plusieurs_sessions(
     resoudre_sessions,
     destination: Path,
@@ -740,6 +771,7 @@ def _archiver_plusieurs_sessions(
     imprimer_erreur=None,
     annulation=None,
     sur_fin=None,
+    aujourd_hui=date.today,
 ) -> int:
     """Archive les cours d'une ou plusieurs sessions, en console.
 
@@ -869,6 +901,13 @@ def _archiver_plusieurs_sessions(
                 # session suivante, elle doit interrompre tout l'enchainement.
                 try:
                     cours_de_la_session = ena.sites_de_session(session_cible)
+                    if not cours_de_la_session and _session_passee(session_cible, aujourd_hui()):
+                        # Une session passee lue vide est une lecture ratee
+                        # (voir _session_passee) : une seconde chance, puis
+                        # un echec consigne plutot qu'un vide silencieux.
+                        cours_de_la_session = ena.sites_de_session(session_cible)
+                        if not cours_de_la_session:
+                            raise RuntimeError(MESSAGE_SESSION_PASSEE_VIDE)
                 except SessionExpiree:
                     raise
                 except Exception as erreur:  # isolation stricte par session
@@ -1074,6 +1113,7 @@ def _session(
     imprimer_erreur=None,
     annulation=None,
     sur_fin=None,
+    aujourd_hui=date.today,
 ) -> int:
     """Archive tous les cours d'une session, en console ou depuis l'interface
     graphique.
@@ -1106,6 +1146,7 @@ def _session(
         imprimer_erreur=imprimer_erreur,
         annulation=annulation,
         sur_fin=sur_fin,
+        aujourd_hui=aujourd_hui,
     )
 
 
@@ -1117,6 +1158,7 @@ def _tout(
     imprimer_erreur=None,
     annulation=None,
     sur_fin=None,
+    aujourd_hui=date.today,
 ) -> int:
     """Archive toutes les sessions, de la plus ancienne a la plus recente, en
     console ou depuis l'interface graphique.
@@ -1142,6 +1184,7 @@ def _tout(
         imprimer_erreur=imprimer_erreur,
         annulation=annulation,
         sur_fin=sur_fin,
+        aujourd_hui=aujourd_hui,
     )
 
 

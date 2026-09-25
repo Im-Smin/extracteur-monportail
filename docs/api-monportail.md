@@ -570,3 +570,83 @@ pesé et écarté : deux corruptions en conditions réelles, un diagnostic coût
 l'utilisateur plutôt que de le supprimer. Le profil persistant a un coût de
 fiabilité qui n'est pas justifié par le gain d'une reconnexion évitée de temps
 en temps.
+
+## Portail refondu (constaté le 25 septembre 2026)
+
+**Relevé par inspection directe. Remplace, pour l'énumération des sessions et
+des cours, tout ce qui précède sur `/portail/cours` et son sélecteur
+AngularJS.** Les sites de cours (`sitescours.monportail.ulaval.ca/ena/...`)
+n'ont pas changé : seule la porte d'entrée a bougé.
+
+### `/portail/cours` n'existe plus
+
+`https://monportail.ulaval.ca/portail/cours` redirige vers
+`/portail/page-404`. Un archivage lancé le 16 septembre l'utilisait encore
+avec succès : la refonte a eu lieu entre les deux dates.
+
+### Les cours sont dans un bloc du tableau de bord
+
+Page : `https://monportail.ulaval.ca/portail/` (tableau de bord, Vue.js —
+attributs `data-v-…`). Bloc :
+
+```
+div.mpo-smart-boite-liste-cours__boite.mpo--sites-lies-session
+```
+
+### Le filtre de session
+
+- Déclencheur : `[role=combobox][aria-label="Filtre de session"]`, dont le
+  champ `input.m-dropdown__input` porte en `value` le libellé de la session
+  affichée (ex. `Automne 2025`).
+- Liste : l'élément désigné par l'attribut `aria-owns` du combobox,
+  `ul[role=listbox].m-dropdown__list`.
+- Options : `li[role=option].m-dropdown-item`, libellé dans
+  `span.m-dropdown-item__element-text`. L'option active porte
+  `aria-selected="true"` et la classe `m--is-selected`.
+- La liste déclare `aria-multiselectable="true"`, mais **cliquer une option
+  remplace la sélection** : constaté, une seule session reste sélectionnée.
+- 13 options relevées, de `Hiver 2027` à `Automne 2022`, dont `Été 2026`,
+  absente de l'ancien sélecteur. Session affichée par défaut : `Automne 2025`.
+
+### Deux groupes dans le bloc
+
+- « Cours suivis (N) » : accordéon `.mpo-accordeon-cours-suivis`. Seuls ces
+  éléments sont des cours à archiver.
+- « Autres activités (N) » : formations institutionnelles, identiques d'une
+  session à l'autre. Hors périmètre, comme avant.
+
+### Une carte de cours
+
+```
+.mpo-gabarit-item-liste-cours
+  h4.mpo-gabarit-item-liste-cours__titre
+    a[href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=178960"]
+  texte visible : « Analyse et modélisation des données | MQT-2101 »
+  lien « Indicateur de réussite » (traceur analytique, sans intérêt)
+```
+
+- L'`idSite` se lit dans le lien du titre, comme avant.
+- Le sigle suit le titre dans le texte de la carte.
+- **La carte ne porte plus de lien vers le plan de cours, ni vers le sommaire
+  des résultats.** L'ancienne carte en portait un
+  (`/analytique/evenement/plancours?…&url=/contenu/sitescours/…/plancours/<fichier>.pdf`).
+- Mention possible « Autre cours partageant ce site » : un même site
+  `idSite` sert deux sigles.
+
+### Cours hébergé hors de monPortail
+
+Constaté pour GSO-3105 (Automne 2025) : le lien du titre pointe vers
+`https://www.brioeducation.ca/sites/…?sso=ulaval`. Aucun `idSite`, aucun site
+ENA. **L'outil ne peut pas l'archiver, mais doit le signaler** : l'ancienne
+énumération l'ignorait en silence — ce cours n'avait jamais été vu.
+
+### Plan de cours : plus de source sûre
+
+- Sur le site de cours, la seule entrée « Plan de cours » est la commande ADF
+  `cmdObtenirPlanCours`, qui publie une nouvelle version (voir plus haut) :
+  interdite.
+- `/lieninterne/redirection/<idSite>/plan_de_cours` et `…/plancours`
+  renvoient une page « Erreur » (« Un problème technique s'est produit… »).
+- Les plans déjà téléchargés avant la refonte restent valables ; une reprise
+  ne les retouche pas.
+
