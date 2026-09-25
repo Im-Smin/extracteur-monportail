@@ -2423,3 +2423,68 @@ def test_le_clic_normal_reste_le_chemin_par_defaut():
     assert page.session_selectionnee == "Hiver 2026"
     assert journal == []
 
+
+class PageAvecCartesEnRetard(PageAvecSelecteurSessions):
+    """Reproduit l'incident reel : le bouton du selecteur confirme la
+    session, mais les cartes de cours n'apparaissent que plusieurs sondages
+    plus tard. Chaque wait_for_timeout fait avancer l'horloge simulee."""
+
+    def __init__(self, libelles, html_par_session, sondages_avant_rendu):
+        super().__init__(libelles, html_par_session)
+        self._restant = sondages_avant_rendu
+        self.attente_ms = 0
+
+    def wait_for_timeout(self, ms):
+        self.attente_ms += ms
+        if self.session_selectionnee is not None and self._restant > 0:
+            self._restant -= 1
+
+    def _cartes_rendues(self):
+        return self.session_selectionnee is not None and self._restant == 0
+
+    def locator(self, selecteur):
+        from extracteur.ena import SELECTEUR_CARTE_COURS
+
+        if selecteur == SELECTEUR_CARTE_COURS:
+            html = self.html_par_session.get(self.session_selectionnee, "")
+            return LocatorFactice(html.count("/ena/site/accueil") if self._cartes_rendues() else 0)
+        return super().locator(selecteur)
+
+    def content(self):
+        if not self._cartes_rendues():
+            return "<html>liste en cours de chargement</html>"
+        return super().content()
+
+
+def test_sites_de_session_attend_que_les_cartes_de_cours_soient_rendues():
+    # Incident reel : les quatre cours d'Automne 2025 lus comme une session
+    # vide, parce que la liste etait lue 500 ms apres la confirmation du
+    # bouton, avant que les cartes ne soient rendues. Aucun echec n'avait ete
+    # consigne : quatre cours manquaient a l'archive en silence.
+    html = (
+        '<a href="/ena/site/accueil?idSite=1">A</a>'
+        '<a href="/ena/site/accueil?idSite=2">B</a>'
+    )
+    page = PageAvecCartesEnRetard(["Automne 2025"], {"Automne 2025": html}, sondages_avant_rendu=6)
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+
+    cours = ena.sites_de_session(Session(code="202509", libelle="Automne 2025"))
+
+    assert sorted(c.id_site for c in cours) == ["1", "2"]
+
+
+def test_sites_de_session_vide_attend_le_delai_complet_avant_de_conclure():
+    # Une session reellement vide ne doit etre acceptee comme telle qu'apres
+    # le delai complet, jamais sur une premiere lecture.
+    from extracteur.ena import DELAI_LISTE_COURS_VIDE_MS
+
+    page = PageAvecCartesEnRetard(["Automne 2026"], {}, sondages_avant_rendu=0)
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+
+    cours = ena.sites_de_session(Session(code="202609", libelle="Automne 2026"))
+
+    assert cours == []
+    assert page.attente_ms >= DELAI_LISTE_COURS_VIDE_MS
+

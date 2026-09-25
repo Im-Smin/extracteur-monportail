@@ -167,6 +167,13 @@ CANDIDATS_DIAGNOSTIC_SESSIONS = ("[role=option]", ".mpo-deroulant-element", "li"
 # le temps observe, pour absorber les sessions plus lentes.
 DELAI_CHARGEMENT_SESSIONS_MS = 30_000
 
+# Lecture de la liste des cours apres un changement de session : voir
+# Ena._contenu_liste_cours_stable. Une carte de cours se reconnait a son lien
+# vers l'accueil du site de cours, le meme que lit cours_depuis_html.
+SELECTEUR_CARTE_COURS = "a[href*='/ena/site/accueil']"
+INTERVALLE_SONDAGE_LISTE_COURS_MS = 500
+DELAI_LISTE_COURS_VIDE_MS = 12_000
+
 # Delai accorde a la confirmation du changement de session par le bouton,
 # une fois son option cliquee. Le clic recharge la liste des cours : le
 # bouton du selecteur est detruit puis recree par AngularJS, exactement le
@@ -804,13 +811,39 @@ class Ena:
         self._ouvrir_selecteur_sessions()
         self._selectionner_session(session)
 
-        # Marge de securite apres la confirmation du bouton : la session
-        # reelle mesuree affiche a la fois le bouton et les cours en moins
-        # de 500 ms, mais rien ne garantit que les deux soient rendus dans
-        # la meme micro-tache Angular.
-        self.session.page.wait_for_timeout(500)
+        return cours_depuis_html(self._contenu_liste_cours_stable(), session)
 
-        return cours_depuis_html(self.session.page.content(), session)
+    def _contenu_liste_cours_stable(self) -> str:
+        """Rend le HTML de /portail/cours une fois la liste des cours posee.
+
+        Le bouton du selecteur confirme le changement de session AVANT que
+        les cartes de cours soient rendues. L'ancienne version lisait la page
+        apres une marge fixe de 500 ms : constate en conditions reelles, les
+        quatre cours d'Automne 2025 ont ainsi ete lus comme une session vide
+        -- et une liste vide passant pour un resultat normal, rien n'a ete
+        signale. Quatre cours manquaient a l'archive sans une ligne au
+        rapport.
+
+        On sonde donc le nombre de cartes jusqu'a ce qu'il se stabilise :
+        des cartes presentes et un nombre inchange sur deux lectures
+        successives, ou aucune carte pendant DELAI_LISTE_COURS_VIDE_MS --
+        largement au-dela des 8 a 10 s mesurees pour le rendu de cette page.
+        Le prix est ce delai paye une fois par session reellement vide
+        (session courante pas encore remplie, session future).
+        """
+        page = self.session.page
+        ecoule = 0
+        precedent = -1
+        while True:
+            nombre = page.locator(SELECTEUR_CARTE_COURS).count()
+            if nombre > 0 and nombre == precedent:
+                break
+            if nombre == 0 and ecoule >= DELAI_LISTE_COURS_VIDE_MS:
+                break
+            precedent = nombre
+            page.wait_for_timeout(INTERVALLE_SONDAGE_LISTE_COURS_MS)
+            ecoule += INTERVALLE_SONDAGE_LISTE_COURS_MS
+        return page.content()
 
     def modules(self, cours) -> list:
         html = self._visiter(URL.modules(cours.id_site))
