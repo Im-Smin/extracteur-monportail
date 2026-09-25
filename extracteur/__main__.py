@@ -1192,13 +1192,21 @@ def _zip_mode(destination: Path, imprimer=print) -> int:
         print(f"ECHEC : dossier introuvable : {destination}", file=sys.stderr)
         return 1
 
+    def _rapporter(fait, total, octets_faits, octets_total):
+        # Sans signe de vie, une compression de plusieurs minutes
+        # ressemble a un plantage.
+        imprimer(
+            f"  Compression : {fait} / {total} fichiers "
+            f"({octets_faits / 1024**3:.1f} / {octets_total / 1024**3:.1f} Go)"
+        )
+
     cible_a_cote = destination.parent / f"{destination.name}.zip"
     try:
-        cible = creer_zip(destination, cible_a_cote)
+        cible = creer_zip(destination, cible_a_cote, progression=_rapporter)
     except OSError as erreur_a_cote:
         cible_dedans = destination / f"{destination.name}.zip"
         try:
-            cible = creer_zip(destination, cible_dedans)
+            cible = creer_zip(destination, cible_dedans, progression=_rapporter)
         except OSError:
             print(f"ECHEC : {erreur_a_cote}", file=sys.stderr)
             return 1

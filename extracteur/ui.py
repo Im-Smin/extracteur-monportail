@@ -26,7 +26,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, ttk
 
-from extracteur.verification import creer_zip
+from extracteur.verification import CompressionInterrompue, creer_zip
 
 PORTEE_TOUT = "tout"
 PORTEE_SESSION = "session"
@@ -255,7 +255,7 @@ def executer_archivage(
     imprimer_erreur,
     annulation=None,
     modes=None,
-    compresser=creer_zip,
+    compresser=None,
 ) -> dict:
     """Archive, puis compresse, et rend l'etat final en un seul dictionnaire.
 
@@ -332,11 +332,30 @@ def executer_archivage(
         )
         return etat
 
+    if compresser is None:
+        # Compression reelle : progression visible et bouton Arreter operant.
+        # Sans cela, une archive de plusieurs gigaoctets laissait la fenetre
+        # muette pendant de longues minutes -- prise pour un plantage.
+        def _rapporter(fait, total, octets_faits, octets_total):
+            imprimer(
+                f"  Compression : {fait} / {total} fichiers "
+                f"({octets_faits / 1024**3:.1f} / {octets_total / 1024**3:.1f} Go)"
+            )
+
+        def compresser(racine, cible):
+            return creer_zip(racine, cible, progression=_rapporter, annulation=annulation)
+
     cible = nom_du_zip(destination)
     imprimer(f"\nCompression vers {cible} ...")
     try:
         etat["chemin_zip"] = compresser(Path(destination), cible)
         imprimer(f"Archive compressee : {etat['chemin_zip']}")
+    except CompressionInterrompue:
+        imprimer(
+            f"Compression arretee a votre demande : aucun ZIP produit. Tous les "
+            f"fichiers restent dans {destination} ; relancez la compression seule avec :\n"
+            f'  python -m extracteur --zip --destination "{destination}"'
+        )
     except OSError as erreur_a_cote:
         # Ecrire A COTE du dossier demande les droits d'administrateur quand
         # ce dossier est directement a la racine d'un disque (constate en
@@ -353,6 +372,11 @@ def executer_archivage(
         try:
             etat["chemin_zip"] = compresser(Path(destination), cible_dedans)
             imprimer(f"Archive compressee : {etat['chemin_zip']}")
+        except CompressionInterrompue:
+            imprimer(
+                f"Compression arretee a votre demande : aucun ZIP produit. Tous les "
+                f"fichiers restent dans {destination}."
+            )
         except OSError as erreur:
             # L'archivage lui-meme a reussi : un ZIP manquant ne doit pas
             # effacer ce resultat, seulement etre dit clairement. Le dossier
