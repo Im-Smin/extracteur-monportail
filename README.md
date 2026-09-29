@@ -54,9 +54,10 @@ n'existe sous forme d'aucun fichier téléchargeable.
 
 ## Télécharger (Windows, sans rien installer)
 
-Téléchargez **`Archiveur monPortail.exe`** depuis la page
-[Releases](https://github.com/Im-Smin/extracteur-monportail/releases/latest),
-rangez-le où vous voulez, puis double-cliquez dessus. Python n'est pas
+**[⬇ Télécharger Archiveur-monPortail.exe](https://github.com/Im-Smin/extracteur-monportail/releases/latest/download/Archiveur-monPortail.exe)**
+(dernière version ; notes et historique sur la page
+[Releases](https://github.com/Im-Smin/extracteur-monportail/releases)).
+Rangez-le où vous voulez, puis double-cliquez dessus. Python n'est pas
 nécessaire : le navigateur et tout le reste sont inclus dans ce fichier unique
 (environ 250 Mo).
 
