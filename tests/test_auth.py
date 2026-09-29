@@ -1107,6 +1107,68 @@ def test_reinitialiser_page_emet_une_trace_visible():
     assert any("reinitialis" in message for message in messages)
 
 
+class ContexteChromiumFactice(ContextePersistantFactice):
+    """Reproduit un comportement reel de Chromium avec fenetre, verifie le
+    29 septembre 2026 : fermer son DERNIER onglet ferme le navigateur. Toute
+    ouverture d'onglet echoue ensuite (« Failed to open a new tab »), et la
+    session d'authentification est perdue."""
+
+    def __init__(self):
+        super().__init__("dossier-profil", headless=False, accept_downloads=True)
+
+    def new_page(self):
+        if self._ferme:
+            raise ErreurPlaywright("Protocol error (Target.createTarget): Failed to open a new tab")
+        page = super().new_page()
+        self._suivre(page)
+        return page
+
+    def _suivre(self, page):
+        fermer_d_origine = page.close
+
+        def close():
+            fermer_d_origine()
+            if not any(not autre.is_closed() for autre in self.pages):
+                self._ferme = True
+
+        page.close = close
+
+
+def test_reinitialiser_page_ne_ferme_jamais_le_dernier_onglet_avant_d_en_ouvrir_un():
+    # Defaut latent de la reparation d'origine (fermer, PUIS ouvrir) : avec
+    # l'unique onglet d'une session reelle, la fermeture emportait tout le
+    # navigateur, et l'ouverture echouait ensuite. La reparation n'a donc
+    # jamais pu fonctionner en conditions reelles ; seules des doublures
+    # trop indulgentes la faisaient passer.
+    contexte = ContexteChromiumFactice()
+    ancienne_page = contexte.new_page()
+    session = SessionNavigateurTestable(ancienne_page)
+    session.contexte = contexte
+
+    session.reinitialiser_page(imprimer=lambda _m: None)
+
+    assert contexte.is_closed() is False
+    assert ancienne_page.is_closed() is True
+    assert session.page is not ancienne_page
+    assert [p for p in contexte.pages if not p.is_closed()] == [session.page]
+
+
+def test_reinitialiser_page_ferme_aussi_les_onglets_de_secours_restes_ouverts():
+    # Le chien de garde (fermer_page_bloquee) ouvre un onglet de secours
+    # avant de fermer l'onglet bloque : la reparation qui suit n'en laisse
+    # qu'un seul ouvert, le sien.
+    contexte = ContexteChromiumFactice()
+    ancienne_page = contexte.new_page()
+    contexte.new_page()  # onglet de secours
+    ancienne_page.close()
+    session = SessionNavigateurTestable(ancienne_page)
+    session.contexte = contexte
+
+    session.reinitialiser_page(imprimer=lambda _m: None)
+
+    assert [p for p in contexte.pages if not p.is_closed()] == [session.page]
+
+
 class SessionAvantRedirection(SessionNavigateur):
     """Session a profil neuf, dont la page suit un parcours d'adresses
     impose, un pas a chaque sommeil. est_connecte est la VRAIE : elle juge
@@ -1152,4 +1214,61 @@ def test_la_connexion_est_reconnue_apres_le_passage_par_microsoft():
 
     assert resultat is True
     assert session.page.url.startswith("https://monportail.ulaval.ca")
+
+
+def test_fermer_page_bloquee_ferme_l_onglet_sur_la_boucle_de_playwright_depuis_un_autre_thread():
+    # Le thread de l'archivage est bloque dans un appel Playwright : il ne
+    # peut pas fermer l'onglet lui-meme, et l'API synchrone refuse d'etre
+    # appelee depuis un autre thread. La fermeture est donc planifiee sur la
+    # boucle asyncio de Playwright, qui tourne toujours pendant l'attente
+    # (verifie en conditions reelles : l'appel en attente leve alors
+    # « Target page, context or browser has been closed »).
+    import asyncio
+    import threading
+
+    boucle = asyncio.new_event_loop()
+    fil = threading.Thread(target=boucle.run_forever, daemon=True)
+    fil.start()
+    fermee = threading.Event()
+
+    ordre = []
+
+    class ContexteImplFactice:
+        async def new_page(self):
+            ordre.append("ouverture")
+
+    class ImplFactice:
+        _loop = boucle
+        context = ContexteImplFactice()
+
+        async def close(self):
+            ordre.append("fermeture")
+            fermee.set()
+
+    class PageAvecImpl:
+        _impl_obj = ImplFactice()
+
+    session = SessionNavigateur()
+    session.page = PageAvecImpl()
+    try:
+        assert session.fermer_page_bloquee() is True
+        assert fermee.wait(timeout=2)
+        # Un onglet de secours d'abord : fermer le dernier onglet fermerait
+        # tout le navigateur (voir ContexteChromiumFactice).
+        assert ordre == ["ouverture", "fermeture"]
+    finally:
+        boucle.call_soon_threadsafe(boucle.stop)
+        fil.join(timeout=2)
+
+
+def test_fermer_page_bloquee_ne_leve_jamais():
+    # Appelee depuis le minuteur du chien de garde : une exception y serait
+    # perdue en silence, et l'archivage resterait bloque.
+    session = SessionNavigateur()
+    session.page = object()  # ni _impl_obj ni boucle : API Playwright changee
+
+    assert session.fermer_page_bloquee() is False
+
+    session.page = None
+    assert session.fermer_page_bloquee() is False
 

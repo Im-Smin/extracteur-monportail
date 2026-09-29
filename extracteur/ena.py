@@ -6,7 +6,9 @@ restent valides partout. On navigue donc par URL, et on lit le menu seulement
 pour attraper ce qui sort du schema.
 """
 
+import threading
 import unicodedata
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -254,6 +256,25 @@ class SelecteurSessionsIllisible(Exception):
     """
 
 
+# Plafond accorde a une operation du navigateur (une navigation avec sa
+# reprise, une impression PDF, une lecture de contenu) avant que le chien de
+# garde ne ferme l'onglet : voir Ena._sous_garde. Tres au-dessus du pire cas
+# legitime -- deux navigations de 30 s (delai par defaut de Playwright) plus
+# la lecture --, pour ne jamais interrompre une page simplement lente.
+DELAI_GARDE_NAVIGATEUR_S = 180
+
+
+class NavigateurBloque(ErreurPlaywright):
+    """Une operation du navigateur n'a pas rendu la main dans
+    DELAI_GARDE_NAVIGATEUR_S : l'onglet a ete ferme et remplace.
+
+    Sous-classe d'ErreurPlaywright, deliberement : l'archiveur isole deja
+    chaque page, module et cours sur cette erreur. Un blocage interrompu
+    devient ainsi un echec consigne pour cette seule page, jamais un
+    archivage fige ni un cours perdu.
+    """
+
+
 class Ena:
     def __init__(self, session, imprimer=print):
         self.session = session
@@ -264,6 +285,51 @@ class Ena:
         # standard que sa fenetre n'affiche pas -- et une execution qui se
         # repare en silence empecherait de voir que la plateforme faiblit.
         self.imprimer = imprimer
+        # Attribut plutot que constante lue directement : les tests le
+        # ramenent a quelques centiemes de seconde.
+        self.delai_garde_s = DELAI_GARDE_NAVIGATEUR_S
+
+    @contextmanager
+    def _sous_garde(self, operation: str):
+        """Execute le bloc sous un chien de garde : s'il ne rend pas la main
+        dans delai_garde_s, l'onglet est ferme depuis un autre thread
+        (SessionNavigateur.fermer_page_bloquee), ce qui fait lever l'appel
+        bloque ; une page neuve le remplace et NavigateurBloque est levee.
+
+        Aucun appel Playwright n'a de delai propre pour l'impression PDF ni
+        la lecture du contenu : sans cette garde, un seul appel qui ne
+        repond plus fige l'archivage entier, indefiniment, sans le moindre
+        message -- incident reel du 29 septembre 2026, vingt minutes sans
+        progression avant que l'utilisateur ne s'en apercoive.
+        """
+        declenche = threading.Event()
+
+        def intervenir():
+            declenche.set()
+            fermer = getattr(self.session, "fermer_page_bloquee", None)
+            if fermer is not None:
+                fermer()
+
+        minuteur = threading.Timer(self.delai_garde_s, intervenir)
+        minuteur.daemon = True
+        minuteur.start()
+        try:
+            yield
+        except ErreurPlaywright as erreur:
+            if not declenche.is_set() or isinstance(erreur, NavigateurBloque):
+                raise
+            self.imprimer(
+                f"  [navigateur] aucune reponse en {self.delai_garde_s:g} s "
+                f"pendant : {operation}. Onglet ferme et remplace ; cette "
+                f"page sera consignee en echec."
+            )
+            self.session.reinitialiser_page(imprimer=self.imprimer)
+            raise NavigateurBloque(
+                f"le navigateur n'a pas repondu en {self.delai_garde_s:g} s "
+                f"pendant : {operation}"
+            ) from erreur
+        finally:
+            minuteur.cancel()
 
     def _visiter(self, chemin: str) -> str:
         """Navigue vers `chemin` et rend le HTML rendu par le serveur.
@@ -297,10 +363,16 @@ class Ena:
         """
         url = chemin if chemin.startswith("http") else BASE + chemin
         try:
-            self.session.page.goto(url, wait_until="networkidle")
-            return self.session.page.content()
+            with self._sous_garde(f"navigation vers {url}"):
+                self.session.page.goto(url, wait_until="networkidle")
+                return self.session.page.content()
+        except NavigateurBloque:
+            # Le chien de garde a deja remplace la page : on rejoue
+            # directement, sans seconde reparation.
+            pass
         except ErreurPlaywright:
             self.session.reinitialiser_page(imprimer=self.imprimer)
+        with self._sous_garde(f"navigation vers {url} (reprise)"):
             self.session.page.goto(url, wait_until="networkidle")
             return self.session.page.content()
 
@@ -502,7 +574,8 @@ class Ena:
         """
         self._visiter(URL.cours())
         self._assurer_authentifie()
-        return self._selectionner_session(session)
+        with self._sous_garde(f"selection de la session {session.libelle}"):
+            return self._selectionner_session(session)
 
     def modules(self, cours) -> list:
         html = self._visiter(URL.modules(cours.id_site))
@@ -686,15 +759,22 @@ class Ena:
 
         for libelle in sections_du_menu(html):
             try:
-                cible = self.session.page.get_by_role("link", name=libelle, exact=True).first
-                if est_commande_adf(cible.get_attribute("id")):
-                    continue
-                cible.click(timeout=5000)
-                self.session.page.wait_for_timeout(1500)
+                with self._sous_garde(f"ouverture de la section {libelle}"):
+                    cible = self.session.page.get_by_role("link", name=libelle, exact=True).first
+                    if est_commande_adf(cible.get_attribute("id")):
+                        continue
+                    cible.click(timeout=5000)
+                    self.session.page.wait_for_timeout(1500)
+            except NavigateurBloque:
+                # Jamais saute en silence comme un clic rate : remonte, et
+                # l'archiveur consigne l'echec du cours.
+                raise
             except (ErreurDelaiPlaywright, ErreurPlaywright):
                 continue
 
-            action(libelle, self.session.page.content())
+            with self._sous_garde(f"lecture de la section {libelle}"):
+                html = self.session.page.content()
+            action(libelle, html)
             visitees += 1
 
         return visitees
@@ -722,7 +802,8 @@ class Ena:
         """
         self._assurer_authentifie()
         destination.parent.mkdir(parents=True, exist_ok=True)
-        self.session.page.pdf(path=str(destination), format="A4", print_background=True)
+        with self._sous_garde(f"impression PDF de {destination.name}"):
+            self.session.page.pdf(path=str(destination), format="A4", print_background=True)
 
     def ressources_ignorees_page_courante(self) -> list:
         """Ressources deliberement non telechargees (videos, liens externes,
@@ -733,7 +814,9 @@ class Ena:
         navigation ADF de plus couterait plusieurs secondes pour rien.
         """
         self._assurer_authentifie()
-        return ressources_ignorees_depuis_html(self.session.page.content())
+        with self._sous_garde("lecture des ressources de la page"):
+            html = self.session.page.content()
+        return ressources_ignorees_depuis_html(html)
 
     def capturer_plan_de_cours(self, cours, destination: Path) -> "str | bool":
         """Imprime le plan de cours en PDF. Retourne le nom de la section qui a
@@ -767,7 +850,8 @@ class Ena:
                 continue
 
             destination.parent.mkdir(parents=True, exist_ok=True)
-            self.session.page.pdf(path=str(destination), format="A4", print_background=True)
+            with self._sous_garde(f"impression PDF de {destination.name}"):
+                self.session.page.pdf(path=str(destination), format="A4", print_background=True)
             return section
 
         return False

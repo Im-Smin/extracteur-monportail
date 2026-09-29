@@ -1,4 +1,6 @@
 import re
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -6,6 +8,7 @@ from playwright.sync_api import Error as ErreurPlaywright
 from playwright.sync_api import TimeoutError as ErreurDelaiPlaywright
 
 from extracteur.ena import (
+    BASE,
     CLASSE_TEXTE_OPTION_SESSION,
     LIMITE_PAGES_MODULE,
     SELECTEUR_CHAMP_SESSION,
@@ -13,6 +16,7 @@ from extracteur.ena import (
     SELECTEUR_SQUELETTES_CHARGEMENT,
     URL,
     Ena,
+    NavigateurBloque,
     SelecteurSessionsIllisible,
     SelecteurSessionsIndisponible,
     TropDePagesDansUnModule,
@@ -1784,4 +1788,112 @@ def test_ids_cours_suivis_refuse_une_reponse_d_une_autre_session():
 
     with pytest.raises(ValueError):
         ids_cours_suivis_depuis_reponse(donnees, "202209")
+
+
+# --- Chien de garde : un appel au navigateur qui ne rend jamais la main ---
+
+
+class PageQuiGele(PageFactice):
+    """Reproduit l'incident reel du 29 septembre 2026 : un appel au
+    navigateur (ici l'impression PDF) ne rend jamais la main, navigateur et
+    pilote Playwright a 0 % de processeur. Seule la fermeture de l'onglet,
+    demandee depuis un autre thread, le debloque -- en levant une erreur,
+    comme le fait Playwright pour tout appel en attente sur un onglet ferme.
+    Garde-fou de 5 s pour ne jamais geler la suite de tests elle-meme."""
+
+    def __init__(self, pages, operation_gelee="pdf"):
+        super().__init__(pages)
+        self.operation_gelee = operation_gelee
+        self.fermee = threading.Event()
+
+    def _geler(self):
+        if not self.fermee.wait(timeout=5):
+            raise AssertionError("le chien de garde n'a jamais ferme l'onglet")
+        raise ErreurPlaywright("Target page, context or browser has been closed")
+
+    def pdf(self, **_kwargs):
+        if self.operation_gelee == "pdf":
+            self._geler()
+
+    def content(self):
+        if self.operation_gelee == "content" and self.visitees:
+            self._geler()
+        return super().content()
+
+
+class SessionAvecGarde(SessionFactice):
+    def __init__(self, page):
+        self.page = page
+        self.fermetures_demandees = 0
+        self.reinitialisations = 0
+        self.thread_de_fermeture = None
+
+    def fermer_page_bloquee(self):
+        self.fermetures_demandees += 1
+        self.thread_de_fermeture = threading.current_thread()
+        self.page.fermee.set()
+        return True
+
+    def reinitialiser_page(self, imprimer=print):
+        self.reinitialisations += 1
+        self.page = PageFactice({})
+
+
+def test_une_impression_pdf_qui_ne_rend_jamais_la_main_est_interrompue(tmp_path):
+    page = PageQuiGele({})
+    page.goto("https://sitescours.monportail.ulaval.ca/ena/site/module?idSite=1")
+    session = SessionAvecGarde(page)
+    journal = []
+    ena = Ena(session, imprimer=journal.append)
+    ena.delai_garde_s = 0.05
+
+    debut = time.monotonic()
+    with pytest.raises(NavigateurBloque):
+        ena.capturer_pdf_page_courante(tmp_path / "page.pdf")
+
+    assert time.monotonic() - debut < 3
+    assert session.fermetures_demandees == 1
+    # La fermeture vient d'un AUTRE thread : celui de l'archivage est
+    # precisement celui qui est bloque.
+    assert session.thread_de_fermeture is not threading.current_thread()
+    # Une page neuve remplace l'onglet ferme, pour que la suite reparte.
+    assert session.reinitialisations == 1
+    assert any("aucune reponse" in ligne for ligne in journal)
+
+
+def test_navigateur_bloque_est_une_erreur_playwright_isolee_comme_les_autres():
+    # L'archiveur isole deja chaque page sur ErreurPlaywright : un blocage
+    # interrompu ne doit couter que cette page, jamais le cours.
+    assert issubclass(NavigateurBloque, ErreurPlaywright)
+
+
+def test_une_navigation_qui_ne_rend_jamais_la_main_est_rejouee_sur_une_page_neuve():
+    # _visiter se repare deja une fois sur ErreurPlaywright : un blocage
+    # interrompu par le chien de garde profite de la meme reprise, sur la
+    # page neuve deja ouverte par le chien de garde (une seule reparation).
+    page = PageQuiGele({"modules": "<html></html>"}, operation_gelee="content")
+    session = SessionAvecGarde(page)
+    ena = Ena(session, imprimer=lambda _t: None)
+    ena.delai_garde_s = 0.05
+
+    html = ena._visiter("/ena/site/modules?idSite=1")
+
+    assert html == "<html></html>"
+    assert session.fermetures_demandees == 1
+    assert session.reinitialisations == 1
+    assert session.page.visitees == [BASE + "/ena/site/modules?idSite=1"]
+
+
+def test_le_chien_de_garde_n_intervient_pas_sur_un_appel_normal(tmp_path):
+    page = PageQuiGele({}, operation_gelee=None)
+    page.goto("https://sitescours.monportail.ulaval.ca/ena/site/module?idSite=1")
+    session = SessionAvecGarde(page)
+    ena = Ena(session, imprimer=lambda _t: None)
+    ena.delai_garde_s = 0.05
+
+    ena.capturer_pdf_page_courante(tmp_path / "page.pdf")
+    time.sleep(0.2)
+
+    assert session.fermetures_demandees == 0
+    assert session.reinitialisations == 0
 

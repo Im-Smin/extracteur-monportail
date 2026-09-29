@@ -33,6 +33,7 @@ execution. Voir docs/api-monportail.md, section "Pieges d'exploitation", pour
 le recit complet de l'incident.
 """
 
+import asyncio
 import http.cookiejar
 import shutil
 import tempfile
@@ -379,6 +380,51 @@ class SessionNavigateur:
         except ErreurPlaywright:
             pass
 
+    def fermer_page_bloquee(self) -> bool:
+        """Ferme l'onglet courant depuis un AUTRE thread que celui qui pilote
+        le navigateur. Rend True si la fermeture a pu etre demandee.
+
+        Seul remede connu a un appel Playwright qui ne rend jamais la main
+        (incident reel du 29 septembre 2026 : archivage fige plus de vingt
+        minutes sur une page de module ordinaire, navigateur et pilote a 0 %
+        de processeur). Le thread de l'archivage, bloque dans cet appel, ne
+        peut rien faire lui-meme, et l'API synchrone de Playwright refuse
+        d'etre appelee depuis un autre thread. La fermeture est donc
+        planifiee sur la boucle asyncio de Playwright, qui continue de
+        tourner pendant l'attente : l'appel en attente leve alors « Target
+        page, context or browser has been closed ». Verifie en conditions
+        reelles sur une promesse jamais resolue, une impression PDF et une
+        lecture de contenu, avec une page neuve fonctionnelle ensuite.
+
+        Passe par l'objet interne de Playwright (_impl_obj, _loop) : c'est
+        pourquoi la methode n'echoue jamais -- appelee depuis un minuteur, une
+        exception y serait perdue en silence. Si une version future de
+        Playwright change ces noms, elle rend False et l'appel reste bloque,
+        comme avant ce remede, sans rien casser d'autre.
+
+        Tuer le processus de rendu de l'onglet a ete essaye et ecarte : le
+        navigateur refusait ensuite d'ouvrir le moindre onglet.
+        """
+        page = self.page
+        try:
+            impl = page._impl_obj
+            boucle = impl._loop
+        except Exception:
+            return False
+
+        async def remplacer():
+            # Onglet de secours D'ABORD : fermer le dernier onglet d'un
+            # Chromium avec fenetre ferme tout le navigateur, et la session
+            # avec. reinitialiser_page, qui suit, le refermera.
+            await impl.context.new_page()
+            await impl.close()
+
+        try:
+            asyncio.run_coroutine_threadsafe(remplacer(), boucle)
+            return True
+        except Exception:
+            return False
+
     def reinitialiser_page(self, imprimer=print) -> None:
         """Ferme la page courante et en ouvre une neuve depuis le meme
         contexte, pour annuler toute navigation en vol apres l'echec d'un
@@ -421,14 +467,30 @@ class SessionNavigateur:
                 "navigateur est deja ferme."
             )
 
+        # Page neuve D'ABORD, fermeture ensuite : fermer le dernier onglet
+        # d'un Chromium avec fenetre ferme tout le navigateur (verifie le 29
+        # septembre 2026), et l'ouverture qui suivait echouait alors avec
+        # « Failed to open a new tab ». Dans l'ordre inverse d'origine, cette
+        # reparation n'a jamais pu fonctionner en conditions reelles.
+        nouvelle_page = self.contexte.new_page()
+        # Toutes les autres pages sont fermees : l'ancienne, cassee, et un
+        # eventuel onglet de secours ouvert par fermer_page_bloquee.
+        for autre in list(self.contexte.pages):
+            if autre is nouvelle_page:
+                continue
+            try:
+                if not autre.is_closed():
+                    autre.close()
+            except ErreurPlaywright:
+                pass
         ancienne_page = self.page
-        if ancienne_page is not None:
+        if ancienne_page is not None and ancienne_page not in self.contexte.pages:
             try:
                 ancienne_page.close()
             except ErreurPlaywright:
                 pass
 
-        self.page = self.contexte.new_page()
+        self.page = nouvelle_page
         imprimer("page reinitialisee apres un echec de navigation")
 
     def _pages_du_contexte(self) -> list:
