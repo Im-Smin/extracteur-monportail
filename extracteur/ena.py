@@ -9,8 +9,9 @@ pour attraper ce qui sort du schema.
 import threading
 import unicodedata
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from playwright.sync_api import Error as ErreurPlaywright
 from playwright.sync_api import TimeoutError as ErreurDelaiPlaywright
@@ -18,6 +19,7 @@ from playwright.sync_api import TimeoutError as ErreurDelaiPlaywright
 from extracteur.auth import est_page_authentifiee
 from extracteur.extraction import (
     ids_cours_suivis_depuis_reponse,
+    urls_plans_de_cours_depuis_reponse,
     cours_depuis_html,
     depots_depuis_html,
     est_commande_adf,
@@ -487,7 +489,8 @@ class Ena:
                 timeout=DELAI_CHARGEMENT_SESSION_MS,
             ) as attente:
                 options.nth(textes.index(libelle_demande)).click()
-            donnees = attente.value.json()
+            reponse = attente.value
+            donnees = reponse.json()
         except (ErreurDelaiPlaywright, ErreurPlaywright) as erreur:
             raise SelecteurSessionsIndisponible(
                 f"le serveur n'a jamais rendu la liste des cours de "
@@ -502,7 +505,55 @@ class Ena:
                 f"'{session.libelle}' : {erreur}"
             ) from erreur
 
-        return self._attendre_chargement_termine(session, ids_attendus)
+        cours = self._attendre_chargement_termine(session, ids_attendus)
+        plans = self._liens_plans_de_cours(reponse, session)
+        return [
+            replace(c, url_plan_de_cours=plans[c.id_site]) if c.id_site in plans else c
+            for c in cours
+        ]
+
+    def _liens_plans_de_cours(self, reponse_simple, session: Session) -> dict[str, str]:
+        """idSite -> lien du plan de cours officiel de chaque cours de la
+        session, demandes au meme service que le tableau de bord, en version
+        DETAILLEE (voir extraction.urls_plans_de_cours_depuis_reponse).
+
+        Le service s'authentifie par jeton (en-tete Authorization: Bearer),
+        pas par temoin : on reprend celui de la requete du tableau de bord
+        qui vient d'etre capturee, et la meme URL, seul degreinformation
+        change.
+
+        Ne leve jamais : sans lien, l'archiveur consigne le plan de cours en
+        echec, cours par cours -- un lien manquant ne doit jamais couter la
+        liste des cours elle-meme. L'incident est dit dans le journal.
+        """
+        try:
+            parties = urlsplit(reponse_simple.url)
+            parametres = parse_qs(parties.query)
+            parametres["degreinformation"] = ["DETAILLE"]
+            url = parties._replace(query=urlencode(parametres, doseq=True)).geturl()
+            jeton = next(
+                (
+                    valeur
+                    for cle, valeur in reponse_simple.request.all_headers().items()
+                    if cle.lower() == "authorization"
+                ),
+                None,
+            )
+            detaillee = self.session.page.request.get(
+                url,
+                headers={"Authorization": jeton} if jeton else {},
+                timeout=DELAI_CHARGEMENT_SESSION_MS,
+            )
+            if not detaillee.ok:
+                raise RuntimeError(f"reponse HTTP {detaillee.status}")
+            return urls_plans_de_cours_depuis_reponse(detaillee.json(), session.code)
+        except Exception as erreur:  # jamais bloquant : voir la docstring
+            self.imprimer(
+                f"  [plan de cours] liens des plans de cours de "
+                f"{session.libelle} indisponibles ({erreur}) : ils seront "
+                f"consignes en echec."
+            )
+            return {}
 
     def _attendre_chargement_termine(self, session: Session, ids_attendus: set[str]) -> list[Cours]:
         """Attend que la page affiche reellement les cours de `session`, et

@@ -41,10 +41,12 @@ MESSAGE_COURS_HORS_MONPORTAIL = (
 # commande ADF cmdObtenirPlanCours, qui PUBLIE une nouvelle version au lieu
 # d'en telecharger une -- jamais declenchee (voir docs/api-monportail.md).
 MESSAGE_PLAN_DE_COURS_NON_RECUPERABLE = (
-    "le plan de cours officiel n'est plus propose depuis la refonte du "
-    "portail (constatee le 25 septembre 2026) : ni la carte du cours, ni le "
-    "site de cours n'offrent plus de lien vers le PDF officiel. A recuperer "
-    "a la main sur monPortail avant la fermeture de la plateforme, le "
+    "le portail n'a fourni aucun lien vers le plan de cours officiel de ce "
+    "cours (aucun plan depose, ou liste detaillee des cours indisponible "
+    "pendant l'archivage). Le lien PDF du menu du site de cours n'est jamais "
+    "suivi : c'est une commande qui publie une nouvelle version du plan. "
+    "A verifier a la main sur monPortail (page Cours, lien « Plan de cours » "
+    "de la carte du cours) avant la fermeture de la plateforme, le "
     "1er novembre 2026."
 )
 
@@ -291,12 +293,10 @@ class Archiveur:
 
         L'url_plan_de_cours vient directement de l'enumeration, une source de
         confiance : contrairement aux liens du contenu, on ne la filtre pas
-        par est_interne avant de la suivre. Depuis la refonte du portail
-        (constatee le 25 septembre 2026), ce champ n'est plus jamais rempli
-        (voir extraction.cours_depuis_html) : la branche ci-dessous reste
-        pour les rares appelants qui construiraient encore un Cours avec ce
-        champ present, mais tout cours reellement enumere passe desormais par
-        le filet de secours, plus bas.
+        par est_interne avant de la suivre. Depuis la refonte du portail, elle
+        est lue dans la liste DETAILLEE des cours (voir
+        Ena._liens_plans_de_cours) ; un cours sans plan depose n'en a pas, et
+        passe alors par le filet de secours, plus bas.
 
         Un plan deja present sur disque (archive anterieure a la refonte)
         est saute sans bruit -- destination.exists() ci-dessous. Sinon, si la

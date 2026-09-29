@@ -27,11 +27,10 @@ class Cours:
     sigle: str | None
     titre: str
     session: Session
-    # Champs herites de l'ancienne page /portail/cours (avant la refonte du
-    # portail, constatee le 25 septembre 2026). La nouvelle page du tableau
-    # de bord (/portail/) ne porte plus ni l'un ni l'autre sur une carte de
-    # cours : ces deux champs restent donc toujours None pour un cours
-    # enumere par extraction.cours_depuis_html depuis cette refonte.
+    # url_plan_de_cours : lien du PDF officiel, lu dans la liste DETAILLEE
+    # des cours (Ena._liens_plans_de_cours) ; None si aucun plan n'est
+    # depose. url_resultats : herite de l'ancienne page /portail/cours,
+    # jamais rempli depuis la refonte du portail (25 septembre 2026).
     url_plan_de_cours: str | None = None
     url_resultats: str | None = None
     # Renseigne uniquement pour un cours dont le lien de titre pointe hors de

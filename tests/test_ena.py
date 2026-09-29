@@ -2,6 +2,7 @@ import re
 import threading
 import time
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from playwright.sync_api import Error as ErreurPlaywright
@@ -21,7 +22,11 @@ from extracteur.ena import (
     SelecteurSessionsIndisponible,
     TropDePagesDansUnModule,
 )
-from extracteur.extraction import ids_cours_suivis_depuis_reponse, session_depuis_libelle
+from extracteur.extraction import (
+    ids_cours_suivis_depuis_reponse,
+    session_depuis_libelle,
+    urls_plans_de_cours_depuis_reponse,
+)
 from extracteur.modele import Cours, Evaluation, Module, Session
 from extracteur.telechargement import SessionExpiree
 
@@ -1336,13 +1341,48 @@ class LocatorSqueletteFactice:
         return 1 if self.page.squelette_present else 0
 
 
+class RequeteFactice:
+    def __init__(self, entetes):
+        self._entetes = entetes
+
+    def all_headers(self):
+        return dict(self._entetes)
+
+
 class ReponseFactice:
-    def __init__(self, url, donnees):
+    def __init__(self, url, donnees, ok=True, entetes_requete=None):
         self.url = url
         self._donnees = donnees
+        self.ok = ok
+        self.status = 200 if ok else 500
+        self.request = RequeteFactice(entetes_requete or {"authorization": "Bearer jeton-de-test"})
 
     def json(self):
         return self._donnees
+
+
+class ClientApiFactice:
+    """Simule page.request (APIRequestContext) : rend la liste DETAILLEE
+    programmee pour la session demandee, et retient chaque appel."""
+
+    def __init__(self, page):
+        self.page = page
+        self.appels = []
+
+    def get(self, url, headers=None, timeout=None):
+        self.appels.append({"url": url, "headers": dict(headers or {})})
+        if self.page.liste_detaillee_en_echec:
+            return ReponseFactice(url, None, ok=False)
+        code = parse_qs(urlsplit(url).query)["codesession"][0]
+        sites = [
+            {
+                "idSite": id_site,
+                "typeSite": "COURS",
+                "sectionsSiteUtilisateur": [{"urlPlanDeCoursPdf": lien}],
+            }
+            for id_site, lien in self.page.plans_de_cours.items()
+        ]
+        return ReponseFactice(url, {"codeSession": code, "sitesSuivis": sites})
 
 
 class AttenteReponseFactice:
@@ -1410,6 +1450,11 @@ class PageAvecFiltreSession(PageFactice):
         self._html_pendant_chargement = html_pendant_chargement
         self.nombre_sondages = 0
         self._attente_reponse = None
+        # Liste DETAILLEE (liens des plans de cours), demandee par l'outil
+        # lui-meme : idSite -> lien du PDF officiel.
+        self.plans_de_cours = {}
+        self.liste_detaillee_en_echec = False
+        self.request = ClientApiFactice(self)
         # Reponse du serveur a emettre pour chaque libelle, si differente de
         # celle deduite de html_par_session (cas d'une reponse d'une autre
         # session, ou d'aucune reponse du tout : valeur None).
@@ -1896,4 +1941,73 @@ def test_le_chien_de_garde_n_intervient_pas_sur_un_appel_normal(tmp_path):
 
     assert session.fermetures_demandees == 0
     assert session.reinitialisations == 0
+
+
+# --- Plan de cours officiel : lien lu dans la liste DETAILLEE des cours ---
+
+LIEN_PLAN = (
+    "https://sitescours.monportail.ulaval.ca/analytique/evenement/plancours"
+    "?idFichier=1&idSite=100001&url=https%3A%2F%2Fsitescours.monportail.ulaval.ca"
+    "%2Fcontenu%2Fsitescours%2F000%2F00000%2F202601%2Fsite100001%2Fplancours%2FABC-1000.pdf"
+)
+
+
+def test_sites_de_session_renseigne_le_lien_du_plan_de_cours_officiel():
+    # Le tableau de bord demande la liste SIMPLE, sans lien de plan de
+    # cours ; la liste DETAILLEE du meme service le porte
+    # (sectionsSiteUtilisateur[].urlPlanDeCoursPdf). Ce lien est un
+    # telechargement ordinaire, jamais la commande cmdObtenirPlanCours du
+    # site de cours, qui publie une nouvelle version.
+    html = _accordeon_cours_suivis(_carte_cours("100001", "Ethique"))
+    page = PageAvecFiltreSession(["Hiver 2026"], {"Hiver 2026": html})
+    page.plans_de_cours = {"100001": LIEN_PLAN}
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+
+    cours = ena.sites_de_session(Session(code="202601", libelle="Hiver 2026"))
+
+    assert cours[0].url_plan_de_cours == LIEN_PLAN
+    appel = page.request.appels[0]
+    requete = parse_qs(urlsplit(appel["url"]).query)
+    assert requete["degreinformation"] == ["DETAILLE"]
+    assert requete["codesession"] == ["202601"]
+    # Le service s'authentifie par jeton, pas par temoin : celui du tableau
+    # de bord est repris tel quel.
+    assert appel["headers"] == {"Authorization": "Bearer jeton-de-test"}
+
+
+def test_sites_de_session_rend_les_cours_meme_si_la_liste_detaillee_echoue():
+    # Sans lien, l'archiveur consigne le plan de cours en echec : jamais la
+    # perte de toute la session pour un lien manquant.
+    html = _accordeon_cours_suivis(_carte_cours("100001", "Ethique"))
+    page = PageAvecFiltreSession(["Hiver 2026"], {"Hiver 2026": html})
+    page.liste_detaillee_en_echec = True
+    journal = []
+    ena = Ena(SessionFactice({}), imprimer=journal.append)
+    ena.session.page = page
+
+    cours = ena.sites_de_session(Session(code="202601", libelle="Hiver 2026"))
+
+    assert [c.id_site for c in cours] == ["100001"]
+    assert cours[0].url_plan_de_cours is None
+    assert any("plan" in ligne for ligne in journal)
+
+
+def test_urls_plans_de_cours_lit_le_premier_lien_de_chaque_cours():
+    donnees = {
+        "codeSession": "202601",
+        "sitesSuivis": [
+            {"idSite": "1", "typeSite": "COURS", "sectionsSiteUtilisateur": [{}, {"urlPlanDeCoursPdf": "https://a/1.pdf"}]},
+            {"idSite": "2", "typeSite": "COURS", "sectionsSiteUtilisateur": [{"urlPlanDeCoursPdf": ""}]},
+            {"idSite": "3", "typeSite": "COURS"},
+            {"idSite": "9", "typeSite": "FORMATION", "sectionsSiteUtilisateur": [{"urlPlanDeCoursPdf": "https://a/9.pdf"}]},
+        ],
+    }
+
+    assert urls_plans_de_cours_depuis_reponse(donnees, "202601") == {"1": "https://a/1.pdf"}
+
+
+def test_urls_plans_de_cours_refuse_une_reponse_d_une_autre_session():
+    with pytest.raises(ValueError):
+        urls_plans_de_cours_depuis_reponse({"codeSession": "202509", "sitesSuivis": []}, "202601")
 

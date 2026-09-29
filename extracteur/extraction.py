@@ -478,6 +478,38 @@ def ids_cours_suivis_depuis_reponse(donnees: dict, code_session: str) -> set[str
     }
 
 
+def urls_plans_de_cours_depuis_reponse(donnees: dict, code_session: str) -> dict[str, str]:
+    """idSite -> lien du plan de cours officiel (PDF), lus dans la reponse
+    DETAILLEE du service de la liste des cours
+    (/services/listecours/cours/?degreinformation=DETAILLE).
+
+    Le lien vit dans sectionsSiteUtilisateur[].urlPlanDeCoursPdf ; la
+    reponse SIMPLE, celle du tableau de bord, ne le porte pas. C'est un lien
+    traceur /analytique/evenement/plancours vers le PDF officiel -- un
+    telechargement ordinaire, releve en inspection reelle le 29 septembre
+    2026, et jamais la commande cmdObtenirPlanCours du site de cours, qui
+    publie une nouvelle version.
+
+    Un cours sans lien (aucun plan depose) est simplement absent du
+    resultat. Leve ValueError si la reponse porte une autre session.
+    """
+    if donnees.get("codeSession") != code_session:
+        raise ValueError(
+            f"liste detaillee des cours pour la session "
+            f"{donnees.get('codeSession')!r}, {code_session!r} attendue"
+        )
+    liens = {}
+    for site in donnees.get("sitesSuivis") or []:
+        if site.get("typeSite") != "COURS" or not site.get("idSite"):
+            continue
+        for section in site.get("sectionsSiteUtilisateur") or []:
+            lien = (section or {}).get("urlPlanDeCoursPdf")
+            if lien:
+                liens[site["idSite"]] = lien
+                break
+    return liens
+
+
 def _id_site_depuis_href(href: str, marqueur: str) -> str | None:
     """Id de site porte par un href contenant `marqueur` (ex. /ena/site/accueil)."""
     if marqueur not in href or "idSite=" not in href:
