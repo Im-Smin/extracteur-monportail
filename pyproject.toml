@@ -27,6 +27,11 @@ Issues = "https://github.com/Im-Smin/extracteur-monportail/issues"
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 
+[tool.setuptools]
+# Seul le paquet extracteur est installe : construction/ ne sert qu'a
+# fabriquer l'executable (voir construction/construire.py).
+packages = ["extracteur"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v"

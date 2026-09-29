@@ -21,3 +21,9 @@ reconnaissance*.txt
 # Artefacts de construction
 *.egg-info/
 .pytest_cache/
+
+# Construction de l'executable (construction/construire.py ecrit hors du
+# depot, mais pip laisse build/ derriere lui)
+build/
+dist/
+*.exe

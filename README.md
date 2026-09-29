@@ -52,7 +52,27 @@ n'existe sous forme d'aucun fichier téléchargeable.
 
 ---
 
-## Installation
+## Télécharger (Windows, sans rien installer)
+
+Téléchargez **`Archiveur monPortail.exe`** depuis la page
+[Releases](https://github.com/Im-Smin/extracteur-monportail/releases/latest),
+rangez-le où vous voulez, puis double-cliquez dessus. Python n'est pas
+nécessaire : le navigateur et tout le reste sont inclus dans ce fichier unique
+(environ 250 Mo).
+
+- **Windows peut afficher « Windows a protégé votre ordinateur ».** L'exécutable
+  n'est pas signé numériquement. Cliquez sur *Informations complémentaires*, puis
+  *Exécuter quand même*. Le code source complet est ici, et l'exécutable est
+  construit à partir de lui (voir [Construire l'exécutable](#construire-lexécutable)).
+- **Le tout premier lancement est lent** : votre antivirus analyse d'abord ce
+  fichier inconnu (jusqu'à une minute sans rien afficher), puis l'Archiveur
+  prépare son navigateur une fois pour toutes (message « Première utilisation »,
+  environ 30 secondes). Les lancements suivants prennent quelques secondes.
+- Le navigateur préparé occupe environ 530 Mo dans
+  `%LOCALAPPDATA%\Archiveur monPortail`. Une fois votre archive terminée, vous
+  pouvez supprimer ce dossier et l'exécutable : rien d'autre n'est installé.
+
+## Installation depuis le code source
 
 Python 3.12 ou plus récent.
 
@@ -155,6 +175,26 @@ cours.
 
 Le projet n'a que trois dépendances : `playwright`, `beautifulsoup4` et
 `pytest`. L'interface graphique utilise Tkinter, de la bibliothèque standard.
+
+### Construire l'exécutable
+
+Dans un environnement dédié, hors de tout dossier synchronisé :
+
+```bat
+python -m venv C:\build\venv
+C:\build\venv\Scripts\python -m pip install . pyinstaller
+set PLAYWRIGHT_BROWSERS_PATH=0
+C:\build\venv\Scripts\python -m playwright install chromium
+C:\build\venv\Scripts\python construction\construire.py --sortie C:\build\sortie
+```
+
+`construction/` contient le lanceur, la recette PyInstaller et le script qui
+construit puis vérifie l'exécutable. Un fichier unique plutôt qu'un dossier :
+placé trop profondément, un dossier dépasse la limite de 260 caractères des
+chemins Windows et refuse de démarrer. Chromium et le pilote de Playwright sont
+insérés dans l'exécutable hors de ce qu'il redéploie à chaque lancement, et
+décompressés une seule fois dans `%LOCALAPPDATA%` (voir
+`extracteur/navigateur_embarque.py`).
 
 ### Pourquoi une automatisation de navigateur, et pas des appels HTTP
 
