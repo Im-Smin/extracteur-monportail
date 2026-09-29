@@ -650,3 +650,95 @@ ENA. **L'outil ne peut pas l'archiver, mais doit le signaler** : l'ancienne
 - Les plans déjà téléchargés avant la refonte restent valables ; une reprise
   ne les retouche pas.
 
+## Implémentation du nouveau composant (relevé complémentaire, même date)
+
+Relevé par inspection directe, viewport Playwright 1280×720. Complète la
+section précédente avec les faits qui ont guidé `extracteur/ena.py` et
+`extracteur/extraction.py`.
+
+### Le tableau de bord ne garde pas de session fixe
+
+Rouvert, `https://monportail.ulaval.ca/portail/` affiche la **dernière
+session choisie**, jamais une session par défaut stable. `Ena.sites_de_session`
+sélectionne donc toujours explicitement la session demandée et attend sa
+confirmation, plutôt que de supposer que l'état courant du filtre lui
+correspond déjà.
+
+### Le filtre de session
+
+- Déclencheur : `input.m-dropdown__input`, readonly. Sa valeur vit dans sa
+  **propriété** `value`, jamais dans un attribut HTML : illisible dans
+  `page.content()`, seule une lecture Playwright (`input_value()`) la révèle.
+- Options : `li[role="option"].m-dropdown-item`, libellé dans
+  `span.m-dropdown-item__element-text`.
+- 13 options relevées, de `Hiver 2027` à `Automne 2022`. Cliquer une option
+  remplace la sélection, malgré `aria-multiselectable="true"` sur la liste.
+
+### Signal de fin de chargement : squelette, jamais la seule présence de cartes
+
+Chronologie mesurée (sondage aux 100 ms) après un clic sur une option :
+
+| t | valeur du champ | squelette | cartes de cours |
+|---|---|---|---|
+| 0 ms | ancienne session | absent | anciennes cartes |
+| 101 ms | **nouvelle session** | **présent** | 0 |
+| 1293–1493 ms | nouvelle session | absent | cartes finales |
+
+La valeur du champ et le squelette basculent dans le même rendu : le seul
+signal fiable est **valeur du champ == session demandée ET aucun squelette
+présent** (`.mpo--squelette-chargement`,
+`.mpo-smart-boite-liste-cours__squelette-chargement-sessions`, cherchés dans
+`.mpo-smart-boite-liste-cours__boite.mpo--sites-lies-session`). Si ce signal
+ne vient pas dans un délai généreux (30 s), `Ena` lève
+`SelecteurSessionsIndisponible` : la session devient un échec isolé, jamais
+une liste vide.
+
+**Piège vérifié en test** : pendant le chargement, les « Autres activités »
+(hors périmètre) sont déjà affichées, avec elles aussi des liens
+`/ena/site/accueil?idSite=`. Une détection fondée sur la seule présence de
+liens `idSite=` conclurait à tort que le chargement est terminé dès 101 ms.
+`extraction.cours_depuis_html` ne lit que l'accordéon `mpo-accordeon-cours-suivis`
+(jamais un balayage global de liens), et `Ena._attendre_chargement_termine`
+ne conclut jamais sur la seule présence de cartes : les deux mécanismes se
+protègent mutuellement de ce piège, vérifié par un test qui échoue si l'un
+des deux garde-fous est retiré.
+
+### `URL.cours()` change de domaine
+
+Le tableau de bord vit sur `monportail.ulaval.ca`, sans le préfixe
+`sitescours.` des sites de cours. `URL.cours()` rend donc une URL absolue
+(jamais relative à `BASE`, le domaine des sites de cours) : voir
+`extracteur.ena.BASE_PORTAIL`. `extracteur.auth.URL_DEPART`, la page visée
+juste après la connexion, a été mise à jour pour la même raison — l'ancienne
+valeur pointait sur la page-404 `/portail/cours` du sous-domaine
+`sitescours`.
+
+### `--diagnostic` retiré, pas adapté
+
+L'ancien mode `--diagnostic` explorait plusieurs sélecteurs candidats sur un
+DOM alors mal connu (menu déroulant AngularJS). La structure du nouveau
+composant est désormais confirmée par inspection directe et par les tests :
+un outil d'exploration à l'aveugle n'apporte plus rien, et double la surface
+de test d'un mode dont la seule raison d'être était l'incertitude. Retiré
+avec son option `--diagnostic`, la fonction `Ena.diagnostiquer_sessions` et
+ses tests dédiés ; `SelecteurSessionsIllisible` et `SelecteurSessionsIndisponible`
+restent le seul signal donné à l'utilisateur en cas d'échec.
+
+### Cours hébergé hors monPortail : modèle et rapport
+
+`Cours.url_externe` porte l'URL du site externe pour un cours dont le lien de
+titre ne mène pas vers `/ena/site/accueil` ; `id_site` reste vide dans ce cas.
+`Archiveur._archiver_un_cours` consigne alors un `Echec` explicite (élément
+« (cours entier) », `url` = l'URL externe) sans créer le moindre dossier ;
+`--lister` l'affiche sous l'étiquette `[HORS MONPORTAIL]`.
+
+### Plan de cours : la valeur de retour de `capturer_plan_de_cours` compte désormais
+
+`Archiveur._archiver_plan_de_cours` consignait un `Echec` seulement sur
+exception (navigation ou écriture disque en échec), jamais quand
+`capturer_plan_de_cours` rendait simplement `False` (aucune section valide
+trouvée) : depuis la refonte, ce second cas est devenu systématique, puisque
+aucune section ne mène plus au PDF officiel. Un `Echec` explicite est
+désormais consigné dans ce cas, sauf si un plan est déjà présent sur disque
+(archive antérieure à la refonte, sautée sans bruit comme avant).
+

@@ -11,7 +11,6 @@ from extracteur.__main__ import (
     _code_de_sortie,
     _connecter,
     _construire_analyseur,
-    _diagnostic,
     _drainer,
     _drainer_progression,
     _ecrire_rapport_final,
@@ -304,7 +303,7 @@ def test_code_de_sortie_non_zero_si_rien_ecrit_et_des_echecs():
 # --- _afficher_sessions ---
 
 
-def test_afficher_sessions_montre_id_sigle_titre_et_indicateurs():
+def test_afficher_sessions_montre_id_sigle_et_titre():
     ena = EnaDeTest({SESSION_HIVER: [COURS_HIVER, COURS_ANCIEN]})
     lignes = []
 
@@ -315,10 +314,28 @@ def test_afficher_sessions_montre_id_sigle_titre_et_indicateurs():
     assert "100001" in texte
     assert "ABC-1000" in texte
     assert "Cours exemple C" in texte
-    assert "plan de cours officiel : oui" in texte
-    assert "sommaire de resultats : oui" in texte
     assert "(sans sigle)" in texte
-    assert "plan de cours officiel : non" in texte
+
+
+def test_afficher_sessions_marque_un_cours_heberge_hors_monportail():
+    # Constate pour PQR-9105 (Automne 2025) : l'ancienne enumeration
+    # l'ignorait en silence. --lister doit le signaler explicitement.
+    cours_externe = Cours(
+        id_site="",
+        sigle="PQR-9105",
+        titre="Cours heberge sur Brio",
+        session=SESSION_AUTOMNE,
+        url_externe="https://www.brioeducation.ca/sites/exemple123?sso=ulaval",
+    )
+    ena = EnaDeTest({SESSION_AUTOMNE: [cours_externe]})
+    lignes = []
+
+    _afficher_sessions(ena, imprimer=lignes.append)
+
+    texte = "\n".join(lignes)
+    assert "PQR-9105" in texte
+    assert "HORS MONPORTAIL" in texte
+    assert "https://www.brioeducation.ca/sites/exemple123?sso=ulaval" in texte
 
 
 def test_afficher_sessions_annonce_le_compte_en_tete():
@@ -692,88 +709,6 @@ def test_un_seul_cours_seul_est_accepte():
 
     assert arguments.id_site == "100001"
     assert arguments.lister is False
-
-
-# --- argparse : --diagnostic mutuellement exclusif avec les deux autres ---
-
-
-def test_lister_et_diagnostic_ensemble_sont_rejetes():
-    analyseur = _construire_analyseur()
-
-    with pytest.raises(SystemExit):
-        analyseur.parse_args(["--lister", "--diagnostic"])
-
-
-def test_un_seul_cours_et_diagnostic_ensemble_sont_rejetes():
-    analyseur = _construire_analyseur()
-
-    with pytest.raises(SystemExit):
-        analyseur.parse_args(["--un-seul-cours", "100001", "--diagnostic"])
-
-
-def test_diagnostic_seul_est_accepte():
-    analyseur = _construire_analyseur()
-
-    arguments = analyseur.parse_args(["--diagnostic"])
-
-    assert arguments.diagnostic is True
-    assert arguments.lister is False
-    assert arguments.id_site is None
-
-
-# --- _diagnostic : etat des lieux du DOM, sans rien telecharger ---
-
-
-class EnaDiagnosticDeTest:
-    """Doublure d'Ena : sert uniquement diagnostiquer_sessions()."""
-
-    def __init__(self, rapport):
-        self._rapport = rapport
-
-    def diagnostiquer_sessions(self):
-        return self._rapport
-
-
-RAPPORT_DIAGNOSTIC = {
-    "candidats": [
-        ("[role=option]", 0, []),
-        (".mpo-deroulant-element", 0, []),
-        ("li", 12, ["Hiver 2027", "Automne 2026"]),
-        ("a", 3, ["Hiver 2026", "Automne 2025", "Profil"]),
-        ("forme du libelle (saison + annee)", 2, ["Hiver 2026", "Automne 2025"]),
-    ],
-    "liens_id_site": 9,
-}
-
-
-def test_diagnostic_affiche_le_compte_et_l_echantillon_par_candidat():
-    session = SessionFactice(connectee=True)
-    lignes = []
-
-    code = _diagnostic(
-        session=session,
-        fabrique_ena=lambda _session: EnaDiagnosticDeTest(RAPPORT_DIAGNOSTIC),
-        imprimer=lignes.append,
-    )
-
-    assert code == 0
-    assert session.fermee is True
-    texte = "\n".join(lignes)
-    assert "[role=option] : 0 element(s)" in texte
-    assert "a : 3 element(s)" in texte
-    assert "Hiver 2026" in texte
-    assert "liens portant idSite= dans la page : 9" in texte
-
-
-def test_diagnostic_connexion_non_detectee_rend_code_non_nul():
-    session = SessionFactice(connectee=False)
-
-    code = _diagnostic(
-        session=session, fabrique_ena=lambda _session: EnaDiagnosticDeTest(RAPPORT_DIAGNOSTIC)
-    )
-
-    assert code == 1
-    assert session.fermee is True
 
 
 # --- SelecteurSessionsIllisible : jamais de trace brute, code non nul ---
@@ -1231,13 +1166,6 @@ def test_un_seul_cours_et_tout_ensemble_sont_rejetes():
 
     with pytest.raises(SystemExit):
         analyseur.parse_args(["--un-seul-cours", "100001", "--tout"])
-
-
-def test_diagnostic_et_session_ensemble_sont_rejetes():
-    analyseur = _construire_analyseur()
-
-    with pytest.raises(SystemExit):
-        analyseur.parse_args(["--diagnostic", "--session", "Automne 2022"])
 
 
 def test_session_seul_est_accepte():

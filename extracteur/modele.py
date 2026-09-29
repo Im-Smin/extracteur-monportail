@@ -27,9 +27,19 @@ class Cours:
     sigle: str | None
     titre: str
     session: Session
-    # Releves directement sur /portail/cours ; absents si la page ne les porte pas.
+    # Champs herites de l'ancienne page /portail/cours (avant la refonte du
+    # portail, constatee le 25 septembre 2026). La nouvelle page du tableau
+    # de bord (/portail/) ne porte plus ni l'un ni l'autre sur une carte de
+    # cours : ces deux champs restent donc toujours None pour un cours
+    # enumere par extraction.cours_depuis_html depuis cette refonte.
     url_plan_de_cours: str | None = None
     url_resultats: str | None = None
+    # Renseigne uniquement pour un cours dont le lien de titre pointe hors de
+    # monPortail (constate pour un site heberge sur Brio) : id_site est alors
+    # vide, cette URL est la seule facon de retrouver le cours. L'outil ne
+    # peut pas l'archiver ; il doit le signaler plutot que de l'ignorer en
+    # silence comme le faisait l'ancienne enumeration.
+    url_externe: str | None = None
 
     def dossier(self) -> str:
         return f"{self.sigle} {self.titre}".strip() if self.sigle else self.titre.strip()

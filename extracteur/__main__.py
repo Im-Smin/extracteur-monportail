@@ -6,18 +6,17 @@
   python -m extracteur --session "Automne 2022" -> archivage de tous les cours d'une session
   python -m extracteur --tout                   -> archivage de toutes les sessions, de la plus
                                                     ancienne a la plus recente
-  python -m extracteur --diagnostic             -> etat des lieux du DOM du selecteur de sessions
   python -m extracteur --verifier               -> confronte une archive existante a son manifeste,
                                                     sans rien telecharger ni ouvrir de navigateur
   python -m extracteur --zip                    -> compresse une archive existante en un fichier .zip,
                                                     sans rien telecharger
 
---lister, --un-seul-cours, --session, --tout, --diagnostic, --verifier et
---zip sont mutuellement exclusifs : les combiner est rejete par argparse
-plutot que de laisser l'un l'emporter en silence.
+--lister, --un-seul-cours, --session, --tout, --verifier et --zip sont
+mutuellement exclusifs : les combiner est rejete par argparse plutot que de
+laisser l'un l'emporter en silence.
 
-Chaque lancement de --lister, --diagnostic, --un-seul-cours, --session ou
---tout ouvre le navigateur sur un profil neuf et demande une authentification
+Chaque lancement de --lister, --un-seul-cours, --session ou --tout ouvre le
+navigateur sur un profil neuf et demande une authentification
 complete, MFA compris : aucun profil de navigateur n'est conserve d'une
 execution a l'autre. C'est un choix de conception deliberement retenu apres
 qu'un profil persistant se soit corrompu a deux reprises en conditions
@@ -49,15 +48,12 @@ tolerance raisonnable sur la casse, les espaces de tete et de fin, et les
 accents, puisqu'il sera tape a la main ; si aucune session ne correspond, les
 libelles disponibles sont affiches plutot que de deviner.
 
---diagnostic ne telecharge rien et n'ecrit rien : il sert uniquement, quand
---lister ne trouve aucune session, a voir sur des faits ce que le DOM reel
-contient plutot que de deviner une nouvelle correction.
-
-Aucun de ces modes ne fabrique de Cours a la main : url_plan_de_cours et
-url_resultats ne sont renseignes que par l'enumeration (Ena.sites_de_session),
-a partir de la page qui liste les cours d'une session. Un Cours construit de
-toutes pieces aurait ces champs vides, et l'archiveur retomberait sur le filet
-de secours (impression de page) au lieu du PDF officiel de l'Universite.
+Aucun de ces modes ne fabrique de Cours a la main : id_site, sigle, titre et
+url_externe ne sont renseignes que par l'enumeration (Ena.sites_de_session), a
+partir du tableau de bord qui liste les cours d'une session. Un Cours qui n'a
+pas de site monPortail (url_externe renseigne) ne peut pas etre archive : voir
+Archiveur._archiver_un_cours, qui consigne un Echec explicite plutot que de
+tenter une navigation vouee a l'echec.
 
 Codes de sortie (contrat pour un appelant qui ne lirait que le code, pas la
 console) :
@@ -392,11 +388,8 @@ def _afficher_sessions(ena, imprimer=print) -> "list[str]":
     vraie plateforme.
 
     Le nombre de sessions trouvees est annonce en tete, avant la liste
-    elle-meme : c'est la seule protection reelle contre un panneau qui
-    plafonne durablement sur un compte incomplet (voir la docstring de
-    Ena._stabiliser_options). Aucun code ne peut deviner qu'il manque des
-    sessions a un palier atteint trop tot ; l'utilisateur, qui connait son
-    propre parcours, le peut d'un coup d'oeil.
+    elle-meme : seul l'utilisateur, qui connait son propre parcours, peut
+    remarquer d'un coup d'oeil qu'il en manque.
 
     Isolation par session, symetrique a celle d'Archiveur.archiver() par
     cours : une session dont le selecteur ne confirme jamais la selection
@@ -430,12 +423,17 @@ def _afficher_sessions(ena, imprimer=print) -> "list[str]":
             continue
         for cours in cours_de_la_session:
             sigle = cours.sigle or "(sans sigle)"
-            plan = "oui" if cours.url_plan_de_cours else "non"
-            resultats = "oui" if cours.url_resultats else "non"
-            imprimer(
-                f"  [{cours.id_site}] {sigle} - {cours.titre}"
-                f"  (plan de cours officiel : {plan}, sommaire de resultats : {resultats})"
-            )
+            if cours.url_externe:
+                # Cours heberge hors monPortail (constate pour un site Brio) :
+                # l'outil ne peut pas l'archiver. Le signaler ici evite qu'il
+                # disparaisse en silence, comme le faisait l'ancienne
+                # enumeration -- ce cours precis n'avait jamais ete vu avant.
+                imprimer(
+                    f"  [HORS MONPORTAIL] {sigle} - {cours.titre}"
+                    f"  -> a archiver a la main : {cours.url_externe}"
+                )
+                continue
+            imprimer(f"  [{cours.id_site}] {sigle} - {cours.titre}")
 
     return sessions_en_echec
 
@@ -480,42 +478,6 @@ def _lister(session=None, fabrique_ena=Ena) -> int:
             "relancez --lister.",
             file=sys.stderr,
         )
-        return 3
-    finally:
-        if session_ouverte is not None:
-            session_ouverte.fermer()
-
-
-def _diagnostic(session=None, fabrique_ena=Ena, imprimer=print) -> int:
-    """Etat des lieux du DOM du selecteur de sessions, en console.
-
-    Ne telecharge rien, n'ecrit rien sur disque : sert uniquement, quand
-    --lister ne trouve aucune session, a trancher sur des faits plutot que de
-    deviner une nouvelle correction. `session` et `fabrique_ena` sont
-    injectables pour les tests, comme _lister.
-    """
-    session_ouverte = None
-    try:
-        session_ouverte = _connecter(session=session)
-        rapport = fabrique_ena(session_ouverte).diagnostiquer_sessions()
-
-        for selecteur, nombre, echantillon in rapport["candidats"]:
-            imprimer(f"{selecteur} : {nombre} element(s)")
-            for texte in echantillon:
-                imprimer(f"    - {texte!r}")
-
-        imprimer(f"liens portant idSite= dans la page : {rapport['liens_id_site']}")
-        if rapport.get("echec_stabilisation_options"):
-            imprimer(
-                "echec de stabilisation des options de session : "
-                f"{rapport['echec_stabilisation_options']}"
-            )
-        return 0
-    except ConnexionEchouee as erreur:
-        print(f"ECHEC : {erreur}", file=sys.stderr)
-        return 1
-    except SessionExpiree:
-        print("\nSession expiree pendant le diagnostic.", file=sys.stderr)
         return 3
     finally:
         if session_ouverte is not None:
@@ -1282,14 +1244,6 @@ def _construire_analyseur() -> argparse.ArgumentParser:
         help="archive toutes les sessions, de la plus ancienne a la plus recente",
     )
     groupe_mode.add_argument(
-        "--diagnostic",
-        action="store_true",
-        help=(
-            "ouvre le selecteur de sessions et affiche un etat des lieux du "
-            "DOM, sans rien telecharger ni rien ecrire"
-        ),
-    )
-    groupe_mode.add_argument(
         "--verifier",
         action="store_true",
         help=(
@@ -1337,9 +1291,6 @@ def main() -> int:
 
         if arguments.tout:
             return _tout(arguments.destination)
-
-        if arguments.diagnostic:
-            return _diagnostic()
 
         if arguments.verifier:
             return _verifier_mode(arguments.destination)

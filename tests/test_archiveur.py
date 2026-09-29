@@ -1166,3 +1166,85 @@ def test_un_cours_avec_seulement_des_notes_n_est_pas_un_echec(tmp_path):
 
     assert not any(e.element == "(cours entier)" for e in resultat.echecs)
 
+
+# --- Cours heberge hors monPortail (constate pour un site Brio) : aucun
+# dossier cree, un Echec explicite avec l'URL, jamais un manque silencieux.
+
+
+COURS_EXTERNE = Cours(
+    id_site="",
+    sigle="PQR-9105",
+    titre="Cours heberge sur Brio",
+    session=SESSION,
+    url_externe="https://www.brioeducation.ca/sites/exemple123?sso=ulaval",
+)
+
+
+def test_cours_heberge_hors_monportail_est_consigne_en_echec_sans_dossier(tmp_path):
+    # L'ancienne enumeration ignorait ce cours en silence (PQR-9105,
+    # constate Automne 2025) : aucune navigation n'est possible sans site
+    # ENA, et aucun dossier ne doit etre cree pour lui.
+    resultat = Archiveur(EnaFactice(), transport_ok, tmp_path, queue.Queue()).archiver([COURS_EXTERNE])
+
+    assert not (tmp_path / "2026-1 Hiver").exists()
+    echec = next(e for e in resultat.echecs if e.cours == COURS_EXTERNE.dossier())
+    assert echec.url == COURS_EXTERNE.url_externe
+    assert "hors" in echec.cause.lower()
+    assert resultat.fichiers_ecrits == 0
+
+
+def test_cours_heberge_hors_monportail_n_empeche_pas_les_autres_cours(tmp_path):
+    # Isolation, comme tout le reste de l'archivage : un cours externe ne
+    # doit jamais emporter les cours normaux de la meme liste.
+    resultat = Archiveur(EnaFactice(), transport_ok, tmp_path, queue.Queue()).archiver(
+        [COURS_EXTERNE, COURS]
+    )
+
+    plan = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "Plan de cours" / "plan-de-cours.pdf"
+    assert plan.exists()
+    assert any(e.cours == COURS_EXTERNE.dossier() for e in resultat.echecs)
+
+
+# --- Plan de cours non recuperable : depuis la refonte du portail, la
+# valeur de retour de capturer_plan_de_cours ne doit plus etre ignoree.
+
+
+class EnaPlanDeCoursIntrouvable(EnaFactice):
+    """Aucune section testee ne mene au plan de cours (page d'erreur, ou
+    commande ADF interdite) : capturer_plan_de_cours rend False, comme le
+    fait reellement Ena.capturer_plan_de_cours depuis la refonte du portail."""
+
+    def capturer_plan_de_cours(self, cours, destination):
+        self.plans_captures.append(destination)
+        return False
+
+
+def test_plan_de_cours_non_recuperable_consigne_un_echec_explicite(tmp_path):
+    # Avant ce correctif, la valeur de retour de capturer_plan_de_cours etait
+    # ignoree : un plan manquant ne laissait alors aucune trace au rapport,
+    # un manque strictement silencieux.
+    from extracteur.archiveur import MESSAGE_PLAN_DE_COURS_NON_RECUPERABLE
+
+    ena = EnaPlanDeCoursIntrouvable()
+    resultat = Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
+
+    plan = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "Plan de cours" / "plan-de-cours.pdf"
+    assert not plan.exists()
+    assert ena.plans_captures == [plan]
+    echec = next(e for e in resultat.echecs if e.element == "plan-de-cours.pdf")
+    assert echec.cause == MESSAGE_PLAN_DE_COURS_NON_RECUPERABLE
+
+
+def test_plan_de_cours_deja_present_ne_consigne_aucun_echec(tmp_path):
+    # Archive anterieure a la refonte : un plan deja sur disque est saute
+    # sans bruit, jamais retente ni signale en echec.
+    dossier = tmp_path / "2026-1 Hiver" / "ABC-1000 Éthique" / "Plan de cours"
+    dossier.mkdir(parents=True)
+    (dossier / "plan-de-cours.pdf").write_bytes(b"%PDF-1.4 ancien")
+
+    ena = EnaPlanDeCoursIntrouvable()
+    resultat = Archiveur(ena, transport_ok, tmp_path, queue.Queue()).archiver([COURS])
+
+    assert ena.plans_captures == []
+    assert not any(e.element == "plan-de-cours.pdf" for e in resultat.echecs)
+

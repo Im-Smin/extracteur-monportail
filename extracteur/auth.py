@@ -45,7 +45,14 @@ from urllib.parse import urlparse
 from playwright.sync_api import Error as ErreurPlaywright
 from playwright.sync_api import sync_playwright
 
-URL_DEPART = "https://sitescours.monportail.ulaval.ca/portail/cours"
+# Avant la refonte du portail (constatee le 25 septembre 2026),
+# URL_DEPART visait https://sitescours.monportail.ulaval.ca/portail/cours,
+# la page d'enumeration des sessions et des cours. Cette page renvoie
+# desormais une page-404 : le point d'entree qui la remplace est le tableau
+# de bord du portail principal (voir docs/api-monportail.md et
+# extracteur.ena.URL.cours), sur un sous-domaine different (monportail.ulaval.ca,
+# sans le prefixe "sitescours").
+URL_DEPART = "https://monportail.ulaval.ca/portail/"
 HOTE_SITESCOURS = "sitescours.monportail.ulaval.ca"
 # Second hote attendu cote portail (sans le sous-domaine sitescours) : une
 # authentification federee peut aboutir ici plutot que sur HOTE_SITESCOURS
@@ -247,8 +254,8 @@ def est_page_authentifiee(page) -> bool:
 
     Etre plus permissif ici ne fait courir aucun risque de perte silencieuse :
     la garantie s'est deplacee en aval. Si la page adoptee n'est pas la bonne
-    (mauvaise page du domaine), le selecteur de sessions (Ena.
-    _ouvrir_selecteur_sessions / sessions_disponibles) ne trouvera rien
+    (mauvaise page du domaine), le filtre de session du tableau de bord (Ena.
+    _ouvrir_filtre_session / sessions_disponibles) ne trouvera rien
     d'exploitable et l'outil echoue bruyamment, plutot que de rendre une
     liste vide en silence.
 

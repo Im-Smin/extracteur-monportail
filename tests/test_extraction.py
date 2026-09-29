@@ -33,18 +33,6 @@ LIEN_PLANCOURS = (
     "%3Fidentifiant%3D6b6947ef288d16d135b3342db86127f2ee7afcbc"
 )
 
-# Variante sans le parametre idSite sur le traceur lui-meme : un appariement
-# global par idSite ne peut alors associer ce plan de cours a aucun cours,
-# alors qu'une lecture carte par carte le trouve quand meme, puisqu'il est
-# physiquement dans la carte du bon cours.
-LIEN_PLANCOURS_SANS_IDSITE = (
-    "/analytique/evenement/plancours?idFichier=141542389"
-    "&url=https%3A%2F%2Fsitescours.monportail.ulaval.ca%2Fcontenu%2Fsitescours"
-    "%2F040%2F04000%2F202601%2Fsite100001%2Fplancours%2FABC-1000_H26_17541.pdf"
-    "%3Fidentifiant%3D6b6947ef288d16d135b3342db86127f2ee7afcbc"
-)
-
-
 def test_url_reelle_decode_le_parametre_url():
     assert url_reelle(LIEN_TRACEUR) == (
         "/contenu/sitescours/040/04000/202601/site100001/modules1434431"
@@ -557,13 +545,40 @@ def test_commandes_adf_reconnues():
     assert est_commande_adf(None) is False
 
 
-def test_cours_depuis_html():
-    html = """
-    <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100001">
-      Cours exemple C</a>
-    <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100002">
-      Projet integrateur II</a>
+def _accordeon(cartes: str) -> str:
+    """Enveloppe des cartes dans l'accordeon des cours suivis, seul endroit
+    ou cours_depuis_html va chercher des cours (voir sa docstring)."""
+    return f'<div class="mpo-accordeon-cours-suivis"><ul aria-label="Cours suivis">{cartes}</ul></div>'
+
+
+def _carte(id_site: str, titre: str, sigle: str = "", href: str | None = None) -> str:
+    """Une carte de cours anonymisee, fidele a la vraie structure relevee le
+    25 septembre 2026 (voir docs/api-monportail.md) : titre dans
+    h4 > a > span.m-link__text, sigle dans un sous-titre dedie, et un lien
+    « Indicateur de reussite » qui porte lui aussi un idSite (encode dans son
+    propre parametre url), jamais celui du cours."""
+    if href is None:
+        href = f"https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite={id_site}"
+    sous_titre = f'<p class="mpo-gabarit-item-liste-cours__sous-titre"><p class="mu-no-m"> {sigle} </p></p>' if sigle else ""
+    return f"""
+    <li class="mpo-gabarit-item-liste-cours">
+      <h4 class="mpo-gabarit-item-liste-cours__titre">
+        <a href="{href}" class="m-link"><span class="m-link__text"> {titre} </span></a>
+      </h4>
+      {sous_titre}
+      <div class="mpo-gabarit-item-liste-cours__indicateur-reussite">
+        <a href="https://sitescours.monportail.ulaval.ca/analytique/evenement/lien?codeDestination=AALR_MA_REUSSITE&url=https%3A%2F%2Fsitescours.monportail.ulaval.ca%2Fena%2Fsite%2Fmareussite%3FidSite%3D{id_site}"
+           aria-label="Indicateur de réussite"></a>
+      </div>
+    </li>
     """
+
+
+def test_cours_depuis_html():
+    html = _accordeon(
+        _carte("100001", "Cours exemple C")
+        + _carte("100002", "Projet integrateur II")
+    )
     session = Session(code="202601", libelle="Hiver 2026")
     cours = cours_depuis_html(html, session)
 
@@ -571,68 +586,44 @@ def test_cours_depuis_html():
     assert cours[0].titre == "Cours exemple C"
 
 
-def test_cours_extrait_le_sigle_quand_il_est_present():
-    # Structure reelle constatee sur /portail/cours (session Automne 2025) :
-    # le lien ne porte que le titre, jamais le sigle. Le sigle est un texte de
-    # la carte elle-meme, sous la forme "SIGLE-0000, NRC : xxxxx (sect. yy)".
-    html = """
-    <article class="mpo-boite mpo-boite-principale mpo-boite">
-      <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100012">Cours exemple A</a>
-      GHI-3000, NRC : 10001 (sect. H1)
-      Cours présentiel-hybride
-      Dates limites d'abandon
-      Plages horaires
-      Plan de cours
-      Suivi de ma...
-    </article>
-    """
+def test_cours_extrait_le_sigle_depuis_le_sous_titre():
+    # Depuis la refonte, le sigle n'est plus un texte libre de la carte : il
+    # vit dans son propre element (mpo-gabarit-item-liste-cours__sous-titre),
+    # ici reproduit avec le <p> imbrique tel que sert le DOM reel.
+    html = _accordeon(_carte("100012", "Cours exemple A", "GHI-3000"))
     cours = cours_depuis_html(html, Session(code="202509", libelle="Automne 2025"))
     assert cours[0].sigle == "GHI-3000"
     assert cours[0].titre == "Cours exemple A"
 
 
-def test_cours_sigle_ignore_un_faux_positif_hors_forme_carte():
-    # Reproduit par relecture : le motif "[A-Z]{3}-\\d{4}" cherche n'importe
-    # ou dans le texte matchait aussi un numero de dossier sans rapport,
-    # produisant un sigle invente sans la moindre alerte. Le vrai sigle est
-    # toujours immediatement suivi d'une virgule (et generalement de la
-    # mention NRC) : un numero de dossier au milieu d'une phrase ne l'est pas.
-    html = """
-    <article class="mpo-boite">
-      <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=1">Cours X</a>
-      Reference dossier NRC-4567 pour ce cours
-    </article>
-    """
+def test_cours_titre_exclut_le_texte_d_accessibilite_du_lien_cache():
+    # Un cours qui s'ouvre dans un nouvel onglet porte un span.m-link__hidden
+    # a l'interieur meme du span.m-link__text ("Cet hyperlien s'ouvrira dans
+    # un nouvel onglet.") : ce texte d'accessibilite ne fait pas partie du titre.
+    html = _accordeon(
+        f"""
+        <li class="mpo-gabarit-item-liste-cours">
+          <h4 class="mpo-gabarit-item-liste-cours__titre">
+            <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100001" target="_blank">
+              <span class="m-link__text"> Cours heberge sur Brio
+                <span class="m-link__hidden"> - Cet hyperlien s'ouvrira dans un nouvel onglet.</span>
+              </span>
+            </a>
+          </h4>
+        </li>
+        """
+    )
     cours = cours_depuis_html(html, Session(code="202601", libelle="Hiver 2026"))
-    assert cours[0].sigle is None
-
-
-def test_cours_extrait_le_sigle_meme_sans_mention_nrc():
-    # Repli tolerant : la virgule apres le sigle suffit, meme sans "NRC" a la
-    # suite (forme non confirmee en session reelle, mais a ne pas perdre).
-    html = """
-    <article class="mpo-boite">
-      <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=1">Cours X</a>
-      GHI-3000, (sect. H1)
-    </article>
-    """
-    cours = cours_depuis_html(html, Session(code="202601", libelle="Hiver 2026"))
-    assert cours[0].sigle == "GHI-3000"
+    assert cours[0].titre == "Cours heberge sur Brio"
 
 
 def test_cours_deux_cartes_gardent_chacune_leur_propre_sigle():
     # Deuxieme carte relevee, meme session : verifie que le sigle de chaque
     # carte reste bien le sien, sans fuite d'une carte a l'autre.
-    html = """
-    <article class="mpo-boite mpo-boite-principale mpo-boite">
-      <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100012">Cours exemple A</a>
-      GHI-3000, NRC : 10001 (sect. H1)
-    </article>
-    <article class="mpo-boite mpo-boite-principale mpo-boite">
-      <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100013">Cours exemple B</a>
-      PQR-6000, NRC : 88184 (sect. Z3)
-    </article>
-    """
+    html = _accordeon(
+        _carte("100012", "Cours exemple A", "GHI-3000")
+        + _carte("100013", "Cours exemple B", "PQR-6000")
+    )
     cours = cours_depuis_html(html, Session(code="202509", libelle="Automne 2025"))
     par_id = {c.id_site: c for c in cours}
 
@@ -640,105 +631,96 @@ def test_cours_deux_cartes_gardent_chacune_leur_propre_sigle():
     assert par_id["100013"].sigle == "PQR-6000"
 
 
-def test_cours_associe_le_plan_de_cours_a_la_bonne_carte_sans_idsite_global():
-    # Le lien du plan de cours vit dans la carte de son cours (releve reel),
-    # mais son href ne porte pas toujours un idSite exploitable pour un
-    # appariement global : un balayage de page qui s'appuie uniquement sur ce
-    # parametre perdrait ce plan de cours, ou pire, l'attribuerait au mauvais
-    # cours si l'appariement se faisait par ordre d'apparition. La premiere
-    # carte n'a pas de plan de cours du tout : elle ne doit jamais recevoir
-    # celui de la seconde.
-    html = f"""
-    <article class="mpo-boite">
-      <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100012">Cours exemple A</a>
-      GHI-3000, NRC : 10001 (sect. H1)
-    </article>
-    <article class="mpo-boite">
-      <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100001">Cours exemple C</a>
-      ABC-1000, NRC : 12345 (sect. A1)
-      <a href="https://sitescours.monportail.ulaval.ca{LIEN_PLANCOURS_SANS_IDSITE}">Plan de cours</a>
-    </article>
-    """
+def test_cours_partageant_le_meme_site_garde_une_seule_entree():
+    # « Autre cours partageant ce site » : un meme idSite sert deux sigles.
+    # Une seule entree est conservee (la premiere), sans polluer la carte
+    # voisine, distincte.
+    html = _accordeon(
+        _carte("100012", "Cours exemple A", "GHI-3000")
+        + _carte("100012", "Cours exemple A (section 2)", "GHI-3001")
+        + _carte("100013", "Cours exemple B", "PQR-6000")
+    )
+    cours = cours_depuis_html(html, Session(code="202509", libelle="Automne 2025"))
+    par_id = {c.id_site: c for c in cours}
+
+    assert len(cours) == 2
+    assert par_id["100012"].sigle == "GHI-3000"
+    assert par_id["100013"].sigle == "PQR-6000"
+
+
+def test_cours_lien_indicateur_de_reussite_jamais_pris_pour_le_lien_du_cours():
+    # Le lien « Indicateur de reussite » porte lui aussi un idSite (encode
+    # dans son propre parametre url), mais seul le lien du h4.titre est lu :
+    # aucune confusion possible, meme si ce traceur portait un idSite= en clair.
+    html = _accordeon(
+        f"""
+        <li class="mpo-gabarit-item-liste-cours">
+          <h4 class="mpo-gabarit-item-liste-cours__titre">
+            <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100001">
+              <span class="m-link__text"> Cours exemple C </span>
+            </a>
+          </h4>
+          <div class="mpo-gabarit-item-liste-cours__indicateur-reussite">
+            <a href="https://sitescours.monportail.ulaval.ca/ena/site/mareussite?idSite=999999"
+               aria-label="Indicateur de réussite"></a>
+          </div>
+        </li>
+        """
+    )
     cours = cours_depuis_html(html, Session(code="202601", libelle="Hiver 2026"))
-    par_id = {c.id_site: c for c in cours}
-
-    assert par_id["100012"].url_plan_de_cours is None
-    assert par_id["100001"].url_plan_de_cours is not None
-    assert "ABC-1000_H26_17541.pdf" in par_id["100001"].url_plan_de_cours
-
-
-def test_carte_avec_deux_liens_vers_le_meme_cours_ne_perd_pas_son_contenu():
-    # Motif deja documente ailleurs sur ce site pour les modules (icone puis
-    # titre) : deux liens de site vers LE MEME cours dans une carte. Compter
-    # les balises de lien (et non les identifiants de site distincts) fait
-    # croire a _carte_du_lien que l'ancetre commun contient deja "plus d'un"
-    # cours, et la remontee s'arrete aussitot -- la carte se reduit au lien
-    # lui-meme, sigle et plan de cours perdus en silence. La carte voisine ne
-    # doit pas non plus etre polluee par cette correction.
-    html = f"""
-    <div class="page">
-      <article class="mpo-boite">
-        <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100012"></a>
-        <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100012">Cours exemple A</a>
-        GHI-3000, NRC : 10001 (sect. H1)
-        <a href="https://sitescours.monportail.ulaval.ca{LIEN_PLANCOURS}">Plan de cours</a>
-      </article>
-      <article class="mpo-boite">
-        <a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100013">Cours exemple B</a>
-        PQR-6000, NRC : 88184 (sect. Z3)
-      </article>
-    </div>
-    """
-    cours = cours_depuis_html(html, Session(code="202509", libelle="Automne 2025"))
-    par_id = {c.id_site: c for c in cours}
-
-    assert par_id["100012"].sigle == "GHI-3000"
-    assert par_id["100012"].titre == "Cours exemple A"
-    assert par_id["100012"].url_plan_de_cours is not None
-    # La carte voisine garde son propre sigle, sans fuite.
-    assert par_id["100013"].sigle == "PQR-6000"
+    assert [c.id_site for c in cours] == ["100001"]
 
 
 def test_cours_sans_sigle():
-    html = '<a href="/ena/site/accueil?idSite=100006">Nos biais inconscients</a>'
+    html = _accordeon(_carte("100006", "Nos biais inconscients"))
     cours = cours_depuis_html(html, Session(code="202209", libelle="Automne 2022"))
     assert cours[0].sigle is None
     assert cours[0].titre == "Nos biais inconscients"
 
 
-def test_cours_dedoublonne():
-    html = (
-        '<a href="/ena/site/accueil?idSite=1"></a>'
-        '<a href="/ena/site/accueil?idSite=1">Titre</a>'
+def test_cours_externe_est_signale_avec_son_url():
+    # Constate pour PQR-9105 (Automne 2025) : le lien de titre pointe vers
+    # Brio, hors monPortail. L'ancienne enumeration l'ignorait en silence.
+    html = _accordeon(
+        _carte(
+            id_site="",
+            titre="Cours heberge sur Brio",
+            sigle="PQR-9105",
+            href="https://www.brioeducation.ca/sites/exemple123?sso=ulaval",
+        )
     )
-    cours = cours_depuis_html(html, Session(code="202601", libelle="Hiver 2026"))
+    cours = cours_depuis_html(html, Session(code="202509", libelle="Automne 2025"))
+
     assert len(cours) == 1
-    assert cours[0].titre == "Titre"
+    assert cours[0].id_site == ""
+    assert cours[0].url_externe == "https://www.brioeducation.ca/sites/exemple123?sso=ulaval"
+    assert cours[0].sigle == "PQR-9105"
 
 
-def test_cours_capte_le_lien_du_plan_de_cours_et_des_resultats():
-    # Trois liens releves tels quels sur la page /portail/cours pour un meme cours.
+def test_cours_ignore_ce_qui_est_hors_de_l_accordeon_des_cours_suivis():
+    # Les « Autres activites » (formations institutionnelles) sont hors
+    # perimetre : une carte identique en dehors de l'accordeon des cours
+    # suivis ne doit jamais etre prise pour un cours.
+    carte_hors_perimetre = _carte("100099", "Formation EDI")
     html = (
-        '<a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite=100001">'
-        "ABC-1000 : Cours exemple C</a>"
-        '<a href="https://sitescours.monportail.ulaval.ca/ena/site/resultats?idSite=100001">'
-        "Résultats</a>"
-        f'<a href="https://sitescours.monportail.ulaval.ca{LIEN_PLANCOURS}">Plan de cours</a>'
+        _accordeon(_carte("100001", "Cours exemple C"))
+        + f'<div class="mpo-smart-boite-liste-cours__sites-hors-session"><ul>{carte_hors_perimetre}</ul></div>'
     )
     cours = cours_depuis_html(html, Session(code="202601", libelle="Hiver 2026"))
+    assert [c.id_site for c in cours] == ["100001"]
 
-    assert cours[0].url_resultats == (
-        "https://sitescours.monportail.ulaval.ca/ena/site/resultats?idSite=100001"
-    )
-    assert cours[0].url_plan_de_cours == (
-        "https://sitescours.monportail.ulaval.ca/contenu/sitescours/040/04000"
-        "/202601/site100001/plancours/ABC-1000_H26_17541.pdf"
-        "?identifiant=6b6947ef288d16d135b3342db86127f2ee7afcbc"
-    )
+
+def test_cours_session_vide_rend_une_liste_vide():
+    # Session chargee sans aucun cours suivi (releve reel) : aucun accordeon
+    # n'est meme rendu.
+    html = '<div class="mpo-sites-lies-session mpo-smart-boite-liste-cours__cours-lies-session"></div>'
+    cours = cours_depuis_html(html, Session(code="202601", libelle="Hiver 2026"))
+    assert cours == []
 
 
 def test_cours_sans_plan_ni_resultats_a_des_liens_absents():
-    html = '<a href="/ena/site/accueil?idSite=100006">Nos biais inconscients</a>'
+    # Depuis la refonte, la carte ne porte plus aucun de ces deux liens.
+    html = _accordeon(_carte("100006", "Nos biais inconscients"))
     cours = cours_depuis_html(html, Session(code="202209", libelle="Automne 2022"))
     assert cours[0].url_plan_de_cours is None
     assert cours[0].url_resultats is None

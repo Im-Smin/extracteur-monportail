@@ -24,6 +24,30 @@ MESSAGE_COURS_SANS_CONTENU = (
     "puis verifiez-le a la main sur monPortail si le probleme persiste."
 )
 
+# Voir le debut de Archiveur._archiver_un_cours. Un cours dont le lien de
+# titre pointe hors de monPortail (constate pour un site heberge sur Brio,
+# voir docs/api-monportail.md) n'a aucun site ENA a visiter : aucune
+# navigation n'est possible, et aucun dossier n'est cree pour lui.
+MESSAGE_COURS_HORS_MONPORTAIL = (
+    "cours heberge hors de monPortail (aucun site ENA) : l'outil ne peut pas "
+    "l'archiver automatiquement. A recuperer a la main, a l'URL ci-dessus, "
+    "avant la fermeture de la plateforme le 1er novembre 2026."
+)
+
+# Voir Archiveur._archiver_plan_de_cours. Depuis la refonte du portail
+# (constatee le 25 septembre 2026), aucune source sure ne mene plus au PDF
+# officiel du plan de cours : la carte du tableau de bord ne porte plus de
+# lien vers lui, et le seul lien restant sur le site de cours est la
+# commande ADF cmdObtenirPlanCours, qui PUBLIE une nouvelle version au lieu
+# d'en telecharger une -- jamais declenchee (voir docs/api-monportail.md).
+MESSAGE_PLAN_DE_COURS_NON_RECUPERABLE = (
+    "le plan de cours officiel n'est plus propose depuis la refonte du "
+    "portail (constatee le 25 septembre 2026) : ni la carte du cours, ni le "
+    "site de cours n'offrent plus de lien vers le PDF officiel. A recuperer "
+    "a la main sur monPortail avant la fermeture de la plateforme, le "
+    "1er novembre 2026."
+)
+
 # Pages de synthese de la section Evaluations et resultats, capturees une
 # seule fois par cours dans Pages/, au meme titre que les pages de module.
 NOM_PAGE_EVALUATIONS = "evaluations.pdf"
@@ -152,6 +176,22 @@ class Archiveur:
     def _archiver_un_cours(self, cours) -> None:
         from extracteur.ena import URL
 
+        if cours.url_externe:
+            # Aucun site ENA : aucune navigation possible, donc aucun dossier
+            # cree pour ce cours. Sans cet Echec explicite, ce cours
+            # disparaitrait en silence -- exactement ce que faisait l'ancienne
+            # enumeration (voir docs/api-monportail.md, cours PQR-9105).
+            self.resultat.echecs.append(
+                Echec(
+                    cours=cours.dossier(),
+                    element="(cours entier)",
+                    cause=MESSAGE_COURS_HORS_MONPORTAIL,
+                    url=cours.url_externe,
+                )
+            )
+            self._emettre("echec", f"{cours.dossier()} : {MESSAGE_COURS_HORS_MONPORTAIL}")
+            return
+
         base = self.chemin_du_cours(cours)
 
         self._archiver_plan_de_cours(cours, base)
@@ -249,9 +289,22 @@ class Archiveur:
         """Telecharge le PDF officiel s'il est connu, sinon imprime la page en
         filet de secours.
 
-        L'url_plan_de_cours vient directement de /portail/cours, une source de
+        L'url_plan_de_cours vient directement de l'enumeration, une source de
         confiance : contrairement aux liens du contenu, on ne la filtre pas
-        par est_interne avant de la suivre.
+        par est_interne avant de la suivre. Depuis la refonte du portail
+        (constatee le 25 septembre 2026), ce champ n'est plus jamais rempli
+        (voir extraction.cours_depuis_html) : la branche ci-dessous reste
+        pour les rares appelants qui construiraient encore un Cours avec ce
+        champ present, mais tout cours reellement enumere passe desormais par
+        le filet de secours, plus bas.
+
+        Un plan deja present sur disque (archive anterieure a la refonte)
+        est saute sans bruit -- destination.exists() ci-dessous. Sinon, si la
+        capture (impression de la page) echoue ou ne trouve aucune section
+        valide, un Echec explicite est consigne : avant ce correctif, la
+        valeur de retour de capturer_plan_de_cours (une section trouvee, ou
+        False) etait ignoree, et un plan manquant ne laissait alors aucune
+        trace au rapport -- un manque strictement silencieux.
         """
         dossier = base / "Plan de cours"
 
@@ -263,12 +316,22 @@ class Archiveur:
         if destination.exists():
             return
         try:
-            self.ena.capturer_plan_de_cours(cours, destination)
+            section_trouvee = self.ena.capturer_plan_de_cours(cours, destination)
         # Capture isolee : navigation Playwright ou ecriture disque du PDF.
         # Une impression manquee ne doit couter que ce fichier, jamais le cours.
         except (ErreurPlaywright, OSError) as erreur:
             self.resultat.echecs.append(
                 Echec(cours=cours.dossier(), element=NOM_PLAN_DE_COURS, cause=str(erreur))
+            )
+            return
+
+        if not section_trouvee:
+            self.resultat.echecs.append(
+                Echec(
+                    cours=cours.dossier(),
+                    element=NOM_PLAN_DE_COURS,
+                    cause=MESSAGE_PLAN_DE_COURS_NON_RECUPERABLE,
+                )
             )
 
     def _parcourir_le_menu(self, cours, base: Path) -> None:

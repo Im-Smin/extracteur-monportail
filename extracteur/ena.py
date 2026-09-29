@@ -6,7 +6,6 @@ restent valides partout. On navigue donc par URL, et on lit le menu seulement
 pour attraper ce qui sort du schema.
 """
 
-import re
 import unicodedata
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -32,6 +31,11 @@ from extracteur.modele import Cours, Evaluation, PageDeModule, Session
 from extracteur.telechargement import SessionExpiree
 
 BASE = "https://sitescours.monportail.ulaval.ca"
+
+# Portail principal (tableau de bord), distinct du sous-domaine des sites de
+# cours : depuis la refonte constatee le 25 septembre 2026, c'est la que se
+# fait l'enumeration des sessions et des cours (voir URL.cours()).
+BASE_PORTAIL = "https://monportail.ulaval.ca"
 
 # Marqueur textuel confirmant qu'une page est bien un plan de cours, et non
 # une redirection tombee sur l'accueil. Compare sans accents ni casse : voir
@@ -123,185 +127,108 @@ class URL:
 
     @staticmethod
     def cours() -> str:
-        """Source d'enumeration des sessions et des cours. Aucun identifiant
-        de site d'amorcage n'est necessaire : l'URL est stable."""
-        return "/portail/cours"
+        """Source d'enumeration des sessions et des cours.
+
+        Depuis la refonte du portail (constatee le 25 septembre 2026),
+        l'ancienne page /portail/cours (sur le sous-domaine sitescours)
+        renvoie une page-404 : l'enumeration se fait desormais sur le
+        tableau de bord du portail principal. URL absolue, jamais relative
+        a BASE (voir Ena._visiter) : ce tableau de bord vit sur un
+        sous-domaine different de celui des sites de cours
+        (monportail.ulaval.ca, sans le prefixe "sitescours")."""
+        return f"{BASE_PORTAIL}/portail/"
 
 
 # Noms de section tentes pour le plan de cours. La phase 0 n'a confirme que
 # `liste_modules` ; les autres sont des candidats a valider au premier passage.
 SECTIONS_PLAN_DE_COURS = ("plan_de_cours", "plancours", "plan_cours")
 
-# Forme stable d'un libelle de session du selecteur de /portail/cours : un
-# nom de saison suivi d'une annee sur quatre chiffres ("Hiver 2026",
-# "Été 2025", "Automne 2022", ...). Releve en session reelle sur les douze
-# options du selecteur. Cette forme ne peut pas entrer en collision avec les
-# libelles du menu global du portail (voir LIBELLES_HORS_SITE dans
-# extraction.py), qui ne ressemblent a rien de tel.
-#
-# Les variantes de casse et d'accent d'« Été » sont ecrites explicitement
-# ([ée]t[ée]) plutot que confiees a re.IGNORECASE, qui ne garantit pas le
-# repliement de casse d'un caractere accentue cote moteur de recherche du
-# navigateur.
-MOTIF_LIBELLE_SESSION = re.compile(r"^(?:hiver|automne|[ée]t[ée])\s+\d{4}$", re.IGNORECASE)
+# Le tableau de bord se souvient de la derniere session choisie : rouvert, il
+# affiche celle-la, jamais une session fixe (constate en inspection reelle,
+# viewport Playwright 1280x720). Toute lecture doit donc explicitement
+# selectionner puis verifier la session voulue, jamais supposer que l'etat
+# courant du filtre correspond deja a ce qui est demande.
 
-# Chaine de repli passee a has_text quand aucun candidat n'a survecu au
-# controle cote Python (voir _options_sessions_par_forme) : un Locator vide
-# est alors le seul rendu correct, et une chaine litterale (jamais une
-# expression reguliere ancree) qui ne peut apparaitre dans aucun libelle
-# reel le garantit simplement.
-AUCUNE_CORRESPONDANCE_POSSIBLE = "@@aucune-correspondance-mpo-deroulant@@"
+# Filtre de session du tableau de bord, depuis la refonte du portail
+# constatee le 25 septembre 2026 (l'ancienne page /portail/cours renvoie une
+# page-404 -- voir docs/api-monportail.md, section "Portail refondu"). Le
+# champ readonly du combobox porte la session affichee dans sa PROPRIETE
+# `value`, jamais dans un attribut HTML : elle n'apparait donc PAS dans
+# page.content(), seule une lecture Playwright (input_value()) la revele.
+# Bloc du tableau de bord qui porte la liste des cours et ses squelettes de
+# chargement (voir _attendre_chargement_termine) : restreint le sondage des
+# squelettes a ce bloc precis, plutot qu'a toute la page.
+BLOC_LISTE_COURS = ".mpo-smart-boite-liste-cours__boite.mpo--sites-lies-session"
+# Restreint au bloc des cours : le tableau de bord porte d'autres blocs, et
+# rien ne garantit qu'aucun n'aura un jour son propre menu deroulant du meme
+# composant. Cliquer le mauvais changerait un autre filtre, et la session
+# attendue ne serait jamais confirmee.
+SELECTEUR_CHAMP_SESSION = f"{BLOC_LISTE_COURS} input.m-dropdown__input"
+SELECTEUR_OPTION_SESSION = 'li[role="option"].m-dropdown-item'
+CLASSE_TEXTE_OPTION_SESSION = "m-dropdown-item__element-text"
 
-# Selecteurs candidats explores par --diagnostic : le but est de voir, sur
-# des faits, ce que chacun trouve reellement une fois le panneau ouvert,
-# plutot que de deviner une nouvelle fois la structure du DOM.
-CANDIDATS_DIAGNOSTIC_SESSIONS = ("[role=option]", ".mpo-deroulant-element", "li", "a")
+SELECTEUR_SQUELETTES_CHARGEMENT = (
+    f"{BLOC_LISTE_COURS} .mpo--squelette-chargement, "
+    f"{BLOC_LISTE_COURS} .mpo-smart-boite-liste-cours__squelette-chargement-sessions"
+)
 
-# Delai minimal accorde a l'apparition du bouton du selecteur de sessions.
-# Releve en session reelle : /portail/cours (application AngularJS) met 8 a
-# 9 secondes a se rendre, largement au-dela du signal reseau "networkidle"
-# que Playwright declenche des que les requetes se taisent -- bien avant que
-# l'UI ne soit affichee. Attendre ce signal reseau plutot qu'un element
-# concret du DOM final a deja fait disparaitre deux sessions entieres d'une
-# enumeration reelle, en silence. Ce delai est nettement plus genereux que
-# le temps observe, pour absorber les sessions plus lentes.
-DELAI_CHARGEMENT_SESSIONS_MS = 30_000
+# Chronologie mesuree en inspection reelle (sondage aux 100 ms) apres un clic
+# sur une option du filtre de session :
+#   0 ms      valeur = ancienne session, squelette absent, anciennes cartes
+#   101 ms    valeur = NOUVELLE session, squelette PRESENT, 0 carte
+#   1293-1493 ms  valeur = nouvelle session, squelette absent, cartes finales
+# La valeur du champ et le squelette basculent donc dans le MEME rendu :
+# lire la seule valeur du champ ferait conclure a tort que le chargement est
+# termine des 101 ms, pendant que le squelette masque encore les vrais cours.
+# Piege reel constate a ce meme instant : les « Autres activites » (formations
+# institutionnelles, hors perimetre) sont deja affichees, avec elles aussi des
+# liens idSite= -- une detection fondee sur la seule presence de cartes
+# tomberait dessus. Le seul signal retenu est donc : valeur du champ ==
+# session demandee ET aucun squelette present dans BLOC_LISTE_COURS. Voir
+# _attendre_chargement_termine.
+DELAI_CHARGEMENT_SESSION_MS = 30_000
+INTERVALLE_SONDAGE_CHARGEMENT_MS = 200
 
-# Lecture de la liste des cours apres un changement de session : voir
-# Ena._contenu_liste_cours_stable. Une carte de cours se reconnait a son lien
-# vers l'accueil du site de cours, le meme que lit cours_depuis_html.
-SELECTEUR_CARTE_COURS = "a[href*='/ena/site/accueil']"
-INTERVALLE_SONDAGE_LISTE_COURS_MS = 500
-DELAI_LISTE_COURS_VIDE_MS = 12_000
-
-# Delai accorde a la confirmation du changement de session par le bouton,
-# une fois son option cliquee. Le clic recharge la liste des cours : le
-# bouton du selecteur est detruit puis recree par AngularJS, exactement le
-# meme rendu que le chargement initial de /portail/cours -- mesure a 8 a 10
-# secondes en session reelle.
-#
-# Ce delai a ete porte a 30 secondes (aligne sur DELAI_CHARGEMENT_SESSIONS_MS)
-# a la suite d'un plantage reel ou "Hiver 2027" avait echoue sur
-# SelecteurSessionsIndisponible avec un delai de 5000 ms. Mauvais diagnostic :
-# la cause reelle n'etait pas un delai trop court, mais un motif ancre
-# (^...$) confie a has_text sur un texte de bouton non nettoye -- Playwright
-# ne normalise pas les espaces d'un texte compare a une expression reguliere
-# compilee, et le bouton reel porte de l'indentation et des sauts de ligne
-# autour du libelle. Un motif ancre ne pouvait donc jamais correspondre,
-# quel que soit le delai accorde : TOUTES les sessions echouaient, y compris
-# celles deja vues rendues correctement. Voir _confirmer_session_selectionnee
-# pour la correction (comparaison de textes nettoyes cote Python, plus de
-# motif ancre confie au navigateur).
-#
-# La comparaison une fois reparee, ce delai revient a la fourchette
-# reellement mesuree (8 a 10 secondes), sans la marge de
-# DELAI_CHARGEMENT_SESSIONS_MS : 30 secondes par session, multipliees par
-# douze sessions, ajoutent six minutes d'attente pure au moindre probleme.
-DELAI_CONFIRMATION_SESSION_MS = 9_000
-
-# Intervalle de sondage du texte du bouton pendant l'attente de confirmation.
-# Le clic detruit puis recree le bouton (rendu AngularJS) : une lecture
-# unique juste apres le clic peut tomber entre les deux, sur un bouton
-# absent ou pas encore a jour. On sonde donc a intervalle regulier jusqu'a
-# correspondance ou expiration de DELAI_CONFIRMATION_SESSION_MS.
-INTERVALLE_SONDAGE_CONFIRMATION_MS = 200
-
-# Delai maximal et intervalle de sondage accordes a la stabilisation du
-# compte d'options du panneau de sessions, une fois celui-ci ouvert.
-# .count() et .all_text_contents() de Playwright n'attendent rien : ils
-# interrogent le DOM a l'instant precis ou on les appelle. Si AngularJS
-# peuple le panneau en differe, une lecture immediate peut tomber sur un
-# compte partiel (par exemple neuf options sur douze) sans qu'aucune
-# exception ne le signale -- la liste n'est pas vide. On sonde donc
-# plusieurs fois, et on ne lit le contenu final que lorsque le compte se
-# maintient sur NOMBRE_SONDAGES_CONSECUTIFS_STABILISATION sondages
-# consecutifs, sur une fenetre d'observation d'au moins
-# DELAI_OBSERVATION_MINIMALE_STABILISATION_MS -- symetriquement a l'attente
-# deja appliquee au bouton et a sa confirmation.
-#
-# Deux sondages consecutifs egaux (version anterieure) s'est revele
-# insuffisant : rejoue contre des sequences de comptes programmees, ce
-# critere concluait "stable" sur un palier permanent a neuf options (au lieu
-# de douze), en silence, et sur une oscillation entre deux comptes, il
-# rendait la derniere valeur sondee -- tronquee -- sans lever la moindre
-# exception. Voir la docstring de _stabiliser_options pour ce que ce
-# durcissement garantit reellement, et ce qu'il ne peut pas garantir.
-DELAI_STABILISATION_OPTIONS_SESSIONS_MS = 2_000
-INTERVALLE_SONDAGE_STABILISATION_MS = 100
-NOMBRE_SONDAGES_CONSECUTIFS_STABILISATION = 3
-DELAI_OBSERVATION_MINIMALE_STABILISATION_MS = 600
+# Delai accorde a l'ouverture du filtre de session (clic sur le champ, puis
+# apparition d'au moins une option). Ce n'est PAS une simple ouverture de menu
+# local : au chargement du tableau de bord, le champ n'existe pas encore -- un
+# squelette (.mpo-smart-boite-liste-cours__squelette-chargement-sessions)
+# occupe sa place tant que le serveur n'a pas rendu la liste des sessions
+# (constate en inspection reelle). Le premier clic attend donc un aller-retour
+# reseau. Trop court, un jour de reseau lent, et c'est toute l'enumeration qui
+# echoue avant la premiere session. C'est un plafond : il ne coute rien quand
+# le portail repond vite.
+DELAI_OUVERTURE_FILTRE_MS = 30_000
 
 
 class SelecteurSessionsIndisponible(Exception):
-    """Le mecanisme du selecteur de sessions n'a pas repondu comme attendu :
-    bouton jamais apparu apres un delai genereux, clic sur le bouton en
-    echec malgre sa presence, ou session cliquee dont la confirmation n'est
-    jamais apparue sur le bouton.
+    """Le filtre de session du tableau de bord n'a pas repondu comme
+    attendu : champ jamais ouvrable (ou n'offrant aucune option), ou
+    changement de session jamais confirme -- valeur du champ ET absence de
+    squelette de chargement, voir _attendre_chargement_termine -- dans le
+    delai accorde.
 
-    /portail/cours est une application AngularJS qui met 8 a 9 secondes a se
-    rendre en usage reel, bien au-dela du signal reseau "networkidle" que
-    Playwright declenche des que les requetes se taisent. Une page lue trop
-    tot semble "sans cours", en silence : deux sessions entieres de
-    l'historique de l'utilisateur ont ainsi disparu d'une enumeration reelle.
     Une session reellement vide et un echec de chargement sont sinon
-    indiscernables ; on leve donc bruyamment plutot que de deviner.
+    indiscernables : lire le DOM trop tot rendrait une liste de cours vide en
+    silence. C'est exactement le defaut deja constate sur l'ancien selecteur
+    AngularJS de /portail/cours (deux sessions entieres disparues d'une
+    enumeration reelle) ; on leve donc bruyamment plutot que de deviner.
     """
 
 
 class SelecteurSessionsIllisible(Exception):
-    """Le panneau du selecteur de sessions s'est ouvert, mais aucune option
-    de la forme <saison> <annee> n'y a ete trouvee.
+    """Le filtre de session s'est bien ouvert, mais aucune option n'y a ete
+    trouvee, ou la session demandee n'y figure pas.
 
     Une liste de sessions vide est le pire mode de defaillance du projet :
     l'outil n'archive plus rien du tout, en silence, en laissant croire a une
-    enumeration reussie. On leve donc bruyamment plutot que de rendre [].
-    Lancer `python -m extracteur --diagnostic` pour un etat des lieux du DOM
-    reel avant de deviner une nouvelle correction.
-    """
-
-
-class SelecteurSessionsInstable(Exception):
-    """Le compte d'options du panneau de sessions n'a jamais tenu
-    NOMBRE_SONDAGES_CONSECUTIFS_STABILISATION sondages consecutifs avant
-    l'ecoulement du delai maximal accorde a sa stabilisation.
-
-    Rejoue contre des sequences de comptes programmees, une oscillation
-    permanente (par exemple 3, 9, 3, 9, ...) ne se stabilise jamais : rendre
-    la derniere valeur sondee produirait une liste de sessions tronquee, sans
-    qu'aucun signe ne le trahisse. C'est pire qu'un arret franc. On leve donc
-    cette exception plutot que de deviner laquelle des valeurs sondees serait
-    la bonne.
+    enumeration reussie. On leve donc bruyamment plutot que de rendre [], ou
+    d'archiver les cours d'une autre session sous le nom demande -- une
+    corruption de donnees pire qu'un arret franc.
     """
 
 
 class Ena:
-    # Le selecteur de sessions de /portail/cours n'est pas un <select> natif :
-    # c'est un menu deroulant AngularJS. Le clic sur ce bouton ouvre bien un
-    # panneau (confirme en session reelle), mais ce panneau n'est PAS un
-    # descendant du bouton : c'est un conteneur frere, ailleurs dans la page.
-    # Chercher les options sous ce selecteur (ancienne approche) ne trouve
-    # donc jamais rien ; voir MOTIF_LIBELLE_SESSION et _options_sessions.
-    # Exception assumee aux regles de navigation : cette ouverture ne modifie
-    # rien cote serveur, contrairement aux liens de modification qu'on evite.
-    SELECTEUR_SESSIONS = 'div[role="listbox"].mpo-deroulant-bouton'
-
-    # Les douze options sont des <a> dans un conteneur frere ; le bouton lui-
-    # meme ne porte qu'un <span> pour sa valeur courante (jamais un <a>,
-    # constate en session reelle). On exclut neanmoins explicitement tout <a>
-    # qui serait un jour ajoute a l'interieur du bouton : un futur changement
-    # de markup y ferait apparaitre la valeur courante en double, treize
-    # sessions au lieu de douze.
-    SELECTEUR_OPTIONS_SESSIONS = f'a:not({SELECTEUR_SESSIONS} a)'
-
-    # Classe portee par chaque option, constatee sur le DOM reel d'un panneau
-    # ouvert : <a class="mpo-deroulant-elem ng-binding premier" ...>. Marqueur
-    # canonique de ce composant, nettement plus stable qu'un motif de
-    # libelle -- et qui ne peut pas capter par erreur un lien du menu global
-    # du portail. Repere en premier ; MOTIF_LIBELLE_SESSION ne sert plus que
-    # de repli si cette classe venait a changer.
-    CLASSE_OPTION_SESSION = "mpo-deroulant-elem"
-    SELECTEUR_OPTIONS_SESSIONS_CLASSE = f'a.{CLASSE_OPTION_SESSION}:not({SELECTEUR_SESSIONS} a)'
-
     def __init__(self, session, imprimer=print):
         self.session = session
         # Ou raconter une reparation de page. Attribut plutot que parametre
@@ -364,486 +291,166 @@ class Ena:
         if not est_page_authentifiee(self.session.page):
             raise SessionExpiree(self.session.page.url)
 
-    def _ouvrir_selecteur_sessions(self) -> None:
-        """Attend que le bouton du selecteur de sessions soit present et
-        exploitable, puis clique dessus pour faire apparaitre ses options.
+    def _ouvrir_filtre_session(self) -> None:
+        """Clique le champ readonly du filtre de session pour faire
+        apparaitre ses options, puis attend qu'au moins une soit exploitable.
 
-        /portail/cours met 8 a 9 secondes a se rendre en usage reel
-        (application AngularJS) : le signal reseau "networkidle" se
-        declenche bien avant que le bouton n'existe dans le DOM. On attend
-        donc explicitement ce bouton, avec un delai genereux
-        (DELAI_CHARGEMENT_SESSIONS_MS), plutot que d'esperer qu'un clic
-        immediat tombe juste.
+        Une simple ouverture de menu local au navigateur : aucun aller-retour
+        reseau attendu, d'ou un delai (DELAI_OUVERTURE_FILTRE_MS) nettement
+        plus court que celui accorde au chargement d'une session.
 
-        Leve SelecteurSessionsIndisponible si le bouton n'apparait jamais
-        dans ce delai, ou si le clic echoue malgre sa presence : ni l'un ni
-        l'autre n'est tolere en silence, une session ainsi ratee
-        disparaitrait de l'enumeration sans le moindre signe.
+        Leve SelecteurSessionsIndisponible si le champ n'est jamais cliquable,
+        ou si aucune option n'apparait dans ce delai : ni l'un ni l'autre
+        n'est tolere en silence, une session ainsi ratee disparaitrait de
+        l'enumeration sans le moindre signe.
         """
         try:
-            self.session.page.locator(self.SELECTEUR_SESSIONS).wait_for(
-                timeout=DELAI_CHARGEMENT_SESSIONS_MS
+            self.session.page.locator(SELECTEUR_CHAMP_SESSION).click(
+                timeout=DELAI_OUVERTURE_FILTRE_MS
             )
-            self.session.page.click(self.SELECTEUR_SESSIONS, timeout=5000)
+            self.session.page.locator(SELECTEUR_OPTION_SESSION).first.wait_for(
+                timeout=DELAI_OUVERTURE_FILTRE_MS
+            )
         except (ErreurDelaiPlaywright, ErreurPlaywright) as erreur:
             raise SelecteurSessionsIndisponible(
-                "le bouton du selecteur de sessions "
-                '(div[role="listbox"].mpo-deroulant-bouton) n\'a pas pu '
-                f"etre ouvert apres {DELAI_CHARGEMENT_SESSIONS_MS} ms "
-                "d'attente. La page /portail/cours (application AngularJS) "
-                "met 8 a 9 secondes a se rendre en usage reel ; ce delai "
-                "peut signaler un vrai probleme de chargement, pas une "
-                "session sans cours."
+                "le filtre de session (input.m-dropdown__input) n'a pas pu "
+                "etre ouvert, ou n'a rendu aucune option exploitable, apres "
+                f"{DELAI_OUVERTURE_FILTRE_MS} ms d'attente."
             ) from erreur
 
-    def _stabiliser_options(self, obtenir_options):
-        """Sonde obtenir_options() a repetition jusqu'a ce que son .count()
-        se maintienne sur NOMBRE_SONDAGES_CONSECUTIFS_STABILISATION sondages
-        consecutifs, sur une fenetre d'observation d'au moins
-        DELAI_OBSERVATION_MINIMALE_STABILISATION_MS ; rend alors le dernier
-        Locator sonde.
-
-        .count() et .all_text_contents() de Playwright interrogent le DOM a
-        l'instant precis de l'appel, sans le moindre reessai. Un panneau
-        AngularJS peuple en differe peut donc etre lu a mi-chemin : le compte
-        n'est pas nul, alors qu'il grossit encore. Aucune exception n'est
-        levee dans ce cas par Playwright lui-meme -- la liste n'est
-        simplement pas complete. On sonde donc a nouveau plutot que de faire
-        confiance a la premiere lecture.
-
-        Ce que ce durcissement garantit : un panneau qui se peuple
-        progressivement (par exemple trois options, puis douze) est attendu
-        jusqu'a ce qu'il cesse reellement de grossir, et non plus jusqu'a la
-        premiere coincidence entre deux sondages qui pourrait n'etre qu'une
-        pause passagere. Si le compte oscille sans jamais trouver de palier
-        avant le delai maximal, on leve SelecteurSessionsInstable plutot que
-        de rendre la derniere valeur sondee, tronquee.
-
-        Ce que ce durcissement NE garantit PAS : un panneau qui plafonne
-        durablement a un compte incomplet (par exemple neuf options qui ne
-        deviennent jamais douze) est indiscernable d'un panneau complet. Rien
-        dans le DOM ne distingue les deux cas, et aucun sondage supplementaire
-        ne peut trancher a la place de l'utilisateur. C'est pour cette raison
-        que le nombre de sessions trouvees est annonce explicitement par
-        --lister (voir _afficher_sessions) : seul l'utilisateur, qui connait
-        son propre parcours, peut remarquer qu'il en manque.
-        """
-        options = obtenir_options()
-        compte_precedent = options.count()
-        sondages_consecutifs_egaux = 1
-        temps_ecoule = 0
-        while not (
-            sondages_consecutifs_egaux >= NOMBRE_SONDAGES_CONSECUTIFS_STABILISATION
-            and temps_ecoule >= DELAI_OBSERVATION_MINIMALE_STABILISATION_MS
-        ):
-            if temps_ecoule >= DELAI_STABILISATION_OPTIONS_SESSIONS_MS:
-                raise SelecteurSessionsInstable(
-                    "le compte d'options du panneau de sessions n'a jamais "
-                    f"tenu {NOMBRE_SONDAGES_CONSECUTIFS_STABILISATION} "
-                    "sondages consecutifs apres "
-                    f"{DELAI_STABILISATION_OPTIONS_SESSIONS_MS} ms d'attente "
-                    f"(dernier compte sonde : {compte_precedent}). Rendre "
-                    "cette derniere valeur risquerait de tronquer la liste "
-                    "des sessions en silence."
-                )
-            self.session.page.wait_for_timeout(INTERVALLE_SONDAGE_STABILISATION_MS)
-            temps_ecoule += INTERVALLE_SONDAGE_STABILISATION_MS
-            options = obtenir_options()
-            compte_actuel = options.count()
-            if compte_actuel == compte_precedent:
-                sondages_consecutifs_egaux += 1
-            else:
-                sondages_consecutifs_egaux = 1
-            compte_precedent = compte_actuel
-        return options
-
-    def _options_sessions(self):
-        """Localisateur des options du selecteur, mecanisme partage par
-        sessions_disponibles et sites_de_session.
-
-        Le panneau ouvert par le clic sur SELECTEUR_SESSIONS n'est pas un
-        descendant du bouton : c'est un conteneur frere, rendu ailleurs dans
-        la page (menu deroulant AngularJS). Chercher un descendant du bouton
-        ne trouve donc jamais rien ; on repere plutot les options sur toute
-        la page.
-
-        Mecanisme repere en premier : la classe `mpo-deroulant-elem`,
-        constatee sur le DOM reel d'un panneau ouvert. Elle designe
-        canoniquement une option de ce composant -- nettement plus stable
-        qu'un motif de libelle, et elle ne peut pas capter par erreur un lien
-        du menu global du portail. Si elle ne trouve rien (marquage change),
-        _options_sessions_par_forme() prend le relai. Ce meme mecanisme sert
-        a lire les options et a les cliquer : aucune divergence entre lecture
-        et clic.
-
-        SELECTEUR_OPTIONS_SESSIONS_CLASSE exclut aussi explicitement tout <a>
-        interieur au bouton lui-meme : sa valeur courante partage la meme
-        forme de libelle que les options (ex. "Automne 2025"), et un <a> qui
-        y apparaitrait un jour produirait un doublon.
-
-        Le compte est stabilise (voir _stabiliser_options) avant toute
-        decision : AngularJS peut peupler ce panneau en differe, et une
-        lecture immediate ne leve aucune exception sur un compte partiel.
-        """
-        par_classe = self._stabiliser_options(
-            lambda: self.session.page.locator(self.SELECTEUR_OPTIONS_SESSIONS_CLASSE)
-        )
-        if par_classe.count() > 0:
-            return par_classe
-        return self._options_sessions_par_forme()
-
-    def _options_sessions_par_forme(self):
-        """Repli de _options_sessions() si la classe mpo-deroulant-elem a
-        disparu ou change : options reperees par la forme stable de leur
-        libelle (MOTIF_LIBELLE_SESSION), un nom de saison suivi d'une annee
-        sur quatre chiffres.
-
-        Le texte brut de chaque candidat est lu puis nettoye (espaces de tete
-        et de fin retires) cote Python avant d'etre compare a
-        MOTIF_LIBELLE_SESSION -- plus sur que de confier cette comparaison,
-        ancree, telle quelle a une expression reguliere evaluee par le
-        navigateur sur un texte non nettoye, qui echouerait alors purement et
-        simplement. Le motif finalement transmis au navigateur pour filtrer
-        le Locator n'est lui-meme jamais ancre : construit a partir des
-        libelles deja valides cote Python, une simple recherche de
-        sous-chaine tolere donc naturellement les espaces autour du texte.
-
-        Le compte est lui aussi stabilise (voir _stabiliser_options) avant
-        toute lecture : ce repli est interroge exactement au meme instant,
-        juste apres le clic d'ouverture, et court le meme risque de lire un
-        panneau AngularJS encore en cours de peuplement.
-        """
-        candidats = self._stabiliser_options(
-            lambda: self.session.page.locator(self.SELECTEUR_OPTIONS_SESSIONS)
-        )
-        textes_valides = {
-            texte
-            for texte in candidats.all_text_contents()
-            if MOTIF_LIBELLE_SESSION.match(texte.strip())
-        }
-        if not textes_valides:
-            # Aucun candidat valide cote Python : rendre un Locator vide
-            # plutot que de confier MOTIF_LIBELLE_SESSION (ancre) a has_text.
-            # Un texte deja rejete par le controle Python n'a aucune raison
-            # de correspondre cote navigateur ; inutile de reprendre le
-            # risque d'un motif ancre sur un texte brut non nettoye.
-            return candidats.filter(has_text=AUCUNE_CORRESPONDANCE_POSSIBLE)
-
-        motif_valides = re.compile("|".join(re.escape(texte) for texte in textes_valides))
-        return candidats.filter(has_text=motif_valides)
-
-    def _selectionner_session(self, session: Session) -> None:
-        """Selectionne une session en cliquant son option dans le selecteur,
-        puis attend que le bouton confirme reellement ce changement.
-
-        Repere l'option par le meme mecanisme que la lecture :
-        classe canonique d'abord, repli par forme de libelle. Tolere les
-        espaces parasites autour du libelle en comparant les textes nettoyes
-        cote Python, puis cherche le texte brut correspondant dans le DOM pour
-        le cliquer.
-
-        Leve SelecteurSessionsIllisible si le selecteur s'est bien ouvert mais
-        que la session n'y est introuvable : attendre les cours d'une autre
-        session et les archiver sous le nom demande est une corruption de
-        donnees pire qu'une liste vide. On garantit donc bruyamment que la
-        session demandee existe bien avant de laisser l'extraction se
-        poursuivre en silence avec des cours faux.
-
-        Leve SelecteurSessionsIndisponible si, apres le clic, le bouton ne
-        confirme jamais le passage a cette session (voir
-        _confirmer_session_selectionnee) : un clic tombe dans le vide sur
-        une page pas encore prete laisserait sinon lire les cours de la
-        session encore affichee, sous le nom de celle demandee.
-        """
-        options = self._options_sessions()
-
-        # Charger tous les textes bruts des options et construire une
-        # correspondance entre libelle nettoye et texte brut. Cela permet
-        # de trouver l'option meme si elle porte des espaces parasites.
-        textes_bruts = options.all_text_contents()
-        correspondance = {}  # libelle_nettoye -> texte_brut
-        for texte in textes_bruts:
-            libelle_nettoye = texte.strip()
-            # Garder seulement la premiere occurrence (bien qu'il ne devrait
-            # y en avoir qu'une).
-            if libelle_nettoye not in correspondance:
-                correspondance[libelle_nettoye] = texte
-
-        # Chercher la session demandee.
-        libelle_demande = session.libelle.strip()
-        if libelle_demande not in correspondance:
-            sessions_trouvees = sorted(correspondance.keys())
-            raise SelecteurSessionsIllisible(
-                f"session '{session.libelle}' introuvable dans le selecteur. "
-                f"Sessions disponibles: {sessions_trouvees}"
-            )
-
-        # Construire un motif pour chercher le texte brut correspondant
-        # (non ancre, pour tolerer les espaces parasites).
-        texte_cible = correspondance[libelle_demande]
-        motif_cible = re.compile(re.escape(texte_cible))
-
-        lien = options.filter(has_text=motif_cible).first
-
-        # Photographie de la liste des cours affichee avant le clic : second
-        # signal de confirmation si le texte du bouton ne peut etre lu a
-        # temps (voir _confirmer_session_selectionnee).
-        contenu_avant_clic = self.session.page.content()
-        self._cliquer_option_de_session(lien, session)
-
-        self._confirmer_session_selectionnee(session, contenu_avant_clic)
-
-    def _cliquer_option_de_session(self, lien, session: Session) -> None:
-        """Clique l'option d'une session, meme quand le bouton du selecteur
-        la recouvre.
-
-        Constate en conditions reelles sur la PREMIERE option du panneau
-        (data-index="0", classe « premier ») : le panneau s'ouvre en
-        chevauchant son propre bouton, et Playwright refuse alors le clic --
-        « <div role="listbox" class="mpo-deroulant-bouton"> intercepts
-        pointer events ». Il a raison : le clic serait parti sur le bouton,
-        qui aurait simplement referme la liste.
-
-        Seule l'option du haut est concernee ; les suivantes, plus bas dans
-        le panneau, ne sont jamais couvertes. Le defaut reste donc invisible
-        tant que la session la plus recente est vide -- et coute une session
-        entiere le jour ou elle ne l'est plus.
-
-        Repli sur dispatch_event, qui declenche le gestionnaire sans passer
-        par le test de recouvrement. Ce n'est pas un pari : l'appelant
-        enchaine sur _confirmer_session_selectionnee, qui verifie que le
-        bouton affiche bien la session demandee. Un evenement parti au
-        mauvais endroit ne peut donc pas passer pour un changement reussi --
-        il devient un echec isole sur cette seule session.
-        """
-        try:
-            lien.click(timeout=5000)
-            return
-        except (ErreurDelaiPlaywright, ErreurPlaywright) as erreur:
-            self.imprimer(
-                f"Option « {session.libelle} » recouverte par le bouton du "
-                f"selecteur : clic envoye directement a l'element. ({erreur})"
-            )
-        lien.dispatch_event("click")
-
-    def _confirmer_session_selectionnee(self, session: Session, contenu_avant_clic: str = "") -> None:
-        """Attend que le bouton du selecteur affiche le libelle de la
-        session demandee, apres le clic sur son option.
-
-        Verifiee et non esperee : le bouton du selecteur rend sa valeur
-        courante (constate en session reelle -- apres avoir clique "Hiver
-        2023", le bouton rend exactement "Hiver 2023"). C'est une
-        verification gratuite et decisive, qui distingue un vrai changement
-        de session d'un clic tombe dans le vide sur une page pas encore
-        prete.
-
-        Le texte du bouton est lu puis nettoye cote Python (espaces de tete
-        et de fin, espaces internes et sauts de ligne reduits a un seul
-        espace) avant d'etre compare au libelle attendu, nettoye de la meme
-        facon -- jamais via un motif ancre (^...$) confie a has_text.
-        Playwright ne normalise pas les espaces d'un texte compare a une
-        expression reguliere compilee : le bouton reel porte de
-        l'indentation et des sauts de ligne autour du libelle
-        (innerText.trim() donnait "Hiver 2023" sur le DOM reel), et un motif
-        ancre sur ce texte brut ne correspond alors jamais. C'est ce piege,
-        deja corrige une fois pour la lecture des options
-        (_options_sessions_par_forme), qui avait ete reintroduit ici : toutes
-        les sessions echouaient sur cette confirmation, pas seulement celles
-        reellement en cause.
-
-        On sonde le texte du bouton a intervalle regulier
-        (INTERVALLE_SONDAGE_CONFIRMATION_MS) jusqu'a correspondance ou
-        expiration de DELAI_CONFIRMATION_SESSION_MS : le clic recharge la
-        liste (bouton detruit puis recree par AngularJS), une lecture unique
-        immediatement apres le clic risquerait de tomber entre les deux.
-
-        Si le libelle ne finit jamais par correspondre, un second signal est
-        tente avant de declarer l'echec : la liste des cours affichee a-t-
-        elle change depuis avant le clic (contenu_avant_clic) ? Le bouton et
-        la liste sont rendus par le meme cycle Angular ; si le contenu de la
-        page a visiblement bouge alors que le bouton n'a pas encore ete relu
-        a temps, la selection a neanmoins bien eu lieu. Un contenu inchange
-        signale au contraire un clic tombe dans le vide sur une page pas
-        encore prete : lire les cours dans cet etat archiverait ceux d'une
-        autre session sous le nom demande, une corruption de donnees pire
-        qu'une session sautee.
-
-        Leve SelecteurSessionsIndisponible si ni le libelle ni le second
-        signal ne confirment le changement dans le delai accorde.
-        """
-        libelle_attendu = _normaliser_espaces(session.libelle)
-        bouton = self.session.page.locator(self.SELECTEUR_SESSIONS)
-
-        temps_ecoule = 0
-        while True:
-            try:
-                texte_bouton = bouton.text_content(timeout=INTERVALLE_SONDAGE_CONFIRMATION_MS)
-            except (ErreurDelaiPlaywright, ErreurPlaywright):
-                texte_bouton = None
-            if texte_bouton is not None and _normaliser_espaces(texte_bouton) == libelle_attendu:
-                return
-            if temps_ecoule >= DELAI_CONFIRMATION_SESSION_MS:
-                break
-            self.session.page.wait_for_timeout(INTERVALLE_SONDAGE_CONFIRMATION_MS)
-            temps_ecoule += INTERVALLE_SONDAGE_CONFIRMATION_MS
-
-        if self.session.page.content() != contenu_avant_clic:
-            return
-
-        raise SelecteurSessionsIndisponible(
-            f"le bouton du selecteur de sessions n'a jamais confirme le "
-            f"passage a '{session.libelle}' apres le clic, dans le "
-            f"delai accorde ({DELAI_CONFIRMATION_SESSION_MS} ms). Le "
-            "clic est peut-etre tombe dans le vide sur une page pas "
-            "encore prete."
-        )
+    def _libelles_options_session(self) -> list[str]:
+        """Libelles bruts des options du filtre de session, une fois ouvert
+        (voir _ouvrir_filtre_session) : le texte vit dans
+        span.m-dropdown-item__element-text, a l'interieur de chaque
+        li[role=option].m-dropdown-item."""
+        return self.session.page.locator(
+            f"{SELECTEUR_OPTION_SESSION} .{CLASSE_TEXTE_OPTION_SESSION}"
+        ).all_text_contents()
 
     def sessions_disponibles(self) -> list[Session]:
-        """Liste les sessions offertes par le selecteur de /portail/cours.
+        """Liste les sessions offertes par le filtre de session du tableau
+        de bord (/portail/).
 
-        Sans parametre : aucun identifiant de site d'amorcage n'est requis,
-        la page est a une URL stable.
+        Depuis la refonte du portail (constatee le 25 septembre 2026),
+        l'ancienne page /portail/cours renvoie une page-404 : l'enumeration
+        se fait desormais sur ce tableau de bord (voir URL.cours()).
 
-        Si le panneau s'ouvre (le clic reussit) mais qu'aucune option ne
-        correspond a la forme attendue, c'est que le mecanisme de lecture ne
-        colle plus a la structure reelle : on leve SelecteurSessionsIllisible
-        plutot que de rendre une liste vide, qui ferait croire a une
-        enumeration reussie alors que l'outil n'archiverait plus rien.
+        Si le filtre s'ouvre mais qu'aucune option n'y est trouvee, c'est que
+        le mecanisme de lecture ne colle plus a la structure reelle : on leve
+        SelecteurSessionsIllisible plutot que de rendre une liste vide, qui
+        ferait croire a une enumeration reussie alors que l'outil
+        n'archiverait plus rien.
         """
         self._visiter(URL.cours())
         self._assurer_authentifie()
-        self._ouvrir_selecteur_sessions()
+        self._ouvrir_filtre_session()
 
-        libelles = self._options_sessions().all_text_contents()
+        libelles = self._libelles_options_session()
         if not libelles:
             raise SelecteurSessionsIllisible(
-                "le panneau du selecteur de sessions s'est ouvert, mais "
-                "aucune option de la forme <saison> <annee> n'y a ete "
-                "trouvee. Lancez `python -m extracteur --diagnostic` pour "
-                "un etat des lieux du DOM."
+                "le filtre de session s'est ouvert, mais aucune option n'y "
+                "a ete trouvee."
             )
         return [session_depuis_libelle(libelle.strip()) for libelle in libelles]
 
-    def diagnostiquer_sessions(self) -> dict:
-        """Etat des lieux du DOM du selecteur de sessions, sans rien
-        telecharger ni rien ecrire.
+    def _selectionner_session(self, session: Session) -> None:
+        """Ouvre le filtre de session, clique l'option de la session
+        demandee, puis attend la confirmation du chargement (voir
+        _attendre_chargement_termine).
 
-        Reservee a --diagnostic : quand sessions_disponibles() ne trouve
-        rien (ou leve SelecteurSessionsIllisible), ceci donne, pour une serie
-        de selecteurs candidats, le nombre d'elements trouves et leurs
-        premiers textes une fois le panneau ouvert -- de quoi trancher sur
-        des faits plutot que de deviner une nouvelle fois la structure reelle.
+        Le tableau de bord se souvient de la derniere session choisie et
+        l'affiche a nouveau a l'ouverture : cette selection est donc
+        toujours faite explicitement, jamais supposee deja correcte.
 
-        L'ouverture du selecteur (_ouvrir_selecteur_sessions) peut echouer et
-        lever SelecteurSessionsIndisponible : le bouton attendu par les
-        fonctions d'archivage est precisement le pire scenario que ce mode
-        diagnostic doit pouvoir examiner (panne totale, bouton jamais
-        apparu). Une exception non geree ici empecherait tout diagnostic --
-        on l'intercepte donc, on la consigne dans le rapport, et on
-        interroge quand meme tous les selecteurs candidats : des comptes a
-        zero sont eux-memes une information utile pour trancher sur des
-        faits.
-
-        La lecture par la forme du libelle (_options_sessions, via
-        _stabiliser_options) peut de la meme facon lever
-        SelecteurSessionsInstable si le compte d'options oscille sans
-        jamais se stabiliser. Ce mode existe pour les situations ou plus
-        rien ne marche : il doit rapporter ce qu'il observe, jamais
-        s'interrompre. On l'intercepte donc elle aussi, on la consigne, et
-        le compte de liens idSite= est quand meme interroge ensuite.
+        Leve SelecteurSessionsIllisible si la session demandee n'est pas
+        parmi les options offertes : archiver les cours d'une autre session
+        sous le nom demande serait une corruption de donnees pire qu'un
+        arret franc.
         """
-        self._visiter(URL.cours())
-        self._assurer_authentifie()
+        self._ouvrir_filtre_session()
 
-        echec_ouverture_selecteur = None
-        try:
-            self._ouvrir_selecteur_sessions()
-        except SelecteurSessionsIndisponible as erreur:
-            echec_ouverture_selecteur = str(erreur)
-
-        candidats = []
-        for selecteur in CANDIDATS_DIAGNOSTIC_SESSIONS:
-            textes = self.session.page.locator(selecteur).all_text_contents()
-            candidats.append((selecteur, len(textes), textes[:5]))
-
-        echec_stabilisation_options = None
-        try:
-            textes_forme = self._options_sessions().all_text_contents()
-            candidats.append(
-                ("forme du libelle (saison + annee)", len(textes_forme), textes_forme[:12])
+        libelle_demande = _normaliser_espaces(session.libelle)
+        textes = [_normaliser_espaces(texte) for texte in self._libelles_options_session()]
+        if libelle_demande not in textes:
+            raise SelecteurSessionsIllisible(
+                f"session '{session.libelle}' introuvable dans le filtre de "
+                f"session. Sessions disponibles : {sorted(textes)}"
             )
-        except SelecteurSessionsInstable as erreur:
-            echec_stabilisation_options = str(erreur)
-            candidats.append(("forme du libelle (saison + annee)", 0, []))
 
-        liens_id_site = self.session.page.locator("a[href*='idSite=']").count()
+        options = self.session.page.locator(SELECTEUR_OPTION_SESSION)
+        options.nth(textes.index(libelle_demande)).click()
 
-        return {
-            "candidats": candidats,
-            "liens_id_site": liens_id_site,
-            "echec_ouverture_selecteur": echec_ouverture_selecteur,
-            "echec_stabilisation_options": echec_stabilisation_options,
-        }
+        self._attendre_chargement_termine(session)
+
+    def _attendre_chargement_termine(self, session: Session) -> None:
+        """Attend que le filtre de session confirme reellement le passage a
+        `session`, apres le clic sur son option.
+
+        Signal de fin de chargement fiable, mesure en inspection reelle
+        (sondage aux 100 ms apres un clic) : la valeur du champ passe a la
+        session demandee ET le squelette de chargement disparait, dans le
+        MEME rendu (a 101 ms les deux sont deja vrais, respectivement faux ;
+        les cartes finales n'apparaissent qu'entre 1293 et 1493 ms). Se fier
+        a la seule valeur du champ conclurait donc a tort des 101 ms, pendant
+        que le squelette masque encore les vrais cours -- et pendant que les
+        « Autres activites » voisines, deja affichees a cet instant, portent
+        elles aussi des liens idSite= (voir DELAI_CHARGEMENT_SESSION_MS) :
+        un piege pour toute detection qui se fierait a la seule presence de
+        cartes plutot qu'a ce couple de signaux.
+
+        La valeur du champ (input readonly) vit dans sa PROPRIETE `value`,
+        jamais dans un attribut HTML : lue via input_value(), jamais dans
+        page.content().
+
+        Leve SelecteurSessionsIndisponible si ce signal ne vient pas dans
+        DELAI_CHARGEMENT_SESSION_MS : une session reellement vide et un echec
+        de chargement sont sinon indiscernables, et lire le DOM dans cet etat
+        archiverait les cours d'une autre session sous le nom demande.
+        """
+        libelle_attendu = _normaliser_espaces(session.libelle)
+        champ = self.session.page.locator(SELECTEUR_CHAMP_SESSION)
+        squelettes = self.session.page.locator(SELECTEUR_SQUELETTES_CHARGEMENT)
+
+        temps_ecoule = 0
+        while True:
+            valeur = champ.input_value()
+            if _normaliser_espaces(valeur) == libelle_attendu and squelettes.count() == 0:
+                return
+            if temps_ecoule >= DELAI_CHARGEMENT_SESSION_MS:
+                break
+            self.session.page.wait_for_timeout(INTERVALLE_SONDAGE_CHARGEMENT_MS)
+            temps_ecoule += INTERVALLE_SONDAGE_CHARGEMENT_MS
+
+        raise SelecteurSessionsIndisponible(
+            f"le filtre de session n'a jamais confirme le passage a "
+            f"'{session.libelle}' (valeur du champ ET absence de squelette "
+            f"de chargement) dans le delai accorde "
+            f"({DELAI_CHARGEMENT_SESSION_MS} ms)."
+        )
 
     def sites_de_session(self, session: Session) -> list[Cours]:
         """Selectionne une session puis rend ses cours.
 
-        La confirmation du changement (bouton affichant exactement le
-        libelle demande, voir _confirmer_session_selectionnee) est attendue
-        avant toute lecture du DOM : sans elle, une session reellement vide
-        et un echec de chargement (page pas prete, clic tombe dans le vide)
-        sont indiscernables, et le second finit par etre lu comme le
-        premier -- exactement le defaut qui a fait disparaitre deux sessions
-        entieres d'une enumeration reelle, en silence. Une fois la session
-        confirmee, une liste de cours vide est un resultat normal (par
-        exemple la session courante de l'utilisateur, pas encore remplie) :
-        elle ne leve rien.
+        La confirmation du changement (_attendre_chargement_termine) est
+        attendue avant toute lecture du DOM : sans elle, une session
+        reellement vide et un echec de chargement (page pas prete, squelette
+        encore affiche) sont indiscernables. Une fois la session confirmee,
+        une liste de cours vide est un resultat normal (par exemple la
+        session courante de l'utilisateur, pas encore remplie) : elle ne
+        leve rien -- voir cours_depuis_html, qui ne lit que l'accordeon des
+        cours suivis et ignore les « Autres activites » voisines.
 
         Leve SelecteurSessionsIllisible si la session demandee n'est pas
-        presente dans le selecteur, ou SelecteurSessionsIndisponible si le
-        bouton du selecteur ne confirme jamais le changement : dans les deux
-        cas, lire la page reviendrait a archiver les cours d'une autre
-        session sous le nom demande, une corruption de donnees pire qu'une
-        liste vide.
+        offerte par le filtre, ou SelecteurSessionsIndisponible si le
+        changement n'est jamais confirme : dans les deux cas, lire la page
+        reviendrait a archiver les cours d'une autre session sous le nom
+        demande, une corruption de donnees pire qu'une liste vide.
         """
         self._visiter(URL.cours())
         self._assurer_authentifie()
-        self._ouvrir_selecteur_sessions()
         self._selectionner_session(session)
 
-        return cours_depuis_html(self._contenu_liste_cours_stable(), session)
-
-    def _contenu_liste_cours_stable(self) -> str:
-        """Rend le HTML de /portail/cours une fois la liste des cours posee.
-
-        Le bouton du selecteur confirme le changement de session AVANT que
-        les cartes de cours soient rendues. L'ancienne version lisait la page
-        apres une marge fixe de 500 ms : constate en conditions reelles, les
-        quatre cours d'Automne 2025 ont ainsi ete lus comme une session vide
-        -- et une liste vide passant pour un resultat normal, rien n'a ete
-        signale. Quatre cours manquaient a l'archive sans une ligne au
-        rapport.
-
-        On sonde donc le nombre de cartes jusqu'a ce qu'il se stabilise :
-        des cartes presentes et un nombre inchange sur deux lectures
-        successives, ou aucune carte pendant DELAI_LISTE_COURS_VIDE_MS --
-        largement au-dela des 8 a 10 s mesurees pour le rendu de cette page.
-        Le prix est ce delai paye une fois par session reellement vide
-        (session courante pas encore remplie, session future).
-        """
-        page = self.session.page
-        ecoule = 0
-        precedent = -1
-        while True:
-            nombre = page.locator(SELECTEUR_CARTE_COURS).count()
-            if nombre > 0 and nombre == precedent:
-                break
-            if nombre == 0 and ecoule >= DELAI_LISTE_COURS_VIDE_MS:
-                break
-            precedent = nombre
-            page.wait_for_timeout(INTERVALLE_SONDAGE_LISTE_COURS_MS)
-            ecoule += INTERVALLE_SONDAGE_LISTE_COURS_MS
-        return page.content()
+        return cours_depuis_html(self.session.page.content(), session)
 
     def modules(self, cours) -> list:
         html = self._visiter(URL.modules(cours.id_site))
@@ -1125,10 +732,13 @@ def _normaliser_espaces(texte: str) -> str:
     espaces de tete et de fin retires, espaces internes (y compris sauts de
     ligne et indentation) reduits a un seul espace.
 
-    Utilise partout ou un texte de bouton ou d'option est compare a un
-    libelle attendu, plutot que de confier cette comparaison, ancree, a une
-    expression reguliere evaluee cote navigateur -- voir
-    _confirmer_session_selectionnee pour le piege que ce nettoyage evite.
+    Utilise partout ou un texte lu du DOM (champ de session, options) est
+    compare a un libelle attendu, plutot que de confier cette comparaison,
+    ancree, a une expression reguliere evaluee cote navigateur -- voir
+    _attendre_chargement_termine et _selectionner_session pour le piege que
+    ce nettoyage evite (deja constate sur l'ancien selecteur AngularJS de
+    /portail/cours : Playwright ne normalise pas les espaces d'un texte
+    compare a un motif ancre).
     """
     return " ".join(texte.split())
 

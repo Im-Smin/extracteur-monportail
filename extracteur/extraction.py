@@ -424,17 +424,6 @@ def _scinder_note(texte: str) -> tuple[str, str]:
     return texte.strip(), ""
 
 
-# Sigle d'un cours tel qu'affiche sur la carte (jamais dans le texte du
-# lien) : "GHI-3000, NRC : 10001 (sect. H1)". Chercher "trois lettres, un
-# tiret, quatre chiffres" n'importe ou dans le texte produit des faux
-# positifs : une carte mentionnant "Reference dossier NRC-4567 pour ce
-# cours" donnerait un sigle invente, sans la moindre alerte (releve par
-# relecture). Le sigle reel est toujours immediatement suivi d'une virgule,
-# generalement avant la mention NRC : on ancre dessus. Un repli tolerant
-# accepte la seule virgule si la mention NRC venait a manquer.
-MOTIF_SIGLE_CARTE = re.compile(r"[A-Z]{3}-\d{4}(?=\s*,\s*NRC\b)")
-MOTIF_SIGLE_CARTE_REPLI = re.compile(r"[A-Z]{3}-\d{4}(?=\s*,)")
-
 # Correspondance saison -> mois pour construire le code AAAASS attendu par
 # Session, a partir du libelle textuel affiche par le selecteur de sessions.
 MOIS_SAISON = {"Hiver": "01", "Été": "05", "Automne": "09"}
@@ -471,111 +460,114 @@ def _id_site_depuis_href(href: str, marqueur: str) -> str | None:
     return id_site or None
 
 
-def _accueils_dans(ancetre, liens_accueil: list) -> list:
-    """Sous-ensemble de liens_accueil physiquement contenu dans ancetre.
+# Bloc du tableau de bord (/portail/) qui liste les cours d'une session,
+# depuis la refonte constatee le 25 septembre 2026 (voir
+# docs/api-monportail.md, section « Portail refondu »). Seul l'accordeon des
+# cours suivis est lu : les « Autres activites » voisines (formations
+# institutionnelles, hors perimetre) ne portent pas cette classe, et sont
+# d'ailleurs deja affichees pendant que le squelette de chargement occupe
+# encore la place des cours (voir Ena._attendre_chargement_termine) -- les
+# ignorer ici evite de les prendre pour de vrais cours.
+CLASSE_ACCORDEON_COURS_SUIVIS = "mpo-accordeon-cours-suivis"
+CLASSE_CARTE_COURS = "mpo-gabarit-item-liste-cours"
+CLASSE_TITRE_CARTE = "mpo-gabarit-item-liste-cours__titre"
+CLASSE_SOUS_TITRE_CARTE = "mpo-gabarit-item-liste-cours__sous-titre"
+CLASSE_TEXTE_LIEN = "m-link__text"
+CLASSE_TEXTE_LIEN_CACHE = "m-link__hidden"
 
-    Comparaison par identite (`is`), jamais par egalite structurelle : deux
-    liens de site distincts peuvent avoir le meme texte, et bs4 compare les
-    Tag par leur contenu, pas par identite d'objet.
+# Marqueur du lien canonique d'un site de cours monPortail. Un lien de titre
+# qui ne le porte pas (constate : un site heberge sur Brio,
+# www.brioeducation.ca) designe un cours hors monPortail -- voir
+# Cours.url_externe.
+CHEMIN_ACCUEIL_SITE = "/ena/site/accueil"
+
+
+def _titre_carte(lien) -> str:
+    """Texte du titre d'une carte de cours.
+
+    Un lien qui s'ouvre dans un nouvel onglet (cours externe) porte un
+    span.m-link__hidden ("Cet hyperlien s'ouvrira dans un nouvel onglet.")
+    a l'interieur meme du span.m-link__text : ce texte d'accessibilite ne
+    fait pas partie du titre du cours et doit en etre retire.
     """
-    presents = ancetre.find_all("a", href=True)
-    return [lien for lien in liens_accueil if any(lien is present for present in presents)]
-
-
-def _ids_site_distincts(liens: list) -> set[str]:
-    """Identifiants de site distincts portes par une liste de liens d'accueil.
-
-    Un meme cours porte parfois deux liens vers son propre site (icone puis
-    titre, motif deja documente pour les modules -- voir
-    modules_depuis_html) : compter les balises plutot que les identifiants
-    ferait croire a _carte_du_lien qu'un ancetre contient deja "plus d'un"
-    cours des qu'il en contient deux liens du meme, et la remontee
-    s'arreterait aussitot, la carte se reduisant au lien lui-meme.
-    """
-    return {
-        id_site
-        for lien in liens
-        if (id_site := _id_site_depuis_href(lien["href"], "/ena/site/accueil"))
-    }
-
-
-def _carte_du_lien(lien, liens_accueil: list):
-    """Remonte du lien de site vers son conteneur de carte, tolerant a la
-    classe CSS : le plus grand ancetre qui ne contient QUE l'identifiant de
-    site de ce lien, parmi tous ceux de la page. Un ancetre qui en
-    contiendrait un second fusionnerait deux cartes voisines -- on s'arrete
-    juste avant. Deux liens du meme cours (icone puis titre) ne comptent que
-    pour un seul identifiant : ils ne doivent jamais faire s'arreter la
-    remontee prematurement.
-
-    Si aucun ancetre distinct n'existe (les liens de site sont freres, sans
-    balise propre a chacun), la carte se limite au lien lui-meme : mieux vaut
-    un cours sans sigle ni plan de cours qu'un lien attribue au mauvais cours.
-    """
-    candidat = lien
-    ancetre = lien.parent
-    while ancetre is not None:
-        if len(_ids_site_distincts(_accueils_dans(ancetre, liens_accueil))) != 1:
-            break
-        candidat = ancetre
-        ancetre = ancetre.parent
-    return candidat
+    span_texte = lien.find("span", class_=CLASSE_TEXTE_LIEN)
+    if span_texte is None:
+        return lien.get_text(strip=True)
+    cache = span_texte.find("span", class_=CLASSE_TEXTE_LIEN_CACHE)
+    if cache is not None:
+        cache.extract()
+    return span_texte.get_text(strip=True)
 
 
 def cours_depuis_html(html: str, session: Session) -> list[Cours]:
-    """Cours listes sur /portail/cours pour une session.
+    """Cours suivis listes sur le tableau de bord (/portail/) pour une session.
 
-    Chaque cours est rendu par une carte (article, div, li selon la
-    generation de page) : le lien de site n'y porte que le titre, jamais le
-    sigle -- celui-ci est un texte de la carte, sous la forme "SIGLE-0000,
-    NRC : xxxxx (sect. yy)". Le lien du plan de cours et celui du sommaire
-    des resultats, quand ils existent, sont eux aussi dans la carte.
+    Depuis la refonte du portail (constatee le 25 septembre 2026), chaque
+    cours est un li.mpo-gabarit-item-liste-cours dans l'accordeon « Cours
+    suivis » (mpo-accordeon-cours-suivis) : une page sans cet accordeon (session
+    vide, ou lue avant son rendu) rend simplement [].
 
-    L'extraction se fait donc carte par carte, jamais par un balayage global
-    de la page : associer ces liens par ordre d'apparition romprait des
-    qu'un cours n'a pas de plan de cours, decalant silencieusement
-    l'attribution pour tous les cours suivants.
+    Le sigle n'est plus un texte libre de la carte, forme "SIGLE-0000, NRC :
+    xxxxx" : il vit desormais dans un element dedie
+    (mpo-gabarit-item-liste-cours__sous-titre). La carte ne porte plus non
+    plus de lien vers le plan de cours ni vers le sommaire des resultats
+    (voir docs/api-monportail.md) : url_plan_de_cours et url_resultats
+    restent donc toujours None ici -- Archiveur._archiver_plan_de_cours doit
+    s'en accommoder (filet de secours, puis Echec explicite si meme celui-ci
+    echoue).
+
+    Un lien de titre qui ne mene pas vers CHEMIN_ACCUEIL_SITE (constate pour
+    un site heberge sur Brio) designe un cours que l'outil ne peut pas
+    archiver : id_site reste vide, url_externe porte l'URL externe. Le signaler
+    plutot que de l'ignorer evite qu'il disparaisse en silence, comme le
+    faisait l'ancienne enumeration -- ce cours precis (PQR-9105) n'avait
+    jamais ete vu avant cette correction.
+
+    Le lien « Indicateur de reussite » d'une carte porte lui aussi un idSite,
+    mais jamais vers CHEMIN_ACCUEIL_SITE (c'est un traceur analytique vers
+    /ena/site/mareussite) : il n'est donc jamais confondu avec le lien du
+    cours, sans traitement particulier a lui reserver puisque seul le lien du
+    h4.mpo-gabarit-item-liste-cours__titre est lu.
+
+    Un meme site peut etre partage par deux sigles (« Autre cours partageant
+    ce site ») : une seule entree par identifiant (id_site, ou l'URL externe a
+    defaut) est conservee, la premiere rencontree.
     """
     soupe = _soupe(html)
-    liens_accueil = [
-        lien
-        for lien in soupe.find_all("a", href=True)
-        if _id_site_depuis_href(lien["href"], "/ena/site/accueil")
-    ]
+    accordeon = soupe.find(class_=CLASSE_ACCORDEON_COURS_SUIVIS)
+    if accordeon is None:
+        return []
 
     trouves: dict[str, Cours] = {}
-    for lien in liens_accueil:
-        id_site = _id_site_depuis_href(lien["href"], "/ena/site/accueil")
-        carte = _carte_du_lien(lien, liens_accueil)
+    for carte in accordeon.find_all(class_=CLASSE_CARTE_COURS):
+        titre_carte = carte.find(class_=CLASSE_TITRE_CARTE)
+        if titre_carte is None:
+            continue
+        lien = titre_carte.find("a", href=True)
+        if lien is None:
+            continue
 
-        titre = lien.get_text(strip=True)
-        texte_carte = carte.get_text(" ", strip=True)
-        correspondance_sigle = (
-            MOTIF_SIGLE_CARTE.search(texte_carte) or MOTIF_SIGLE_CARTE_REPLI.search(texte_carte)
+        href = lien["href"]
+        id_site = _id_site_depuis_href(href, CHEMIN_ACCUEIL_SITE)
+        titre = _titre_carte(lien)
+
+        sous_titre = carte.find(class_=CLASSE_SOUS_TITRE_CARTE)
+        sigle = (sous_titre.get_text(strip=True) if sous_titre else "") or None
+
+        if id_site:
+            cle, url_externe = id_site, None
+        else:
+            id_site, cle, url_externe = "", f"externe:{href}", href
+
+        if cle in trouves:
+            continue
+        trouves[cle] = Cours(
+            id_site=id_site,
+            sigle=sigle,
+            titre=titre,
+            session=session,
+            url_externe=url_externe,
         )
-        sigle = correspondance_sigle.group(0) if correspondance_sigle else None
-
-        url_plan_de_cours = None
-        url_resultats = None
-        for autre in carte.find_all("a", href=True):
-            if autre is lien:
-                continue
-            href = autre["href"]
-            if url_resultats is None and _id_site_depuis_href(href, "/ena/site/resultats"):
-                url_resultats = href
-            elif url_plan_de_cours is None and _est_traceur(href):
-                url_plan_de_cours = url_reelle(href)
-
-        existant = trouves.get(id_site)
-        if existant is None or (titre and not existant.titre):
-            trouves[id_site] = Cours(
-                id_site=id_site,
-                sigle=sigle,
-                titre=titre,
-                session=session,
-                url_plan_de_cours=url_plan_de_cours,
-                url_resultats=url_resultats,
-            )
 
     return list(trouves.values())
 

@@ -6,15 +6,15 @@ from playwright.sync_api import Error as ErreurPlaywright
 from playwright.sync_api import TimeoutError as ErreurDelaiPlaywright
 
 from extracteur.ena import (
-    CANDIDATS_DIAGNOSTIC_SESSIONS,
-    DELAI_OBSERVATION_MINIMALE_STABILISATION_MS,
-    INTERVALLE_SONDAGE_STABILISATION_MS,
+    CLASSE_TEXTE_OPTION_SESSION,
     LIMITE_PAGES_MODULE,
+    SELECTEUR_CHAMP_SESSION,
+    SELECTEUR_OPTION_SESSION,
+    SELECTEUR_SQUELETTES_CHARGEMENT,
     URL,
     Ena,
     SelecteurSessionsIllisible,
     SelecteurSessionsIndisponible,
-    SelecteurSessionsInstable,
     TropDePagesDansUnModule,
 )
 from extracteur.modele import Cours, Evaluation, Module, Session
@@ -798,834 +798,6 @@ class LienNonCliquable(LienFactice):
         raise ErreurDelaiPlaywright("Timeout 5000ms exceeded.")
 
 
-class LocatorBoutonSessionFactice:
-    """Simule le Locator du bouton du selecteur de sessions
-    (Ena.SELECTEUR_SESSIONS) : sa presence (wait_for), et son texte, lu via
-    text_content() pour confirmer, apres un clic sur une option, que le
-    bouton affiche bien la session demandee.
-
-    Lit sa valeur courante directement sur la page factice
-    (`page.session_selectionnee`), mise a jour par le clic sur une option
-    (voir LocatorOptionsSessionsFactice.first) -- exactement le mecanisme de
-    confirmation reel : le bouton porte la session choisie.
-    """
-
-    def __init__(self, page, present=True, texte_impose=None):
-        self.page = page
-        self.present = present
-        self._texte_impose = texte_impose
-
-    def _texte(self):
-        if self._texte_impose is not None:
-            return self._texte_impose
-        return self.page.session_selectionnee or ""
-
-    def count(self):
-        return 1 if self.present else 0
-
-    def wait_for(self, timeout=None):
-        if not self.present:
-            raise ErreurDelaiPlaywright(f"Timeout {timeout}ms exceeded.")
-
-    def text_content(self, timeout=None):
-        # Comme le vrai Locator Playwright, leve un depassement de delai si
-        # l'element n'est pas present -- jamais None en silence.
-        if not self.present:
-            raise ErreurDelaiPlaywright(f"Timeout {timeout}ms exceeded.")
-        return self._texte()
-
-    def filter(self, has_text=None):
-        correspond = self.present and (has_text is None or bool(has_text.search(self._texte())))
-        return LocatorBoutonSessionFactice(self.page, present=correspond, texte_impose=self._texte())
-
-
-class LocatorOptionsSessionsFactice:
-    """Simule le Locator Playwright rendu par page.locator("a") (toute la
-    page, pas seulement le bouton) puis filtre par la forme du libelle.
-
-    Durcie a dessein : .filter(has_text=...) n'accepte qu'un motif regex
-    compile, applique par .search() aux libelles reellement exposes par
-    .locator("a"). Un code qui reperait les options par un mecanisme
-    different (position DOM, role ARIA sans rapport) ne verrait donc rien
-    ici, contrairement a l'ancienne doublure qui acceptait n'importe quoi et
-    rendait le clic toujours gagnant.
-    """
-
-    def __init__(self, page, libelles):
-        self.page = page
-        self.libelles = libelles
-
-    def count(self):
-        return len(self.libelles)
-
-    def all_text_contents(self):
-        return list(self.libelles)
-
-    def filter(self, has_text=None):
-        correspondants = self.libelles
-        if has_text is not None:
-            correspondants = [libelle for libelle in self.libelles if has_text.search(libelle)]
-        return LocatorOptionsSessionsFactice(self.page, correspondants)
-
-    @property
-    def first(self):
-        page = self.page
-        libelles = self.libelles
-
-        class Lien:
-            def click(self, **_kwargs):
-                if not libelles:
-                    raise ErreurDelaiPlaywright("Timeout 5000ms exceeded.")
-                # Nettoyer le texte avant de l'assigner, pour correspondre
-                # au comportement reel ou les cours sont recuperes via le
-                # texte nettoye de la session selectionnee.
-                page.session_selectionnee = libelles[0].strip()
-
-        return Lien()
-
-
-class PageAvecSelecteurSessions(PageFactice):
-    """Simule /portail/cours : le menu deroulant ouvre un panneau ; cliquer
-    une option (un lien) recharge la liste des cours de la session choisie.
-
-    Le panneau n'est PAS un descendant du bouton SELECTEUR_SESSIONS : c'est
-    la structure reelle constatee en session (menu deroulant AngularJS). Les
-    options ne sont donc exposees que par SELECTEUR_OPTIONS_SESSIONS -- toute
-    la page, sauf l'interieur du bouton -- jamais par un selecteur imbrique
-    dans le bouton. Le bouton lui-meme (SELECTEUR_SESSIONS) est present des
-    le depart et confirme, via LocatorBoutonSessionFactice, la session
-    reellement selectionnee apres un clic.
-    """
-
-    def __init__(self, libelles_sessions, html_par_session=None):
-        super().__init__({})
-        self.libelles_sessions = libelles_sessions
-        self.html_par_session = html_par_session or {}
-        self.selecteur_ouvert = False
-        self.session_selectionnee = None
-
-    def click(self, selecteur, **_kwargs):
-        if selecteur == Ena.SELECTEUR_SESSIONS:
-            self.selecteur_ouvert = True
-
-    def locator(self, selecteur):
-        if selecteur == "a[href*='/ena/site/']":
-            return LocatorFactice(1)
-        if selecteur == Ena.SELECTEUR_SESSIONS:
-            return LocatorBoutonSessionFactice(self)
-        if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS:
-            return LocatorOptionsSessionsFactice(self, self.libelles_sessions)
-        return LocatorFactice(0)
-
-    def content(self):
-        return self.html_par_session.get(self.session_selectionnee, "<html></html>")
-
-
-class LocatorOptionsSessionsSansConfirmationFactice(LocatorOptionsSessionsFactice):
-    """Simule un clic perdu : l'option est bien cliquee, mais la valeur du
-    bouton ne change jamais -- reproduit un clic tombe dans le vide sur une
-    page pas encore prete (le DOM ne s'est pas encore mis a jour)."""
-
-    def filter(self, has_text=None):
-        correspondants = self.libelles
-        if has_text is not None:
-            correspondants = [libelle for libelle in self.libelles if has_text.search(libelle)]
-        return LocatorOptionsSessionsSansConfirmationFactice(self.page, correspondants)
-
-    @property
-    def first(self):
-        libelles = self.libelles
-
-        class Lien:
-            def click(self, **_kwargs):
-                if not libelles:
-                    raise ErreurDelaiPlaywright("Timeout 5000ms exceeded.")
-                # Ne met jamais a jour page.session_selectionnee : le bouton
-                # ne confirmera donc jamais le changement demande.
-
-        return Lien()
-
-
-class PageAvecClicPerdu(PageAvecSelecteurSessions):
-    """Le clic sur l'option de session ne fait jamais bouger la valeur
-    affichee par le bouton -- reproduit un clic tombe dans le vide sur une
-    page pas encore rendue. Lire la page dans cet etat rendrait les cours
-    d'une autre session (celle encore affichee) sous le nom demande."""
-
-    def locator(self, selecteur):
-        if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS:
-            return LocatorOptionsSessionsSansConfirmationFactice(self, self.libelles_sessions)
-        return super().locator(selecteur)
-
-
-def test_sessions_disponibles_leve_session_expiree_si_page_non_authentifiee():
-    # Si la session Microsoft expire pendant la lecture de /portail/cours,
-    # la plateforme sert une page de connexion. Sans ce garde-fou,
-    # sessions_disponibles rendrait une liste vide : une archive silencieusement
-    # incomplete. Il faut lever SessionExpiree pour mettre la file en pause.
-    ena = Ena(SessionFactice({}))
-    ena.session.page = PageNonAuthentifieeAvecSelecteurSessions(["Hiver 2026"])
-
-    with pytest.raises(SessionExpiree):
-        ena.sessions_disponibles()
-
-
-def test_sites_de_session_leve_session_expiree_si_page_non_authentifiee():
-    # Si la session Microsoft expire apres la selection d'une session,
-    # la plateforme sert une page de connexion. Sans ce garde-fou,
-    # sites_de_session rendrait une liste vide : une archive silencieusement
-    # incomplete. Il faut lever SessionExpiree pour mettre la file en pause.
-    ena = Ena(SessionFactice({}))
-    ena.session.page = PageNonAuthentifieeAvecSelecteurSessions(["Hiver 2026"])
-
-    with pytest.raises(SessionExpiree):
-        ena.sites_de_session(Session(code="202601", libelle="Hiver 2026"))
-
-
-def test_sessions_disponibles_ouvre_le_selecteur_et_liste_les_sessions():
-    # Aucun identifiant de site d'amorcage : la page est a une URL stable.
-    page = PageAvecSelecteurSessions(["Hiver 2026", "Automne 2025"])
-    ena = Ena(SessionFactice({}))
-    ena.session.page = page
-
-    sessions = ena.sessions_disponibles()
-
-    assert any("/portail/cours" in u for u in page.visitees)
-    assert page.selecteur_ouvert is True
-    assert [s.libelle for s in sessions] == ["Hiver 2026", "Automne 2025"]
-    assert [s.code for s in sessions] == ["202601", "202509"]
-
-
-def test_sites_de_session_selectionne_la_session_puis_extrait_les_cours():
-    html_hiver_2026 = '<a href="/ena/site/accueil?idSite=100001">Éthique</a>'
-    page = PageAvecSelecteurSessions(["Hiver 2026"], {"Hiver 2026": html_hiver_2026})
-    ena = Ena(SessionFactice({}))
-    ena.session.page = page
-    session = Session(code="202601", libelle="Hiver 2026")
-
-    cours = ena.sites_de_session(session)
-
-    assert page.session_selectionnee == "Hiver 2026"
-    assert [c.id_site for c in cours] == ["100001"]
-    assert cours[0].session == session
-
-
-def test_sites_de_session_selectionne_exactement_le_bon_libelle():
-    # Deux options partagent un prefixe : le libelle le plus court ne doit
-    # jamais capturer par erreur le plus long (equivalent de exact=True).
-    html_automne_2025 = '<a href="/ena/site/accueil?idSite=1">A</a>'
-    page = PageAvecSelecteurSessions(
-        ["Automne 2025", "Automne 2025 supplémentaire"],
-        {"Automne 2025": html_automne_2025},
-    )
-    ena = Ena(SessionFactice({}))
-    ena.session.page = page
-    session = Session(code="202509", libelle="Automne 2025")
-
-    cours = ena.sites_de_session(session)
-
-    assert page.session_selectionnee == "Automne 2025"
-    assert [c.id_site for c in cours] == ["1"]
-
-
-def test_sites_de_session_sans_cours_rend_une_liste_vide():
-    # La session courante de l'utilisateur est un exemple reel de session vide :
-    # ce n'est pas une erreur, juste une liste vide. L'option existe dans le
-    # selecteur (elle est bien selectionnable) mais ne rend aucun cours.
-    page = PageAvecSelecteurSessions(["Hiver 2026"])
-    ena = Ena(SessionFactice({}))
-    ena.session.page = page
-    session = Session(code="202601", libelle="Hiver 2026")
-
-    cours = ena.sites_de_session(session)
-
-    assert page.session_selectionnee == "Hiver 2026"
-    assert cours == []
-
-
-def test_sites_de_session_leve_si_le_clic_ne_confirme_jamais_le_changement():
-    # Le clic sur l'option est tombe dans le vide (page pas encore prete) :
-    # le bouton continue d'afficher l'ancienne valeur (ou aucune). Lire la
-    # page dans cet etat rendrait les cours d'une autre session sous le nom
-    # demande -- une corruption de donnees pire qu'une liste vide. On leve
-    # donc bruyamment plutot que de deviner.
-    page = PageAvecClicPerdu(["Hiver 2023"], {"Hiver 2023": "<html></html>"})
-    ena = Ena(SessionFactice({}))
-    ena.session.page = page
-    session = Session(code="202301", libelle="Hiver 2023")
-
-    with pytest.raises(SelecteurSessionsIndisponible):
-        ena.sites_de_session(session)
-
-
-class PageAvecBoutonPorteDesEspacesDeMiseEnForme(PageAvecSelecteurSessions):
-    """Reproduit le DOM reel du bouton du selecteur de sessions, releve en
-    session reelle : innerText porte de l'indentation et des sauts de ligne
-    autour du libelle (innerText.trim() donnait "Hiver 2023" sur le DOM
-    reel). Le clic sur l'option a bien fonctionne (session_selectionnee est
-    mis a jour normalement), mais le texte brut du bouton ne correspond
-    jamais exactement, caractere pour caractere, au libelle attendu : seule
-    une comparaison de textes nettoyes cote Python peut reconnaitre cette
-    confirmation. Un motif ancre (^...$) confie tel quel a has_text -- qui ne
-    normalise pas les espaces d'un texte compare a une expression reguliere
-    compilee -- ne la reconnaitrait jamais.
-    """
-
-    def __init__(self, libelles_sessions, texte_bouton_brut, html_par_session=None):
-        super().__init__(libelles_sessions, html_par_session)
-        self._texte_bouton_brut = texte_bouton_brut
-
-    def locator(self, selecteur):
-        if selecteur == Ena.SELECTEUR_SESSIONS:
-            return LocatorBoutonSessionFactice(self, texte_impose=self._texte_bouton_brut)
-        return super().locator(selecteur)
-
-
-def test_sites_de_session_reconnait_un_bouton_avec_espaces_de_mise_en_forme():
-    # Constat reel qui a fait echouer TOUTES les sessions apres le
-    # durcissement de la confirmation ("Hiver 2027", "Automne 2026", "Hiver
-    # 2026", y compris des sessions deja vues rendues correctement) : le
-    # bouton du selecteur porte de l'indentation et des sauts de ligne autour
-    # du libelle. Playwright ne normalise pas les espaces d'un texte compare
-    # a une expression reguliere compilee : un motif ancre (^Hiver 2027$)
-    # confie a has_text sur ce texte brut ne correspond alors jamais. Ce
-    # test doit echouer avec ce motif ancre, et reussir une fois la
-    # comparaison faite cote Python sur des textes nettoyes.
-    html_hiver_2027 = '<a href="/ena/site/accueil?idSite=1">A</a>'
-    page = PageAvecBoutonPorteDesEspacesDeMiseEnForme(
-        ["Hiver 2027"],
-        texte_bouton_brut="\n      Hiver 2027\n    ",
-        html_par_session={"Hiver 2027": html_hiver_2027},
-    )
-    ena = Ena(SessionFactice({}))
-    ena.session.page = page
-    session = Session(code="202701", libelle="Hiver 2027")
-
-    cours = ena.sites_de_session(session)
-
-    assert [c.id_site for c in cours] == ["1"]
-
-
-class PageAvecBoutonAffichantUneAutreSession(PageAvecSelecteurSessions):
-    """Le clic sur l'option est bien recu, mais le bouton finit par afficher
-    une session differente de celle demandee, en permanence -- et le
-    contenu de la page ne change pas non plus : aucune veritable bascule
-    n'a eu lieu, contrairement a un simple retard de rendu. Ne doit jamais
-    etre confirme, ni par le libelle ni par le second signal : lire les
-    cours dans cet etat les archiverait sous le nom d'une autre session,
-    une corruption de donnees pire qu'une session sautee.
-    """
-
-    def __init__(self, libelles_sessions, texte_bouton_fige):
-        super().__init__(libelles_sessions)
-        self._texte_bouton_fige = texte_bouton_fige
-
-    def locator(self, selecteur):
-        if selecteur == Ena.SELECTEUR_SESSIONS:
-            return LocatorBoutonSessionFactice(self, texte_impose=self._texte_bouton_fige)
-        return super().locator(selecteur)
-
-    def content(self):
-        # Rien ne change reellement : ni avant ni apres le clic.
-        return "<html></html>"
-
-
-def test_sites_de_session_ne_confirme_pas_un_bouton_affichant_une_autre_session():
-    # Le bouton affiche en permanence une session differente de celle
-    # demandee, et le contenu de la page ne bouge pas non plus : ni le
-    # libelle ni le second signal (liste des cours) ne confirment la
-    # selection. La session doit etre signalee en echec (isolation deja
-    # assuree par _afficher_sessions/_tout, voir test_main.py), jamais lue
-    # en silence sous un mauvais nom.
-    page = PageAvecBoutonAffichantUneAutreSession(["Hiver 2027"], texte_bouton_fige="Automne 2026")
-    ena = Ena(SessionFactice({}))
-    ena.session.page = page
-    session = Session(code="202701", libelle="Hiver 2027")
-
-    with pytest.raises(SelecteurSessionsIndisponible):
-        ena.sites_de_session(session)
-
-
-class LocatorBoutonJamaisLisibleFactice:
-    """Simule un bouton bel et bien present (l'ouverture du selecteur
-    reussit) mais dont le texte est en permanence illisible : chaque sondage
-    tombe entre la destruction et la recreation du bouton par AngularJS,
-    text_content() leve donc systematiquement un depassement de delai. Le
-    second signal (liste des cours) est alors la seule confirmation
-    possible."""
-
-    def wait_for(self, timeout=None):
-        pass
-
-    def text_content(self, timeout=None):
-        raise ErreurDelaiPlaywright(f"Timeout {timeout}ms exceeded.")
-
-
-class PageAvecBoutonJamaisLisibleMaisCoursCharges(PageAvecSelecteurSessions):
-    def locator(self, selecteur):
-        if selecteur == Ena.SELECTEUR_SESSIONS:
-            return LocatorBoutonJamaisLisibleFactice()
-        return super().locator(selecteur)
-
-
-def test_sites_de_session_confirme_via_la_liste_des_cours_si_le_bouton_reste_illisible():
-    # Le bouton du selecteur est detruit puis recree par AngularJS : un
-    # sondage peut tomber en permanence entre les deux et ne jamais lire de
-    # texte. Si la liste des cours affichee a neanmoins change depuis avant
-    # le clic, la selection a bien eu lieu -- inutile de la declarer en
-    # echec au seul motif que le bouton, lui, n'a jamais pu etre relu a
-    # temps.
-    html_hiver_2027 = '<a href="/ena/site/accueil?idSite=1">A</a>'
-    page = PageAvecBoutonJamaisLisibleMaisCoursCharges(
-        ["Hiver 2027"], {"Hiver 2027": html_hiver_2027}
-    )
-    ena = Ena(SessionFactice({}))
-    ena.session.page = page
-    session = Session(code="202701", libelle="Hiver 2027")
-
-    cours = ena.sites_de_session(session)
-
-    assert [c.id_site for c in cours] == ["1"]
-
-
-class PageNonAuthentifieeAvecSelecteurSessions(PageNonAuthentifiee):
-    """Simule une page non authentifiee (login) avec le selecteur des sessions,
-    pour tester que sessions_disponibles() et sites_de_session() levent
-    SessionExpiree plutot que de rendre une liste vide."""
-
-    def __init__(self, libelles_sessions, html_par_session=None):
-        super().__init__({})
-        self.libelles_sessions = libelles_sessions
-        self.html_par_session = html_par_session or {}
-        self.selecteur_ouvert = False
-        self.session_selectionnee = None
-
-    def click(self, selecteur, **_kwargs):
-        if selecteur == Ena.SELECTEUR_SESSIONS:
-            self.selecteur_ouvert = True
-
-    def locator(self, selecteur):
-        if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS:
-            return LocatorOptionsSessionsFactice(self, self.libelles_sessions)
-        return LocatorFactice(0)
-
-    def content(self):
-        return self.html_par_session.get(self.session_selectionnee, "<html></html>")
-
-
-class PageAvecPanneauFrere(PageFactice):
-    """Reproduit fidelement le bug observe en session reelle : le clic sur le
-    bouton ouvre bien le panneau, mais celui-ci n'est jamais un descendant du
-    bouton -- c'est un conteneur frere, ailleurs dans le DOM. L'ancien
-    selecteur imbrique (SELECTEUR_SESSIONS + " a") ne trouve donc jamais rien
-    ici ; seule une recherche page entiere par la forme du libelle le peut.
-    """
-
-    def __init__(self, libelles_sessions):
-        super().__init__({})
-        self.libelles_sessions = libelles_sessions
-        self.selecteur_ouvert = False
-
-    def click(self, selecteur, **_kwargs):
-        if selecteur == Ena.SELECTEUR_SESSIONS:
-            self.selecteur_ouvert = True
-
-    def locator(self, selecteur):
-        if selecteur == "a[href*='/ena/site/']":
-            return LocatorFactice(1)
-        if selecteur == Ena.SELECTEUR_SESSIONS:
-            return LocatorFactice(1)
-        # L'ancien mecanisme, imbrique dans le bouton : ne doit plus jamais
-        # etre interroge, et ne trouverait de toute facon rien ici.
-        if selecteur == f"{Ena.SELECTEUR_SESSIONS} a":
-            return LocatorOptionsSessionsFactice(self, [])
-        if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS:
-            return LocatorOptionsSessionsFactice(self, self.libelles_sessions)
-        return LocatorFactice(0)
-
-
-def test_sessions_disponibles_lit_les_options_d_un_panneau_frere_du_bouton():
-    # Symptome reel : "Aucune session trouvee" alors que la connexion
-    # fonctionne. Cause reelle : le panneau ouvert par le clic est un
-    # conteneur frere du bouton, pas un descendant -- l'ancien selecteur
-    # imbrique ne pouvait donc jamais rien y trouver.
-    page = PageAvecPanneauFrere(["Hiver 2026", "Automne 2025"])
-    ena = Ena(SessionFactice({}))
-    ena.session.page = page
-
-    sessions = ena.sessions_disponibles()
-
-    assert page.selecteur_ouvert is True
-    assert [s.libelle for s in sessions] == ["Hiver 2026", "Automne 2025"]
-
-
-class PageAvecBoutonPortantLaValeurCourante(PageFactice):
-    """Reproduit le risque signale en inspection reelle : le bouton du
-    selecteur porte sa valeur courante (ex. "Automne 2025"), qui matche
-    exactement le meme motif de libelle que les douze options. Aujourd'hui
-    c'est un <span>, jamais un <a> -- mais si un futur changement de markup
-    en faisait un <a>, il vivrait a l'interieur de SELECTEUR_SESSIONS et
-    porterait le meme texte qu'une des options du conteneur frere.
-    """
-
-    def __init__(self, libelles_options, libelle_bouton):
-        super().__init__({})
-        self.libelles_options = libelles_options
-        self.libelle_bouton = libelle_bouton
-        self.selecteur_ouvert = False
-
-    def click(self, selecteur, **_kwargs):
-        if selecteur == Ena.SELECTEUR_SESSIONS:
-            self.selecteur_ouvert = True
-
-    def locator(self, selecteur):
-        if selecteur == "a[href*='/ena/site/']":
-            return LocatorFactice(1)
-        if selecteur == Ena.SELECTEUR_SESSIONS:
-            return LocatorFactice(1)
-        if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS:
-            return LocatorOptionsSessionsFactice(self, self.libelles_options)
-        if selecteur == "a":
-            # Sans l'exclusion, l'ancre du bouton apparaitrait aussi ici, en
-            # plus des douze options du conteneur frere.
-            return LocatorOptionsSessionsFactice(
-                self, self.libelles_options + [self.libelle_bouton]
-            )
-        return LocatorFactice(0)
-
-
-def test_sessions_disponibles_exclut_la_valeur_courante_du_bouton_sans_doublon():
-    # Le bouton porte "Automne 2025" comme valeur courante ; les options du
-    # conteneur frere l'incluent deja legitimement. Un mecanisme qui ne
-    # distinguerait pas l'interieur du bouton du reste de la page rendrait
-    # treize sessions, dont un "Automne 2025" en double.
-    douze_sessions = [
-        "Hiver 2027", "Automne 2026", "Hiver 2026", "Automne 2025", "Été 2025",
-        "Hiver 2025", "Automne 2024", "Été 2024", "Hiver 2024", "Automne 2023",
-        "Été 2023", "Hiver 2023",
-    ]
-    page = PageAvecBoutonPortantLaValeurCourante(douze_sessions, libelle_bouton="Automne 2025")
-    ena = Ena(SessionFactice({}))
-    ena.session.page = page
-
-    sessions = ena.sessions_disponibles()
-
-    assert len(sessions) == 12
-    assert len({s.libelle for s in sessions}) == 12
-
-
-class PageSelecteurOuvertSansOptions(PageFactice):
-    """Le clic sur le selecteur reussit (le panneau s'ouvre bel et bien),
-    mais aucune option ne correspond a la forme attendue d'un libelle de
-    session : DOM change, texte non reconnu, etc. Ne doit jamais rendre une
-    liste vide en silence."""
-
-    def click(self, *_args, **_kwargs):
-        pass
-
-    def locator(self, selecteur):
-        if selecteur == "a[href*='/ena/site/']":
-            return LocatorFactice(1)
-        if selecteur == Ena.SELECTEUR_SESSIONS:
-            return LocatorFactice(1)
-        return LocatorOptionsSessionsFactice(self, [])
-
-
-def test_sessions_disponibles_leve_si_le_panneau_ouvert_ne_rend_aucune_option():
-    # Le pire mode de defaillance du projet : une liste de sessions vide
-    # signifie que l'outil n'archive plus rien du tout, en silence. Si le
-    # panneau s'ouvre mais qu'aucune option n'y est trouvee, il faut le dire
-    # bruyamment plutot que de rendre [].
-    ena = Ena(SessionFactice({}))
-    ena.session.page = PageSelecteurOuvertSansOptions({})
-
-    with pytest.raises(SelecteurSessionsIllisible):
-        ena.sessions_disponibles()
-
-
-class PageSelecteurSessionsIntrouvable(PageFactice):
-    """Le bouton du selecteur est bien present dans le DOM (wait_for reussit),
-    mais le clic dessus echoue (DOM change entre l'attente et le clic, ou
-    element non actionnable). Ne doit plus jamais rendre une liste vide en
-    silence : une session ainsi ratee disparaitrait de l'enumeration sans le
-    moindre signe."""
-
-    def click(self, *_args, **_kwargs):
-        raise ErreurDelaiPlaywright("Timeout 5000ms exceeded.")
-
-    def locator(self, selecteur):
-        if selecteur == "a[href*='/ena/site/']":
-            return LocatorFactice(1)
-        if selecteur == Ena.SELECTEUR_SESSIONS:
-            return LocatorFactice(1)
-        return LocatorOptionsSessionsFactice(self, [])
-
-
-def test_sessions_disponibles_leve_si_le_clic_sur_le_bouton_echoue_malgre_sa_presence():
-    # Symptome reel corrige ici : une session vide et un echec de chargement
-    # etaient indiscernables. Le bouton est present (wait_for reussit) mais
-    # le clic echoue : ce n'est plus tolere, on leve une exception explicite
-    # plutot que de rendre [] et laisser croire a une enumeration reussie.
-    ena = Ena(SessionFactice({}))
-    ena.session.page = PageSelecteurSessionsIntrouvable({})
-
-    with pytest.raises(SelecteurSessionsIndisponible):
-        ena.sessions_disponibles()
-
-
-class LocatorBoutonJamaisPretFactice:
-    """Le bouton du selecteur n'est jamais trouve, quel que soit le delai
-    accorde -- un vrai probleme de chargement, distinct d'une session sans
-    cours."""
-
-    def wait_for(self, timeout=None):
-        raise ErreurDelaiPlaywright(f"Timeout {timeout}ms exceeded.")
-
-
-class PageSelecteurJamaisRendu(PageFactice):
-    """Le bouton du selecteur de sessions n'apparait jamais dans le DOM.
-    Reproduit un vrai probleme de chargement (page cassee, contenu jamais
-    rendu). Ne doit jamais rendre une liste vide."""
-
-    def locator(self, selecteur):
-        if selecteur == "a[href*='/ena/site/']":
-            return LocatorFactice(1)
-        if selecteur == Ena.SELECTEUR_SESSIONS:
-            return LocatorBoutonJamaisPretFactice()
-        return LocatorFactice(0)
-
-
-def test_sessions_disponibles_leve_si_le_bouton_du_selecteur_n_apparait_jamais():
-    # Le pire mode de defaillance du projet : une liste de sessions vide
-    # signifie que l'outil n'archive plus rien du tout, en silence. Si le
-    # bouton du selecteur n'apparait jamais, meme avec un delai genereux, il
-    # faut le dire bruyamment plutot que de rendre [].
-    ena = Ena(SessionFactice({}))
-    ena.session.page = PageSelecteurJamaisRendu({})
-
-    with pytest.raises(SelecteurSessionsIndisponible):
-        ena.sessions_disponibles()
-
-
-class LocatorBoutonRenduLentFactice:
-    """Simule un bouton qui ne repond a wait_for que si on lui laisse un
-    delai au moins aussi genereux que celui observe en session reelle (8 a 9
-    secondes de rendu AngularJS). Une fois ce delai atteint, marque la page
-    factice comme rendue -- exactement ce que ferait un vrai Locator
-    Playwright qui sonde le DOM jusqu'a trouver l'element ou expirer."""
-
-    def __init__(self, page):
-        self.page = page
-
-    def wait_for(self, timeout=None):
-        if timeout is None or timeout < self.page.delai_rendu_ms:
-            raise ErreurDelaiPlaywright(f"Timeout {timeout}ms exceeded.")
-        self.page.rendu = True
-
-
-class PageAuRenduLent(PageFactice):
-    """Reproduit fidelement le defaut constate en session reelle :
-    /portail/cours (application AngularJS) ne rend son contenu qu'apres un
-    delai (8 a 9 secondes en pratique), largement au-dela du signal reseau
-    "networkidle" qu'attendait l'ancien code. Tant que ce delai n'est pas
-    couvert par l'attente, le bouton du selecteur est introuvable et la page
-    ne contient aucune option -- exactement ce que verrait une lecture
-    prematuree.
-    """
-
-    def __init__(self, libelles_sessions, delai_rendu_ms):
-        super().__init__({})
-        self.libelles_sessions = libelles_sessions
-        self.delai_rendu_ms = delai_rendu_ms
-        self.rendu = False
-        self.selecteur_ouvert = False
-
-    def click(self, selecteur, **_kwargs):
-        if selecteur == Ena.SELECTEUR_SESSIONS:
-            self.selecteur_ouvert = True
-
-    def locator(self, selecteur):
-        if selecteur == "a[href*='/ena/site/']":
-            # Marqueur d'authentification : distinct du rendu Angular du
-            # selecteur de sessions, il ne depend donc pas de self.rendu.
-            return LocatorFactice(1)
-        if selecteur == Ena.SELECTEUR_SESSIONS:
-            return LocatorBoutonRenduLentFactice(self)
-        if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS:
-            return LocatorOptionsSessionsFactice(self, self.libelles_sessions if self.rendu else [])
-        return LocatorFactice(0)
-
-
-def test_sessions_disponibles_attend_un_rendu_lent_du_bouton_du_selecteur():
-    # /portail/cours (application AngularJS) met 8 a 9 secondes a se rendre
-    # en usage reel : "networkidle" se declenche bien avant que le bouton
-    # n'existe dans le DOM. Le delai transmis a l'attente doit etre assez
-    # genereux pour couvrir ce rendu, sinon la session semble a tort "sans
-    # cours" -- exactement le defaut qui a fait disparaitre deux sessions
-    # entieres d'une enumeration reelle.
-    page = PageAuRenduLent(["Hiver 2023", "Été 2023"], delai_rendu_ms=9000)
-    ena = Ena(SessionFactice({}))
-    ena.session.page = page
-
-    sessions = ena.sessions_disponibles()
-
-    assert [s.libelle for s in sessions] == ["Hiver 2023", "Été 2023"]
-
-
-class LocatorTextesFactice(LocatorFactice):
-    """Simule un Locator Playwright expose par un selecteur candidat de
-    diagnostic : compte, texte, et filtrage par motif (comme _options_sessions)."""
-
-    def __init__(self, textes):
-        super().__init__(len(textes))
-        self._textes = textes
-
-    def all_text_contents(self):
-        return list(self._textes)
-
-    def filter(self, has_text=None):
-        textes = self._textes
-        if has_text is not None:
-            textes = [texte for texte in textes if has_text.search(texte)]
-        return LocatorTextesFactice(textes)
-
-
-class PageDiagnostic(PageFactice):
-    """Simule le DOM une fois le panneau ouvert, avec des reponses
-    differentes selon le selecteur candidat interroge."""
-
-    def __init__(self, textes_par_selecteur, nombre_liens_id_site):
-        super().__init__({})
-        self.textes_par_selecteur = textes_par_selecteur
-        self.nombre_liens_id_site = nombre_liens_id_site
-        self.selecteur_ouvert = False
-
-    def click(self, selecteur, **_kwargs):
-        if selecteur == Ena.SELECTEUR_SESSIONS:
-            self.selecteur_ouvert = True
-
-    def locator(self, selecteur):
-        if selecteur == "a[href*='/ena/site/']":
-            return LocatorFactice(1)
-        if selecteur == Ena.SELECTEUR_SESSIONS:
-            return LocatorFactice(1)
-        if selecteur == "a[href*='idSite=']":
-            return LocatorFactice(self.nombre_liens_id_site)
-        return LocatorTextesFactice(self.textes_par_selecteur.get(selecteur, []))
-
-
-def test_diagnostiquer_sessions_rend_le_compte_et_l_echantillon_par_candidat():
-    page = PageDiagnostic(
-        {
-            "[role=option]": [],
-            ".mpo-deroulant-element": [],
-            "li": ["Hiver 2026", "Automne 2025"],
-            "a": ["Hiver 2026", "Automne 2025", "Profil"],
-            # Mecanisme reellement utilise par _options_sessions : les memes
-            # options que "a", mais deja privees de l'interieur du bouton.
-            Ena.SELECTEUR_OPTIONS_SESSIONS: ["Hiver 2026", "Automne 2025", "Profil"],
-        },
-        nombre_liens_id_site=9,
-    )
-    ena = Ena(SessionFactice({}))
-    ena.session.page = page
-
-    rapport = ena.diagnostiquer_sessions()
-
-    assert page.selecteur_ouvert is True
-    candidats = dict((selecteur, (nombre, echantillon)) for selecteur, nombre, echantillon in rapport["candidats"])
-    assert candidats["[role=option]"] == (0, [])
-    assert candidats["li"] == (2, ["Hiver 2026", "Automne 2025"])
-    assert candidats["a"] == (3, ["Hiver 2026", "Automne 2025", "Profil"])
-    # La forme du libelle, mecanisme reellement utilise, exclut "Profil".
-    assert candidats["forme du libelle (saison + annee)"] == (2, ["Hiver 2026", "Automne 2025"])
-    assert rapport["liens_id_site"] == 9
-
-
-class PageAvecClasseOptionSession(PageFactice):
-    """Simule le DOM reel constate a l'inspection : les options portent la
-    classe canonique `mpo-deroulant-elem`. Ce mecanisme est repere en premier,
-    avant tout recours a la forme du libelle."""
-
-    def __init__(self, libelles_sessions):
-        super().__init__({})
-        self.libelles_sessions = libelles_sessions
-        self.selecteur_ouvert = False
-        self.session_selectionnee = None
-
-    def click(self, selecteur, **_kwargs):
-        if selecteur == Ena.SELECTEUR_SESSIONS:
-            self.selecteur_ouvert = True
-
-    def locator(self, selecteur):
-        if selecteur == "a[href*='/ena/site/']":
-            return LocatorFactice(1)
-        if selecteur == Ena.SELECTEUR_SESSIONS:
-            return LocatorFactice(1)
-        if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS_CLASSE:
-            return LocatorOptionsSessionsFactice(self, self.libelles_sessions)
-        # Le repli par forme de libelle ne doit jamais etre interroge quand
-        # la classe canonique a deja tout trouve.
-        if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS:
-            raise AssertionError("le repli par forme de libelle a ete interroge alors que la classe canonique suffisait")
-        return LocatorFactice(0)
-
-
-def test_sessions_disponibles_repere_les_options_par_la_classe_canonique():
-    # Inspection du DOM reel : chaque option porte la classe
-    # `mpo-deroulant-elem`. C'est nettement plus stable qu'un motif de
-    # libelle, et ca ne peut pas capter par erreur un lien du menu global.
-    page = PageAvecClasseOptionSession(["Hiver 2027", "Automne 2026"])
-    ena = Ena(SessionFactice({}))
-    ena.session.page = page
-
-    sessions = ena.sessions_disponibles()
-
-    assert [s.libelle for s in sessions] == ["Hiver 2027", "Automne 2026"]
-
-
-class PageAvecEspacesAutourDuLibelle(PageFactice):
-    """Simule un panneau ou la classe canonique a disparu (marquage change),
-    forcant le repli par forme de libelle -- et ou le texte brut porte des
-    espaces de mise en forme en tete et en fin, comme le redoutait la revue.
-    """
-
-    def __init__(self, libelles_bruts):
-        super().__init__({})
-        self.libelles_bruts = libelles_bruts
-        self.selecteur_ouvert = False
-
-    def click(self, selecteur, **_kwargs):
-        if selecteur == Ena.SELECTEUR_SESSIONS:
-            self.selecteur_ouvert = True
-
-    def locator(self, selecteur):
-        if selecteur == "a[href*='/ena/site/']":
-            return LocatorFactice(1)
-        if selecteur == Ena.SELECTEUR_SESSIONS:
-            return LocatorFactice(1)
-        if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS_CLASSE:
-            # La classe canonique ne trouve plus rien : force le repli.
-            return LocatorFactice(0)
-        if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS:
-            return LocatorOptionsSessionsFactice(self, self.libelles_bruts)
-        return LocatorFactice(0)
-
-
-def test_sessions_disponibles_repli_tolere_les_espaces_de_tete_et_de_fin():
-    # Meme si la classe canonique venait a disparaitre, le repli par forme de
-    # libelle ne doit pas s'effondrer face a des espaces de mise en forme
-    # autour du texte : un motif ancre confie tel quel au navigateur (donc
-    # applique au texte brut, non nettoye) les manquerait completement.
-    page = PageAvecEspacesAutourDuLibelle([" Hiver 2027 ", "\nAutomne 2026\n"])
-    ena = Ena(SessionFactice({}))
-    ena.session.page = page
-
-    sessions = ena.sessions_disponibles()
-
-    assert [s.libelle for s in sessions] == ["Hiver 2027", "Automne 2026"]
-
-
 def test_parcourir_menu_tolere_un_lien_non_cliquable():
     # Une section du menu peut echouer au clic sans que ce soit une erreur du
     # site : on passe a la suivante au lieu d'interrompre tout le parcours.
@@ -1652,300 +824,25 @@ def test_parcourir_menu_tolere_un_lien_non_cliquable():
     assert nombre == 1
 
 
-def test_sites_de_session_tolere_les_espaces_autour_du_libelle():
-    # Le mecanisme de selection doit tolerer les espaces parasites autour
-    # du libelle, tout comme celui de lecture : si le DOM exposait un jour
-    # le moindre espace ou saut de ligne autour du libelle (ex. " Hiver 2027 "),
-    # la selection ne doit pas echouer silencieusement et laisser croire qu'on
-    # a les cours d'une autre session.
-    html_hiver_2026 = '<a href="/ena/site/accueil?idSite=100001">Ethique</a>'
-    page = PageAvecSelecteurSessions(
-        [" Hiver 2026 ", "\nAutomne 2025\n"],
-        {"Hiver 2026": html_hiver_2026},
-    )
-    ena = Ena(SessionFactice({}))
-    ena.session.page = page
-    session = Session(code="202601", libelle="Hiver 2026")
-
-    cours = ena.sites_de_session(session)
-
-    # Le selecteur s'est ouvert, une option avec espaces parasites a ete
-    # trouvee (apres nettoyage), cliquee, et la page a ete reloadee.
-    assert page.session_selectionnee == "Hiver 2026"
-    assert [c.id_site for c in cours] == ["100001"]
-
-
-class PageAvecPanneauProgressif(PageFactice):
-    """Reproduit un panneau de sessions qui se peuple en differe (Angular) :
-    le premier sondage du compte d'options n'en voit que trois sur douze ;
-    tous les sondages suivants en voient les douze. La liste n'est jamais
-    vide, donc aucune exception ne serait levee par une lecture immediate --
-    c'est exactement le mode de defaillance partiel que la stabilisation du
-    compte doit prevenir."""
-
-    def __init__(self, libelles_partiels, libelles_complets):
-        super().__init__({})
-        self.libelles_partiels = libelles_partiels
-        self.libelles_complets = libelles_complets
-        self.nombre_sondages = 0
-        self.selecteur_ouvert = False
-
-    def click(self, selecteur, **_kwargs):
-        if selecteur == Ena.SELECTEUR_SESSIONS:
-            self.selecteur_ouvert = True
-
-    def locator(self, selecteur):
-        if selecteur == "a[href*='/ena/site/']":
-            return LocatorFactice(1)
-        if selecteur == Ena.SELECTEUR_SESSIONS:
-            return LocatorFactice(1)
-        if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS_CLASSE:
-            self.nombre_sondages += 1
-            libelles = (
-                self.libelles_partiels if self.nombre_sondages == 1 else self.libelles_complets
-            )
-            return LocatorOptionsSessionsFactice(self, libelles)
-        return LocatorFactice(0)
-
-
-def test_sessions_disponibles_attend_la_stabilisation_d_un_panneau_qui_se_peuple_progressivement():
-    # AngularJS peut peupler le panneau des sessions en differe : le premier
-    # sondage du compte d'options peut tomber sur un etat partiel (neuf sur
-    # douze en session reelle, ici trois sur douze). La liste n'est pas
-    # vide, donc .count() et .all_text_contents() ne levent rien -- trois
-    # sessions disparaitraient en silence sans une attente explicite de la
-    # stabilisation du compte.
-    douze_sessions = [
-        "Hiver 2027", "Automne 2026", "Hiver 2026", "Automne 2025", "Été 2025",
-        "Hiver 2025", "Automne 2024", "Été 2024", "Hiver 2024", "Automne 2023",
-        "Été 2023", "Hiver 2023",
-    ]
-    page = PageAvecPanneauProgressif(
-        libelles_partiels=douze_sessions[:3],
-        libelles_complets=douze_sessions,
-    )
-    ena = Ena(SessionFactice({}))
-    ena.session.page = page
-
-    sessions = ena.sessions_disponibles()
-
-    assert len(sessions) == 12
-    assert [s.libelle for s in sessions] == douze_sessions
-
-
-def test_diagnostiquer_sessions_survit_a_un_bouton_qui_n_apparait_jamais():
-    # Le pire scenario pour ce mode : bouton absent, panne totale. C'est
-    # precisement pour ce cas que le diagnostic existe ; il ne doit jamais
-    # planter avant d'avoir rien examine.
-    ena = Ena(SessionFactice({}))
-    ena.session.page = PageSelecteurJamaisRendu({})
-
-    rapport = ena.diagnostiquer_sessions()
-
-    assert rapport["echec_ouverture_selecteur"] is not None
-    assert "selecteur de sessions" in rapport["echec_ouverture_selecteur"]
-    # Tous les selecteurs candidats ont neanmoins ete interroges, plus la
-    # forme du libelle : probablement tous a zero, ce qui est en soi une
-    # information utile.
-    assert len(rapport["candidats"]) == len(CANDIDATS_DIAGNOSTIC_SESSIONS) + 1
-    for _selecteur, nombre, echantillon in rapport["candidats"]:
-        assert nombre == 0
-        assert echantillon == []
-    assert rapport["liens_id_site"] == 0
-
-
-class LocatorCompteOscillant:
-    """Simule un Locator dont le compte oscille sans jamais se stabiliser
-    (3, 9, 3, 9, ...), comme dans
-    test_stabiliser_options_leve_si_le_compte_oscille_sans_jamais_se_stabiliser
-    -- mais rejoue ici a travers diagnostiquer_sessions plutot que
-    directement contre _stabiliser_options."""
-
-    def __init__(self, page):
-        self.page = page
-
-    def count(self):
-        self.page.nombre_sondages += 1
-        return 3 if self.page.nombre_sondages % 2 else 9
-
-
-class PageDiagnosticOptionsInstables(PageFactice):
-    """Simule un panneau de sessions dont le compte d'options n'a jamais de
-    palier : _stabiliser_options leve SelecteurSessionsInstable des qu'on
-    l'interroge par la classe canonique. Sert a verifier que le diagnostic
-    survit a cette exception plutot que de s'interrompre avant d'avoir
-    examine le reste des selecteurs candidats."""
-
-    def __init__(self):
-        super().__init__({})
-        self.nombre_sondages = 0
-
-    def click(self, *_args, **_kwargs):
-        pass
-
-    def locator(self, selecteur):
-        if selecteur == "a[href*='/ena/site/']":
-            return LocatorFactice(1)
-        if selecteur == Ena.SELECTEUR_SESSIONS:
-            return LocatorFactice(1)
-        if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS_CLASSE:
-            return LocatorCompteOscillant(self)
-        if selecteur == "a[href*='idSite=']":
-            return LocatorFactice(4)
-        return LocatorTextesFactice([])
-
-
-def test_diagnostiquer_sessions_survit_a_une_oscillation_du_compte_d_options():
-    # _stabiliser_options peut desormais lever SelecteurSessionsInstable
-    # (voir test_stabiliser_options_leve_si_le_compte_oscille_sans_jamais_se_stabiliser).
-    # Le diagnostic existe justement pour les situations ou plus rien ne
-    # marche : il doit consigner cette instabilite dans son rapport et
-    # poursuivre l'interrogation de tous les selecteurs candidats, jamais
-    # s'interrompre.
-    ena = Ena(SessionFactice({}))
-    ena.session.page = PageDiagnosticOptionsInstables()
-
-    rapport = ena.diagnostiquer_sessions()
-
-    assert rapport["echec_stabilisation_options"] is not None
-    assert "compte d'options" in rapport["echec_stabilisation_options"]
-    # Les selecteurs candidats et le compte de liens idSite= restent
-    # interroges malgre l'echec de stabilisation.
-    assert len(rapport["candidats"]) == len(CANDIDATS_DIAGNOSTIC_SESSIONS) + 1
-    assert rapport["liens_id_site"] == 4
-
-
-def test_sites_de_session_leve_si_la_session_est_introuvable():
-    # Une session absente du selecteur est une anomalie : ne pas lever
-    # d'exception risque de rendre les cours de la session courante (ou d'une
-    # autre) archives sous le nom de la session demandee, une corruption de
-    # donnees pire qu'une extraction incomplete. On leve donc bruyamment.
-    page = PageAvecSelecteurSessions(["Hiver 2026"])
-    ena = Ena(SessionFactice({}))
-    ena.session.page = page
-    session_inexistante = Session(code="202509", libelle="Automne 2025")
-
-    with pytest.raises(SelecteurSessionsIllisible):
-        ena.sites_de_session(session_inexistante)
-
-
-class LocatorDeCompte:
-    """Simule un Locator dont .count() rend une valeur fixe, sans autre
-    mecanisme -- suffisant pour tester _stabiliser_options isolement, qui
-    n'appelle jamais autre chose que .count() sur ce qu'elle sonde."""
-
-    def __init__(self, compte):
-        self.compte = compte
-
-    def count(self):
-        return self.compte
-
-
-class CompteEvolutif:
-    """Rejoue une sequence de comptes programmee, comme celles mesurees par
-    la revue contre la vraie fonction _stabiliser_options.
-
-    Sans boucle (par defaut) : la derniere valeur de la sequence se repete
-    indefiniment une fois atteinte -- simule un panneau qui trouve son palier
-    (peuplement progressif, ou panneau vide en permanence).
-
-    Avec boucle=True : la sequence entiere se repete sans fin -- simule une
-    oscillation qui ne trouve jamais de palier.
-    """
-
-    def __init__(self, comptes, boucle=False):
-        self.comptes = comptes
-        self.boucle = boucle
-        self.nombre_sondages = 0
-
-    def obtenir_options(self):
-        indice = self.nombre_sondages
-        if self.boucle:
-            indice %= len(self.comptes)
-        else:
-            indice = min(indice, len(self.comptes) - 1)
-        self.nombre_sondages += 1
-        return LocatorDeCompte(self.comptes[indice])
-
-
-def _ena_pour_stabilisation():
-    ena = Ena(SessionFactice({}))
-    ena.session.page = PageFactice({})
-    return ena
-
-
-def test_stabiliser_options_attend_la_fin_d_un_peuplement_progressif():
-    # Rejoue la sequence mesuree par la revue : 3, puis 12 en continu. Un
-    # premier sondage a 3 ne doit plus suffire a conclure a la stabilite du
-    # tout premier coup -- il faut voir le compte se maintenir sur plusieurs
-    # sondages avant de conclure.
-    sequence = CompteEvolutif([3, 12])
-    ena = _ena_pour_stabilisation()
-
-    options = ena._stabiliser_options(sequence.obtenir_options)
-
-    assert options.count() == 12
-
-
-def test_stabiliser_options_conclut_vite_un_compte_deja_stable():
-    # Cas nominal : toutes les options sont presentes des le premier sondage.
-    # Le cout doit rester borne (quelques sondages, une fraction de seconde),
-    # meme si l'exigence est plus stricte qu'avant (trois sondages
-    # consecutifs sur une fenetre d'au moins 600 ms, plutot que deux).
-    sequence = CompteEvolutif([12])
-    ena = _ena_pour_stabilisation()
-
-    options = ena._stabiliser_options(sequence.obtenir_options)
-
-    assert options.count() == 12
-    sondages_attendus = (
-        DELAI_OBSERVATION_MINIMALE_STABILISATION_MS // INTERVALLE_SONDAGE_STABILISATION_MS + 1
-    )
-    assert sequence.nombre_sondages == sondages_attendus
-
-
-def test_stabiliser_options_leve_si_le_compte_oscille_sans_jamais_se_stabiliser():
-    # Rejoue l'oscillation mesuree par la revue : 3, 9, 3, 9, ... ne trouve
-    # jamais de palier. Rendre la derniere valeur sondee tronquerait la
-    # liste de sessions en silence -- un echec de lecture explicite vaut
-    # mieux qu'un resultat plausible mais faux.
-    sequence = CompteEvolutif([3, 9], boucle=True)
-    ena = _ena_pour_stabilisation()
-
-    with pytest.raises(SelecteurSessionsInstable):
-        ena._stabiliser_options(sequence.obtenir_options)
-
-
-def test_stabiliser_options_conserve_le_comportement_actuel_pour_un_panneau_vide():
-    # Un panneau vide en permanence (0, 0, 0, ...) est deja correct
-    # aujourd'hui : c'est une vraie stabilite (le compte ne varie jamais),
-    # pas une oscillation. Le durcissement ne doit pas le faire basculer en
-    # SelecteurSessionsInstable.
-    sequence = CompteEvolutif([0])
-    ena = _ena_pour_stabilisation()
-
-    options = ena._stabiliser_options(sequence.obtenir_options)
-
-    assert options.count() == 0
-
-
 def test_ena_ne_confie_plus_aucun_motif_ancre_a_has_text():
-    # Piege deja reproduit deux fois dans ce fichier (lecture des options,
-    # puis confirmation de la session selectionnee) : Playwright ne
-    # normalise pas les espaces d'un texte compare a un motif ancre (^...$)
-    # confie a has_text. Audit statique plutot que de faire confiance a la
-    # relecture : aucune ligne de production ne doit plus transmettre a
-    # has_text= le motif ancre MOTIF_LIBELLE_SESSION, ni construire un
-    # nouveau motif ancre a la volee pour le lui confier.
+    # Piege deja constate deux fois sur l'ancien selecteur AngularJS de
+    # /portail/cours (lecture des options, puis confirmation de la session
+    # selectionnee, toutes deux disparues avec la refonte du portail) :
+    # Playwright ne normalise pas les espaces d'un texte compare a un motif
+    # ancre (^...$) confie a has_text. Audit statique conserve en garde-fou
+    # de non-regression, plutot que de faire confiance a la relecture : aucun
+    # motif ancre ne doit etre transmis a has_text= dans ena.py.
     source = (Path(__file__).resolve().parent.parent / "extracteur" / "ena.py").read_text(
         encoding="utf-8"
     )
 
-    assert "has_text=MOTIF_LIBELLE_SESSION" not in source
+    assert "has_text=" not in source
     assert not re.search(r"""f["']\^.*\$["']""", source), (
         "un motif ancre (f-string commencant par ^ et finissant par $) est "
         "construit dans ena.py -- verifier qu'il n'est pas confie a has_text"
     )
+
+
 class PageOngletsLarges(PageFactice):
     """Un parent ("Racine") portant N feuilles, comme les modules reels de
     MNO-5000 qui en portent six par en-tete.
@@ -2329,162 +1226,382 @@ def test_visiter_fait_passer_son_canal_d_affichage_a_la_reparation():
     assert session.imprimer_recu == journal.append
 
 
-class LocatorOptionRecouverteFactice(LocatorOptionsSessionsFactice):
-    """Reproduit l'incident reel sur la PREMIERE option du panneau : le
-    bouton du selecteur la recouvre, Playwright refuse le clic
-    (« intercepts pointer events »), mais dispatch_event l'atteint.
+# --- Filtre de session du tableau de bord (/portail/), depuis la refonte du
+# portail constatee le 25 septembre 2026 -- remplace l'ancien selecteur
+# AngularJS de /portail/cours (page desormais en 404). ---
 
-    Les options suivantes, plus bas dans le panneau, ne sont jamais
-    couvertes : seule celle du haut echoue, ce qui rendait le defaut
-    invisible tant que la session la plus recente etait vide.
-    """
 
-    def filter(self, has_text=None):
-        correspondants = self.libelles
-        if has_text is not None:
-            correspondants = [libelle for libelle in self.libelles if has_text.search(libelle)]
-        return LocatorOptionRecouverteFactice(self.page, correspondants)
+def _carte_cours(id_site: str, titre: str) -> str:
+    """Une carte de cours minimale, dans la forme reelle relevee sur le
+    tableau de bord (voir docs/api-monportail.md)."""
+    return (
+        '<li class="mpo-gabarit-item-liste-cours">'
+        '<h4 class="mpo-gabarit-item-liste-cours__titre">'
+        f'<a href="https://sitescours.monportail.ulaval.ca/ena/site/accueil?idSite={id_site}">'
+        f'<span class="m-link__text">{titre}</span></a></h4>'
+        "</li>"
+    )
+
+
+def _accordeon_cours_suivis(cartes: str) -> str:
+    return f'<div class="mpo-accordeon-cours-suivis"><ul>{cartes}</ul></div>'
+
+
+# Piege reel constate en inspection directe : pendant le chargement, le
+# squelette occupe la place des vrais cours, mais les « Autres activites »
+# (formations institutionnelles, hors perimetre) sont deja affichees, avec
+# elles aussi un lien /ena/site/accueil?idSite=. Contenu volontairement SANS
+# accordeon-cours-suivis : une lecture qui se fierait a la seule presence
+# d'un lien idSite= y trouverait a tort un « cours ».
+HTML_AUTRES_ACTIVITES_SEULEMENT = (
+    '<div class="mpo-smart-boite-liste-cours__sites-hors-session"><ul>'
+    + _carte_cours("999999", "Formation EDI")
+    + "</ul></div>"
+)
+
+
+class LocatorChampSessionFactice:
+    """Simule input.m-dropdown__input : click() ouvre le filtre (ou echoue,
+    si le champ est configure indisponible) ; input_value() rend la valeur
+    actuellement affichee -- jamais lisible dans page.content(), voir
+    docs/api-monportail.md."""
+
+    def __init__(self, page):
+        self.page = page
+
+    def click(self, timeout=None):
+        if self.page.champ_indisponible:
+            raise ErreurDelaiPlaywright(f"Timeout {timeout}ms exceeded.")
+        self.page.filtre_ouvert = True
+
+    def input_value(self):
+        return self.page.valeur_champ
+
+
+class LocatorOptionUniqueFactice:
+    """Rendu par .nth(i) sur le Locator des options : cliquer declenche le
+    chargement de la session correspondante (voir
+    PageAvecFiltreSession._declencher_chargement)."""
+
+    def __init__(self, page, indice):
+        self.page = page
+        self.indice = indice
+
+    def click(self, **_kwargs):
+        self.page._declencher_chargement(self.page.libelles[self.indice])
+
+
+class LocatorOptionsFiltreFactice:
+    """Simule li[role=option].m-dropdown-item, une fois le filtre ouvert."""
+
+    def __init__(self, page):
+        self.page = page
 
     @property
     def first(self):
-        page = self.page
-        libelles = self.libelles
+        return self
 
-        class LienRecouvert:
-            def click(self, **_kwargs):
-                raise ErreurPlaywright(
-                    'Timeout 5000ms exceeded. <div role="listbox" '
-                    'class="mpo-deroulant-bouton"> intercepts pointer events'
-                )
+    def wait_for(self, timeout=None):
+        if not self.page.filtre_ouvert or self.page._nombre_options_presentes == 0:
+            raise ErreurDelaiPlaywright(f"Timeout {timeout}ms exceeded.")
 
-            def dispatch_event(self, _type):
-                if not libelles:
-                    raise ErreurDelaiPlaywright("Timeout 5000ms exceeded.")
-                page.session_selectionnee = libelles[0].strip()
-
-        return LienRecouvert()
+    def nth(self, indice):
+        return LocatorOptionUniqueFactice(self.page, indice)
 
 
-class PageAvecPremiereOptionRecouverte(PageAvecSelecteurSessions):
-    def locator(self, selecteur):
-        if selecteur == Ena.SELECTEUR_OPTIONS_SESSIONS:
-            return LocatorOptionRecouverteFactice(self, self.libelles_sessions)
-        return super().locator(selecteur)
+class LocatorTextesOptionsFactice:
+    """Simule span.m-dropdown-item__element-text, a l'interieur de chaque
+    option : peut rendre [] meme si des options existent (li presents), pour
+    simuler un marquage change qui casse seulement l'extraction du texte."""
+
+    def __init__(self, page):
+        self.page = page
+
+    def all_text_contents(self):
+        return list(self.page.libelles) if self.page.filtre_ouvert else []
 
 
-def test_une_option_recouverte_par_le_bouton_est_quand_meme_cliquee():
-    # Incident reel : la session la plus recente, premiere du panneau, etait
-    # perdue parce que le bouton du selecteur recouvrait son point de clic.
-    # Sans le repli, la session entiere est sautee -- sans consequence quand
-    # elle est vide, mais tout son contenu serait perdu sinon.
-    page = PageAvecPremiereOptionRecouverte(
-        ["Hiver 2027", "Hiver 2026"],
-        html_par_session={"Hiver 2027": "<html>cours de Hiver 2027</html>"},
-    )
-    session_navigateur = SessionFactice({})
-    session_navigateur.page = page
-    ena = Ena(session_navigateur, imprimer=lambda _t: None)
+class LocatorSqueletteFactice:
+    def __init__(self, page):
+        self.page = page
 
-    ena._selectionner_session(Session(code="202701", libelle="Hiver 2027"))
-
-    assert page.session_selectionnee == "Hiver 2027"
+    def count(self):
+        return 1 if self.page.squelette_present else 0
 
 
-def test_le_repli_de_clic_est_annonce_dans_le_journal():
-    # Un repli silencieux masquerait que le DOM de la plateforme a bouge :
-    # l'operateur doit voir que le clic normal n'a pas suffi.
-    journal: list = []
-    page = PageAvecPremiereOptionRecouverte(
-        ["Hiver 2027"], html_par_session={"Hiver 2027": "<html></html>"}
-    )
-    session_navigateur = SessionFactice({})
-    session_navigateur.page = page
-    ena = Ena(session_navigateur, imprimer=journal.append)
+class PageAvecFiltreSession(PageFactice):
+    """Simule le tableau de bord (/portail/) : filtre de session (champ
+    readonly + options) et squelette de chargement du bloc des cours.
 
-    ena._selectionner_session(Session(code="202701", libelle="Hiver 2027"))
+    `sondages_avant_disparition` regle combien d'appels a wait_for_timeout
+    sont necessaires, apres un clic sur une option, avant que le squelette ne
+    disparaisse (0 = disparait des le premier sondage, avant meme d'attendre
+    -- cas nominal rapide). None simule un chargement qui ne se termine
+    jamais (squelette present en permanence).
 
-    assert any("recouverte" in ligne for ligne in journal)
-    assert any("intercepts pointer events" in ligne for ligne in journal)
+    `html_pendant_chargement`, quand fourni, est ce que rend content() tant
+    que le squelette est present -- sert a reproduire le piege des
+    « Autres activites » deja affichees pendant le chargement des cours.
+    """
 
+    def __init__(
+        self,
+        libelles,
+        html_par_session=None,
+        valeur_initiale="",
+        sondages_avant_disparition=0,
+        champ_indisponible=False,
+        nombre_options_presentes=None,
+        html_pendant_chargement="<html></html>",
+    ):
+        super().__init__({})
+        self.libelles = libelles
+        self.html_par_session = html_par_session or {}
+        self.valeur_champ = valeur_initiale
+        self.filtre_ouvert = False
+        self.squelette_present = False
+        self._sondages_avant_disparition = sondages_avant_disparition
+        self._sondages_restants = None
+        self.champ_indisponible = champ_indisponible
+        self._nombre_options_presentes = (
+            len(libelles) if nombre_options_presentes is None else nombre_options_presentes
+        )
+        self._html_pendant_chargement = html_pendant_chargement
+        self.nombre_sondages = 0
 
-def test_le_clic_normal_reste_le_chemin_par_defaut():
-    # Contre-epreuve : quand rien ne recouvre l'option, aucun repli ne doit
-    # se declencher et rien ne doit apparaitre au journal.
-    journal: list = []
-    page = PageAvecSelecteurSessions(
-        ["Hiver 2026"], html_par_session={"Hiver 2026": "<html></html>"}
-    )
-    session_navigateur = SessionFactice({})
-    session_navigateur.page = page
-    ena = Ena(session_navigateur, imprimer=journal.append)
+    def _declencher_chargement(self, libelle: str) -> None:
+        self.valeur_champ = libelle
+        if self._sondages_avant_disparition is None:
+            self.squelette_present = True
+            self._sondages_restants = None
+        else:
+            self._sondages_restants = self._sondages_avant_disparition
+            self.squelette_present = self._sondages_restants > 0
 
-    ena._selectionner_session(Session(code="202601", libelle="Hiver 2026"))
-
-    assert page.session_selectionnee == "Hiver 2026"
-    assert journal == []
-
-
-class PageAvecCartesEnRetard(PageAvecSelecteurSessions):
-    """Reproduit l'incident reel : le bouton du selecteur confirme la
-    session, mais les cartes de cours n'apparaissent que plusieurs sondages
-    plus tard. Chaque wait_for_timeout fait avancer l'horloge simulee."""
-
-    def __init__(self, libelles, html_par_session, sondages_avant_rendu):
-        super().__init__(libelles, html_par_session)
-        self._restant = sondages_avant_rendu
-        self.attente_ms = 0
-
-    def wait_for_timeout(self, ms):
-        self.attente_ms += ms
-        if self.session_selectionnee is not None and self._restant > 0:
-            self._restant -= 1
-
-    def _cartes_rendues(self):
-        return self.session_selectionnee is not None and self._restant == 0
+    def wait_for_timeout(self, _ms):
+        self.nombre_sondages += 1
+        if self._sondages_restants is None:
+            return
+        if self._sondages_restants > 0:
+            self._sondages_restants -= 1
+        if self._sondages_restants == 0:
+            self.squelette_present = False
 
     def locator(self, selecteur):
-        from extracteur.ena import SELECTEUR_CARTE_COURS
-
-        if selecteur == SELECTEUR_CARTE_COURS:
-            html = self.html_par_session.get(self.session_selectionnee, "")
-            return LocatorFactice(html.count("/ena/site/accueil") if self._cartes_rendues() else 0)
-        return super().locator(selecteur)
+        if selecteur == "a[href*='/ena/site/']":
+            return LocatorFactice(1)
+        if selecteur == SELECTEUR_CHAMP_SESSION:
+            return LocatorChampSessionFactice(self)
+        if selecteur == f"{SELECTEUR_OPTION_SESSION} .{CLASSE_TEXTE_OPTION_SESSION}":
+            return LocatorTextesOptionsFactice(self)
+        if selecteur == SELECTEUR_OPTION_SESSION:
+            return LocatorOptionsFiltreFactice(self)
+        if selecteur == SELECTEUR_SQUELETTES_CHARGEMENT:
+            return LocatorSqueletteFactice(self)
+        return LocatorFactice(0)
 
     def content(self):
-        if not self._cartes_rendues():
-            return "<html>liste en cours de chargement</html>"
-        return super().content()
+        if self.squelette_present:
+            return self._html_pendant_chargement
+        return self.html_par_session.get(self.valeur_champ, "<html></html>")
 
 
-def test_sites_de_session_attend_que_les_cartes_de_cours_soient_rendues():
-    # Incident reel : les quatre cours d'Automne 2025 lus comme une session
-    # vide, parce que la liste etait lue 500 ms apres la confirmation du
-    # bouton, avant que les cartes ne soient rendues. Aucun echec n'avait ete
-    # consigne : quatre cours manquaient a l'archive en silence.
-    html = (
-        '<a href="/ena/site/accueil?idSite=1">A</a>'
-        '<a href="/ena/site/accueil?idSite=2">B</a>'
+def test_sessions_disponibles_ouvre_le_filtre_et_liste_les_sessions():
+    page = PageAvecFiltreSession(["Hiver 2026", "Automne 2025"])
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+
+    sessions = ena.sessions_disponibles()
+
+    assert URL.cours() in page.visitees
+    assert page.filtre_ouvert is True
+    assert [s.libelle for s in sessions] == ["Hiver 2026", "Automne 2025"]
+    assert [s.code for s in sessions] == ["202601", "202509"]
+
+
+def test_sessions_disponibles_leve_si_le_champ_n_est_jamais_ouvrable():
+    # Panne totale du filtre : ni l'un ni l'autre n'est tolere en silence,
+    # une session ainsi ratee disparaitrait de l'enumeration sans le moindre
+    # signe.
+    page = PageAvecFiltreSession(["Hiver 2026"], champ_indisponible=True)
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+
+    with pytest.raises(SelecteurSessionsIndisponible):
+        ena.sessions_disponibles()
+
+
+def test_sessions_disponibles_leve_si_aucune_option_n_apparait():
+    page = PageAvecFiltreSession([])
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+
+    with pytest.raises(SelecteurSessionsIndisponible):
+        ena.sessions_disponibles()
+
+
+def test_sessions_disponibles_leve_si_aucune_option_n_est_lisible():
+    # Le filtre s'ouvre bel et bien (des <li> existent), mais aucun n'expose
+    # le texte attendu (span.m-dropdown-item__element-text) : marquage
+    # change. Le pire mode de defaillance du projet est une liste vide rendue
+    # en silence -- on leve donc bruyamment plutot que de deviner.
+    page = PageAvecFiltreSession([], nombre_options_presentes=3)
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+
+    with pytest.raises(SelecteurSessionsIllisible):
+        ena.sessions_disponibles()
+
+
+def test_sites_de_session_selectionne_la_session_puis_extrait_les_cours():
+    html = _accordeon_cours_suivis(_carte_cours("100001", "Éthique"))
+    page = PageAvecFiltreSession(["Hiver 2026"], {"Hiver 2026": html})
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+    session = Session(code="202601", libelle="Hiver 2026")
+
+    cours = ena.sites_de_session(session)
+
+    assert page.valeur_champ == "Hiver 2026"
+    assert [c.id_site for c in cours] == ["100001"]
+    assert cours[0].session == session
+
+
+def test_sites_de_session_sans_cours_rend_une_liste_vide():
+    # La session courante de l'utilisateur, pas encore remplie, est un
+    # exemple reel de session vide : une fois le changement confirme, ce
+    # n'est pas une erreur.
+    html = '<div class="mpo-sites-lies-session mpo-smart-boite-liste-cours__cours-lies-session"></div>'
+    page = PageAvecFiltreSession(["Hiver 2026"], {"Hiver 2026": html})
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+
+    cours = ena.sites_de_session(Session(code="202601", libelle="Hiver 2026"))
+
+    assert cours == []
+
+
+def test_sites_de_session_leve_si_la_session_est_introuvable():
+    # Une session absente du filtre est une anomalie : archiver les cours
+    # d'une autre session sous le nom demande serait une corruption de
+    # donnees pire qu'un arret franc.
+    page = PageAvecFiltreSession(["Hiver 2026"])
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+    session_inexistante = Session(code="202509", libelle="Automne 2025")
+
+    with pytest.raises(SelecteurSessionsIllisible):
+        ena.sites_de_session(session_inexistante)
+
+
+def test_sites_de_session_leve_si_le_chargement_ne_se_termine_jamais():
+    # Le squelette de chargement ne disparait jamais : une session reellement
+    # vide et un echec de chargement sont sinon indiscernables. On leve donc
+    # bruyamment plutot que de lire une liste de cours tronquee ou fausse.
+    html = _accordeon_cours_suivis(_carte_cours("1", "A"))
+    page = PageAvecFiltreSession(
+        ["Hiver 2023"], {"Hiver 2023": html}, sondages_avant_disparition=None
     )
-    page = PageAvecCartesEnRetard(["Automne 2025"], {"Automne 2025": html}, sondages_avant_rendu=6)
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+
+    with pytest.raises(SelecteurSessionsIndisponible):
+        ena.sites_de_session(Session(code="202301", libelle="Hiver 2023"))
+
+
+def test_sites_de_session_attend_la_disparition_du_squelette_avant_de_lire_les_cours():
+    # Chronologie mesuree en inspection reelle (sondage aux 100 ms) : le
+    # squelette reste present plusieurs sondages apres que le champ affiche
+    # deja la nouvelle session. Une lecture qui ne sonderait qu'une fois
+    # tomberait sur un contenu pas encore pret.
+    html = _accordeon_cours_suivis(
+        _carte_cours("1", "A") + _carte_cours("2", "B") + _carte_cours("3", "C") + _carte_cours("4", "D")
+    )
+    page = PageAvecFiltreSession(
+        ["Automne 2025"], {"Automne 2025": html}, sondages_avant_disparition=6
+    )
     ena = Ena(SessionFactice({}))
     ena.session.page = page
 
     cours = ena.sites_de_session(Session(code="202509", libelle="Automne 2025"))
 
-    assert sorted(c.id_site for c in cours) == ["1", "2"]
+    assert sorted(c.id_site for c in cours) == ["1", "2", "3", "4"]
+    assert page.nombre_sondages >= 6
 
 
-def test_sites_de_session_vide_attend_le_delai_complet_avant_de_conclure():
-    # Une session reellement vide ne doit etre acceptee comme telle qu'apres
-    # le delai complet, jamais sur une premiere lecture.
-    from extracteur.ena import DELAI_LISTE_COURS_VIDE_MS
-
-    page = PageAvecCartesEnRetard(["Automne 2026"], {}, sondages_avant_rendu=0)
+def test_sites_de_session_ignore_les_autres_activites_deja_affichees_pendant_le_chargement():
+    # Piege reel constate en inspection directe : pendant le chargement, le
+    # squelette « Chargement de la liste de cours » occupe la place des
+    # cours, mais les « Autres activites » sont deja affichees -- avec elles
+    # aussi un lien /ena/site/accueil?idSite=. Le signal de fin de chargement
+    # (squelette absent, jamais la seule presence d'une carte) empeche de
+    # confondre ce contenu transitoire avec les vrais cours de la session.
+    html_final = _accordeon_cours_suivis(_carte_cours("100002", "Analyse de donnees"))
+    page = PageAvecFiltreSession(
+        ["Automne 2025"],
+        {"Automne 2025": html_final},
+        sondages_avant_disparition=3,
+        html_pendant_chargement=HTML_AUTRES_ACTIVITES_SEULEMENT,
+    )
     ena = Ena(SessionFactice({}))
     ena.session.page = page
 
-    cours = ena.sites_de_session(Session(code="202609", libelle="Automne 2026"))
+    cours = ena.sites_de_session(Session(code="202509", libelle="Automne 2025"))
 
-    assert cours == []
-    assert page.attente_ms >= DELAI_LISTE_COURS_VIDE_MS
+    # Le seul cours rendu est celui de la session, jamais l'activite hors
+    # perimetre entrevue pendant le chargement.
+    assert [c.id_site for c in cours] == ["100002"]
+    assert page.nombre_sondages >= 3
+
+
+class PageAvecRenduDiffere(PageAvecFiltreSession):
+    """Reproduit la fenetre mesuree de 0 a ~100 ms apres le clic sur une
+    option : le clic est pris en compte, mais le rendu n'a pas encore eu
+    lieu. Le champ affiche encore l'ANCIENNE session, l'ancienne liste est
+    encore a l'ecran, et aucun squelette n'est encore apparu."""
+
+    def __init__(self, *args, sondages_avant_rendu=2, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._sondages_avant_rendu = sondages_avant_rendu
+        self._avant_rendu = None
+        self._libelle_en_attente = None
+
+    def _declencher_chargement(self, libelle):
+        self._libelle_en_attente = libelle
+        self._avant_rendu = self._sondages_avant_rendu
+
+    def wait_for_timeout(self, ms):
+        if self._avant_rendu is not None:
+            self.nombre_sondages += 1
+            self._avant_rendu -= 1
+            if self._avant_rendu <= 0:
+                self._avant_rendu = None
+                PageAvecFiltreSession._declencher_chargement(self, self._libelle_en_attente)
+            return
+        super().wait_for_timeout(ms)
+
+
+def test_sites_de_session_ne_lit_jamais_l_ancienne_session_avant_le_rendu():
+    # Juste apres le clic, avant le rendu, il n'y a pas encore de squelette :
+    # l'absence de squelette seule ferait lire la page tout de suite -- et
+    # archiver les cours de la session PRECEDENTE sous le nom de la nouvelle.
+    # Une corruption silencieuse, pire qu'une liste vide. Seule la valeur du
+    # champ, egale a la session demandee, prouve que le rendu a eu lieu.
+    page = PageAvecRenduDiffere(
+        ["Hiver 2026", "Automne 2025"],
+        {
+            "Hiver 2026": _accordeon_cours_suivis(_carte_cours("91", "Cours de Hiver")),
+            "Automne 2025": _accordeon_cours_suivis(_carte_cours("7", "Cours d'Automne")),
+        },
+        valeur_initiale="Hiver 2026",
+        sondages_avant_disparition=3,
+        sondages_avant_rendu=2,
+    )
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+
+    cours = ena.sites_de_session(Session(code="202509", libelle="Automne 2025"))
+
+    assert [c.id_site for c in cours] == ["7"]
+    assert all(c.session.libelle == "Automne 2025" for c in cours)
 
