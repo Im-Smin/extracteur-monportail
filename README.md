@@ -13,6 +13,27 @@ le tout dans un `.zip`.
 > vous-même dans la fenêtre du navigateur, exactement comme d'habitude, MFA
 > compris. Le programme ne lit que les témoins de session de cette fenêtre-là.
 
+## Télécharger (Windows, sans rien installer)
+
+**[⬇ Télécharger Archiveur-monPortail.exe](https://github.com/Im-Smin/extracteur-monportail/releases/latest/download/Archiveur-monPortail.exe)**
+(dernière version ; notes et historique sur la page
+[Releases](https://github.com/Im-Smin/extracteur-monportail/releases)).
+Rangez-le où vous voulez, puis double-cliquez dessus. Python n'est pas
+nécessaire : le navigateur et tout le reste sont inclus dans ce fichier unique
+(environ 250 Mo).
+
+- **Windows peut afficher « Windows a protégé votre ordinateur ».** L'exécutable
+  n'est pas signé numériquement. Cliquez sur *Informations complémentaires*, puis
+  *Exécuter quand même*. Le code source complet est ici, et l'exécutable est
+  construit à partir de lui (voir [Construire l'exécutable](#construire-lexécutable)).
+- **Le tout premier lancement est lent** : votre antivirus analyse d'abord ce
+  fichier inconnu (jusqu'à une minute sans rien afficher), puis l'Archiveur
+  prépare son navigateur une fois pour toutes (message « Première utilisation »,
+  environ 30 secondes). Les lancements suivants prennent quelques secondes.
+- Le navigateur préparé occupe environ 530 Mo dans
+  `%LOCALAPPDATA%\Archiveur monPortail`. Une fois votre archive terminée, vous
+  pouvez supprimer ce dossier et l'exécutable : rien d'autre n'est installé.
+
 ---
 
 ## Ce qu'il récupère
@@ -49,29 +70,11 @@ n'existe sous forme d'aucun fichier téléchargeable.
   seuls les cours sont traités ;
 - les sections « Matériel didactique », « Médiagraphie et annexes » et
   « Bibliographie », qui ne listent que des renvois vers des ouvrages.
+- les cours hébergés hors de monPortail (par exemple sur Brio) : ils sont
+  signalés dans `_rapport.html`, avec leur adresse, pour être récupérés à la
+  main.
 
 ---
-
-## Télécharger (Windows, sans rien installer)
-
-**[⬇ Télécharger Archiveur-monPortail.exe](https://github.com/Im-Smin/extracteur-monportail/releases/latest/download/Archiveur-monPortail.exe)**
-(dernière version ; notes et historique sur la page
-[Releases](https://github.com/Im-Smin/extracteur-monportail/releases)).
-Rangez-le où vous voulez, puis double-cliquez dessus. Python n'est pas
-nécessaire : le navigateur et tout le reste sont inclus dans ce fichier unique
-(environ 250 Mo).
-
-- **Windows peut afficher « Windows a protégé votre ordinateur ».** L'exécutable
-  n'est pas signé numériquement. Cliquez sur *Informations complémentaires*, puis
-  *Exécuter quand même*. Le code source complet est ici, et l'exécutable est
-  construit à partir de lui (voir [Construire l'exécutable](#construire-lexécutable)).
-- **Le tout premier lancement est lent** : votre antivirus analyse d'abord ce
-  fichier inconnu (jusqu'à une minute sans rien afficher), puis l'Archiveur
-  prépare son navigateur une fois pour toutes (message « Première utilisation »,
-  environ 30 secondes). Les lancements suivants prennent quelques secondes.
-- Le navigateur préparé occupe environ 530 Mo dans
-  `%LOCALAPPDATA%\Archiveur monPortail`. Une fois votre archive terminée, vous
-  pouvez supprimer ce dossier et l'exécutable : rien d'autre n'est installé.
 
 ## Installation depuis le code source
 
@@ -87,6 +90,8 @@ python -m playwright install chromium
 ## Utilisation
 
 ### Fenêtre graphique
+
+Double-cliquez sur l'exécutable, ou, depuis le code source :
 
 ```bash
 python -m extracteur
@@ -126,7 +131,7 @@ plateforme.
 
 ---
 
-## Trois choses à savoir avant de lancer
+## Quatre choses à savoir avant de lancer
 
 **L'authentification est redemandée à chaque lancement.** Aucun profil de
 navigateur n'est conservé. C'est délibéré : un profil persistant s'est corrompu
