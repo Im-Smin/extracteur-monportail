@@ -17,6 +17,7 @@ from extracteur.ena import (
     SelecteurSessionsIndisponible,
     TropDePagesDansUnModule,
 )
+from extracteur.extraction import ids_cours_suivis_depuis_reponse, session_depuis_libelle
 from extracteur.modele import Cours, Evaluation, Module, Session
 from extracteur.telechargement import SessionExpiree
 
@@ -1288,7 +1289,9 @@ class LocatorOptionUniqueFactice:
         self.indice = indice
 
     def click(self, **_kwargs):
-        self.page._declencher_chargement(self.page.libelles[self.indice])
+        libelle = self.page.libelles[self.indice]
+        self.page._emettre_reponse_liste_cours(libelle)
+        self.page._declencher_chargement(libelle)
 
 
 class LocatorOptionsFiltreFactice:
@@ -1327,6 +1330,40 @@ class LocatorSqueletteFactice:
 
     def count(self):
         return 1 if self.page.squelette_present else 0
+
+
+class ReponseFactice:
+    def __init__(self, url, donnees):
+        self.url = url
+        self._donnees = donnees
+
+    def json(self):
+        return self._donnees
+
+
+class AttenteReponseFactice:
+    """Simule le gestionnaire de contexte rendu par page.expect_response :
+    a la sortie du bloc, leve un delai depasse si aucune reponse retenue par
+    le predicat n'a ete emise, comme Playwright."""
+
+    def __init__(self, page, predicat):
+        self.page = page
+        self.predicat = predicat
+        self.value = None
+
+    def __enter__(self):
+        self.page._attente_reponse = self
+        return self
+
+    def __exit__(self, type_exception, *_):
+        self.page._attente_reponse = None
+        if type_exception is None and self.value is None:
+            raise ErreurDelaiPlaywright("Timeout exceeded while waiting for event \"response\"")
+        return False
+
+
+def _ids_dans_html(html: str) -> list:
+    return re.findall(r"accueil\?idSite=(\d+)", html)
 
 
 class PageAvecFiltreSession(PageFactice):
@@ -1368,6 +1405,39 @@ class PageAvecFiltreSession(PageFactice):
         )
         self._html_pendant_chargement = html_pendant_chargement
         self.nombre_sondages = 0
+        self._attente_reponse = None
+        # Reponse du serveur a emettre pour chaque libelle, si differente de
+        # celle deduite de html_par_session (cas d'une reponse d'une autre
+        # session, ou d'aucune reponse du tout : valeur None).
+        self.reponses_forcees = {}
+
+    def expect_response(self, predicat, timeout=None):
+        return AttenteReponseFactice(self, predicat)
+
+    def _emettre_reponse_liste_cours(self, libelle: str) -> None:
+        """Forme reelle relevee en inspection : codesession dans l'URL,
+        codeSession et sitesSuivis dans le corps, les formations
+        institutionnelles (typeSite FORMATION) melees aux cours."""
+        code = session_depuis_libelle(libelle).code
+        if libelle in self.reponses_forcees:
+            forcee = self.reponses_forcees[libelle]
+            if forcee is None:
+                return
+            code, donnees = forcee
+        else:
+            ids = _ids_dans_html(self.html_par_session.get(libelle, ""))
+            donnees = {
+                "codeSession": code,
+                "sitesSuivis": [{"idSite": i, "typeSite": "COURS"} for i in ids]
+                + [{"idSite": "999999", "typeSite": "FORMATION"}],
+            }
+        url = (
+            "https://sitescours.monportail.ulaval.ca/services/listecours/cours/"
+            f"?codesession={code}&degreinformation=SIMPLE&idutilisateurena=1"
+        )
+        reponse = ReponseFactice(url, donnees)
+        if self._attente_reponse is not None and self._attente_reponse.predicat(reponse):
+            self._attente_reponse.value = reponse
 
     def _declencher_chargement(self, libelle: str) -> None:
         self.valeur_champ = libelle
@@ -1604,4 +1674,114 @@ def test_sites_de_session_ne_lit_jamais_l_ancienne_session_avant_le_rendu():
 
     assert [c.id_site for c in cours] == ["7"]
     assert all(c.session.libelle == "Automne 2025" for c in cours)
+
+
+class PageAvecAncienneListeAffichee(PageAvecFiltreSession):
+    """Chronologie reelle mesuree le 29 septembre 2026, apres un clic sur
+    « Automne 2022 » alors que « Ete 2023 » etait affichee :
+        43 ms   champ = Automne 2022, AUCUN squelette, ANCIENNES cartes
+        154 ms  champ = Automne 2022, squelette present, 0 carte
+        1755 ms champ = Automne 2022, squelette absent, cartes finales
+    Pendant `sondages_ancienne_liste` sondages, la page affiche donc deja la
+    nouvelle session dans le champ, sans squelette, avec la liste de la
+    session precedente."""
+
+    def __init__(self, *args, sondages_ancienne_liste=2, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._sondages_ancienne_liste = sondages_ancienne_liste
+        self._html_ancien = None
+        self._restants_ancienne_liste = 0
+
+    def _declencher_chargement(self, libelle):
+        self._html_ancien = self.html_par_session.get(self.valeur_champ, "<html></html>")
+        self._restants_ancienne_liste = self._sondages_ancienne_liste
+        self.valeur_champ = libelle
+        self.squelette_present = False
+
+    def wait_for_timeout(self, ms):
+        if self._restants_ancienne_liste > 0:
+            self.nombre_sondages += 1
+            self._restants_ancienne_liste -= 1
+            if self._restants_ancienne_liste == 0:
+                PageAvecFiltreSession._declencher_chargement(self, self.valeur_champ)
+            return
+        super().wait_for_timeout(ms)
+
+    def content(self):
+        if self._restants_ancienne_liste > 0:
+            return self._html_ancien
+        return super().content()
+
+
+def test_sites_de_session_ne_lit_jamais_la_liste_de_la_session_precedente():
+    # Incident reel du 29 septembre 2026 : les cours d'Automne 2022 ont ete
+    # archives sous « 2023-1 Hiver ». Juste apres le clic, le champ affiche
+    # DEJA la nouvelle session, sans squelette, mais la liste a l'ecran est
+    # encore celle de la session precedente. Le couple « valeur du champ +
+    # absence de squelette » concluait a tort des cet instant.
+    page = PageAvecAncienneListeAffichee(
+        ["Hiver 2023", "Automne 2022"],
+        {
+            "Automne 2022": _accordeon_cours_suivis(_carte_cours("11", "Dessin") + _carte_cours("12", "Maths")),
+            "Hiver 2023": _accordeon_cours_suivis(_carte_cours("21", "Python")),
+        },
+        valeur_initiale="Automne 2022",
+        sondages_avant_disparition=3,
+        sondages_ancienne_liste=2,
+    )
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+
+    cours = ena.sites_de_session(Session(code="202301", libelle="Hiver 2023"))
+
+    assert [c.id_site for c in cours] == ["21"]
+
+
+def test_sites_de_session_leve_si_le_serveur_ne_repond_jamais_pour_la_session():
+    # Sans la reponse du serveur pour la session demandee, rien ne prouve que
+    # la liste affichee lui appartient : on leve plutot que de deviner.
+    html = _accordeon_cours_suivis(_carte_cours("1", "A"))
+    page = PageAvecFiltreSession(["Hiver 2023"], {"Hiver 2023": html})
+    page.reponses_forcees["Hiver 2023"] = None
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+
+    with pytest.raises(SelecteurSessionsIndisponible):
+        ena.sites_de_session(Session(code="202301", libelle="Hiver 2023"))
+
+
+def test_sites_de_session_leve_si_la_liste_affichee_ne_correspond_jamais_au_serveur():
+    # Le serveur annonce deux cours, la page n'en affiche qu'un seul, a
+    # demeure : un cours manquerait en silence a l'archive.
+    html = _accordeon_cours_suivis(_carte_cours("1", "A"))
+    page = PageAvecFiltreSession(["Hiver 2023"], {"Hiver 2023": html})
+    page.reponses_forcees["Hiver 2023"] = (
+        "202301",
+        {"codeSession": "202301", "sitesSuivis": [{"idSite": "1", "typeSite": "COURS"}, {"idSite": "2", "typeSite": "COURS"}]},
+    )
+    ena = Ena(SessionFactice({}))
+    ena.session.page = page
+
+    with pytest.raises(SelecteurSessionsIndisponible):
+        ena.sites_de_session(Session(code="202301", libelle="Hiver 2023"))
+
+
+def test_ids_cours_suivis_ne_retient_que_les_cours_de_la_session():
+    donnees = {
+        "codeSession": "202209",
+        "sitesSuivis": [
+            {"idSite": "11", "typeSite": "COURS"},
+            {"idSite": "12", "typeSite": "COURS"},
+            {"idSite": "99", "typeSite": "FORMATION"},
+        ],
+    }
+
+    assert ids_cours_suivis_depuis_reponse(donnees, "202209") == {"11", "12"}
+
+
+def test_ids_cours_suivis_refuse_une_reponse_d_une_autre_session():
+    donnees = {"codeSession": "202305", "sitesSuivis": [{"idSite": "11", "typeSite": "COURS"}]}
+
+    with pytest.raises(ValueError):
+        ids_cours_suivis_depuis_reponse(donnees, "202209")
 

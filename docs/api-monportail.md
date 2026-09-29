@@ -674,29 +674,54 @@ correspond déjà.
 - 13 options relevées, de `Hiver 2027` à `Automne 2022`. Cliquer une option
   remplace la sélection, malgré `aria-multiselectable="true"` sur la liste.
 
-### Signal de fin de chargement : squelette, jamais la seule présence de cartes
+### Signal de fin de chargement : la réponse du serveur, jamais un minutage
 
-Chronologie mesurée (sondage aux 100 ms) après un clic sur une option :
+Chronologie mesurée le 29 septembre 2026 (sondage à chaque rendu) après un
+clic sur une option :
 
 | t | valeur du champ | squelette | cartes de cours |
 |---|---|---|---|
-| 0 ms | ancienne session | absent | anciennes cartes |
-| 101 ms | **nouvelle session** | **présent** | 0 |
-| 1293–1493 ms | nouvelle session | absent | cartes finales |
+| 8 ms | ancienne session | absent | anciennes cartes |
+| 43 ms | **nouvelle session** | **absent** | **anciennes cartes** |
+| 152 ms | départ de `GET /services/listecours/cours/?codesession=…` | | |
+| 154 ms | nouvelle session | présent | 0 |
+| 487 ms | réponse de cette requête | | |
+| 1755 ms | nouvelle session | absent | cartes finales |
 
-La valeur du champ et le squelette basculent dans le même rendu : le seul
-signal fiable est **valeur du champ == session demandée ET aucun squelette
-présent** (`.mpo--squelette-chargement`,
+Pendant environ 110 ms, « valeur du champ == session demandée ET aucun
+squelette » est **vrai alors que les cartes affichées sont celles de la
+session précédente**. Un relevé antérieur, sondé aux 100 ms, avait manqué
+cette fenêtre. Ce couple de signaux, seul retenu jusque-là, a fait ranger
+en conditions réelles les cours d'une session sous le nom de la suivante.
+
+Le service `https://sitescours.monportail.ulaval.ca/services/listecours/cours/`
+(paramètres `codesession=AAAAMM`, `degreinformation=SIMPLE`,
+`idutilisateurena=…`) est appelé à chaque sélection, y compris quand on
+reclique la session déjà affichée. Sa réponse JSON porte `codeSession` et
+`sitesSuivis[]` (`idSite`, `typeSite`, `codeCoursPrincipal`, …). Sur sept
+sessions vérifiées, les cartes des cours suivis portent exactement les
+`idSite` des entrées `typeSite == "COURS"` ; les entrées `FORMATION`
+(identiques d'une session à l'autre) ne sont jamais affichées parmi les
+cours, et les cours hébergés hors monPortail (Brio) n'ont pas d'`idSite`.
+
+`Ena._selectionner_session` capture donc cette réponse avec le clic
+(`page.expect_response`, filtrée sur `codesession`), et
+`Ena._attendre_chargement_termine` n'accepte la page que lorsque, au même
+sondage : valeur du champ == session demandée, aucun squelette
+(`.mpo--squelette-chargement`,
 `.mpo-smart-boite-liste-cours__squelette-chargement-sessions`, cherchés dans
-`.mpo-smart-boite-liste-cours__boite.mpo--sites-lies-session`). Si ce signal
-ne vient pas dans un délai généreux (30 s), `Ena` lève
-`SelecteurSessionsIndisponible` : la session devient un échec isolé, jamais
-une liste vide.
+`.mpo-smart-boite-liste-cours__boite.mpo--sites-lies-session`), **et idSite
+affichés == idSite annoncés par le serveur**. Cette dernière condition est
+une preuve de contenu : aucune liste d'une autre session ne peut la
+satisfaire. Si la réponse ne vient pas, porte une autre session, ou si la
+page ne s'y conforme pas dans un délai généreux (30 s), `Ena` lève
+`SelecteurSessionsIndisponible` ou `SelecteurSessionsIllisible` : la
+session devient un échec isolé, jamais une liste fausse ou vide.
 
 **Piège vérifié en test** : pendant le chargement, les « Autres activités »
 (hors périmètre) sont déjà affichées, avec elles aussi des liens
 `/ena/site/accueil?idSite=`. Une détection fondée sur la seule présence de
-liens `idSite=` conclurait à tort que le chargement est terminé dès 101 ms.
+liens `idSite=` conclurait à tort que le chargement est terminé avant la fin.
 `extraction.cours_depuis_html` ne lit que l'accordéon `mpo-accordeon-cours-suivis`
 (jamais un balayage global de liens), et `Ena._attendre_chargement_termine`
 ne conclut jamais sur la seule présence de cartes : les deux mécanismes se

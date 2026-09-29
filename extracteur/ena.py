@@ -8,13 +8,14 @@ pour attraper ce qui sort du schema.
 
 import unicodedata
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from playwright.sync_api import Error as ErreurPlaywright
 from playwright.sync_api import TimeoutError as ErreurDelaiPlaywright
 
 from extracteur.auth import est_page_authentifiee
 from extracteur.extraction import (
+    ids_cours_suivis_depuis_reponse,
     cours_depuis_html,
     depots_depuis_html,
     est_commande_adf,
@@ -172,22 +173,47 @@ SELECTEUR_SQUELETTES_CHARGEMENT = (
     f"{BLOC_LISTE_COURS} .mpo-smart-boite-liste-cours__squelette-chargement-sessions"
 )
 
-# Chronologie mesuree en inspection reelle (sondage aux 100 ms) apres un clic
-# sur une option du filtre de session :
-#   0 ms      valeur = ancienne session, squelette absent, anciennes cartes
-#   101 ms    valeur = NOUVELLE session, squelette PRESENT, 0 carte
-#   1293-1493 ms  valeur = nouvelle session, squelette absent, cartes finales
-# La valeur du champ et le squelette basculent donc dans le MEME rendu :
-# lire la seule valeur du champ ferait conclure a tort que le chargement est
-# termine des 101 ms, pendant que le squelette masque encore les vrais cours.
-# Piege reel constate a ce meme instant : les « Autres activites » (formations
-# institutionnelles, hors perimetre) sont deja affichees, avec elles aussi des
-# liens idSite= -- une detection fondee sur la seule presence de cartes
-# tomberait dessus. Le seul signal retenu est donc : valeur du champ ==
-# session demandee ET aucun squelette present dans BLOC_LISTE_COURS. Voir
-# _attendre_chargement_termine.
+# Chronologie mesuree en inspection reelle (sondage a chaque rendu, 29
+# septembre 2026) apres un clic sur « Automne 2022 » alors que « Ete 2023 »
+# etait affichee :
+#   43 ms     valeur = NOUVELLE session, squelette ABSENT, ANCIENNES cartes
+#   152 ms    depart de la requete /services/listecours/cours/?codesession=
+#   154 ms    valeur = nouvelle session, squelette present, 0 carte
+#   487 ms    reponse de cette requete
+#   1755 ms   valeur = nouvelle session, squelette absent, cartes finales
+# Pendant environ 110 ms, le couple « valeur du champ == session demandee ET
+# aucun squelette » est donc VRAI alors que la liste affichee est celle de la
+# session PRECEDENTE. Ce couple, seul signal retenu jusque-la, a fait
+# archiver les cours d'Automne 2022 sous « 2023-1 Hiver » lors d'un
+# archivage reel. Un releve anterieur (sondage aux 100 ms) etait tombe a
+# cote de cette fenetre et l'avait crue inexistante.
+#
+# Le signal retenu desormais ne depend d'aucun minutage : la reponse du
+# serveur pour la session demandee (codesession dans l'URL, codeSession dans
+# le corps) donne la liste exacte des idSite attendus, et l'on attend que les
+# cartes affichees portent exactement ces idSite -- en plus de la valeur du
+# champ et de l'absence de squelette. Verifie sur sept sessions reelles :
+# les cartes des cours suivis correspondent toujours aux entrees typeSite
+# COURS de cette reponse (les cours heberges hors monPortail n'ont pas
+# d'idSite, et les formations institutionnelles n'y sont jamais affichees).
+# Piege toujours present : les « Autres activites » (formations, hors
+# perimetre) portent elles aussi des liens idSite= ; cours_depuis_html ne lit
+# que l'accordeon des cours suivis. Voir _attendre_chargement_termine.
 DELAI_CHARGEMENT_SESSION_MS = 30_000
 INTERVALLE_SONDAGE_CHARGEMENT_MS = 200
+
+# Service qui alimente la liste des cours du tableau de bord, interroge a
+# chaque selection d'une session (y compris quand on reclique la session deja
+# affichee, constate en inspection reelle).
+CHEMIN_SERVICE_LISTE_COURS = "/services/listecours/cours/"
+
+
+def _est_reponse_liste_cours(url: str, code_session: str) -> bool:
+    parties = urlsplit(url)
+    return (
+        parties.path.endswith(CHEMIN_SERVICE_LISTE_COURS)
+        and parse_qs(parties.query).get("codesession") == [code_session]
+    )
 
 # Delai accorde a l'ouverture du filtre de session (clic sur le champ, puis
 # apparition d'au moins une option). Ce n'est PAS une simple ouverture de menu
@@ -353,10 +379,15 @@ class Ena:
             )
         return [session_depuis_libelle(libelle.strip()) for libelle in libelles]
 
-    def _selectionner_session(self, session: Session) -> None:
+    def _selectionner_session(self, session: Session) -> list[Cours]:
         """Ouvre le filtre de session, clique l'option de la session
         demandee, puis attend la confirmation du chargement (voir
-        _attendre_chargement_termine).
+        _attendre_chargement_termine), et rend les cours de la session.
+
+        La reponse du serveur a ce clic est capturee avec lui
+        (expect_response) : c'est elle qui dit quels cours la page doit
+        afficher. Leve SelecteurSessionsIndisponible si elle ne vient
+        pas, SelecteurSessionsIllisible si elle porte une autre session.
 
         Le tableau de bord se souvient de la derniere session choisie et
         l'affiche a nouveau a l'ouverture : cette selection est donc
@@ -378,54 +409,77 @@ class Ena:
             )
 
         options = self.session.page.locator(SELECTEUR_OPTION_SESSION)
-        options.nth(textes.index(libelle_demande)).click()
+        try:
+            with self.session.page.expect_response(
+                lambda reponse: _est_reponse_liste_cours(reponse.url, session.code),
+                timeout=DELAI_CHARGEMENT_SESSION_MS,
+            ) as attente:
+                options.nth(textes.index(libelle_demande)).click()
+            donnees = attente.value.json()
+        except (ErreurDelaiPlaywright, ErreurPlaywright) as erreur:
+            raise SelecteurSessionsIndisponible(
+                f"le serveur n'a jamais rendu la liste des cours de "
+                f"'{session.libelle}' (codesession={session.code}) dans le "
+                f"delai accorde ({DELAI_CHARGEMENT_SESSION_MS} ms)."
+            ) from erreur
+        try:
+            ids_attendus = ids_cours_suivis_depuis_reponse(donnees, session.code)
+        except (ValueError, AttributeError, TypeError) as erreur:
+            raise SelecteurSessionsIllisible(
+                f"reponse illisible pour la liste des cours de "
+                f"'{session.libelle}' : {erreur}"
+            ) from erreur
 
-        self._attendre_chargement_termine(session)
+        return self._attendre_chargement_termine(session, ids_attendus)
 
-    def _attendre_chargement_termine(self, session: Session) -> None:
-        """Attend que le filtre de session confirme reellement le passage a
-        `session`, apres le clic sur son option.
+    def _attendre_chargement_termine(self, session: Session, ids_attendus: set[str]) -> list[Cours]:
+        """Attend que la page affiche reellement les cours de `session`, et
+        les rend.
 
-        Signal de fin de chargement fiable, mesure en inspection reelle
-        (sondage aux 100 ms apres un clic) : la valeur du champ passe a la
-        session demandee ET le squelette de chargement disparait, dans le
-        MEME rendu (a 101 ms les deux sont deja vrais, respectivement faux ;
-        les cartes finales n'apparaissent qu'entre 1293 et 1493 ms). Se fier
-        a la seule valeur du champ conclurait donc a tort des 101 ms, pendant
-        que le squelette masque encore les vrais cours -- et pendant que les
-        « Autres activites » voisines, deja affichees a cet instant, portent
-        elles aussi des liens idSite= (voir DELAI_CHARGEMENT_SESSION_MS) :
-        un piege pour toute detection qui se fierait a la seule presence de
-        cartes plutot qu'a ce couple de signaux.
+        Trois conditions, toutes requises au meme sondage : la valeur du
+        champ est la session demandee, aucun squelette de chargement n'est
+        present, et les idSite des cartes de cours suivis sont EXACTEMENT
+        `ids_attendus` (lus dans la reponse du serveur pour cette session).
+        Les deux premieres seules ont ete prises en defaut en conditions
+        reelles : voir la chronologie au-dessus de
+        DELAI_CHARGEMENT_SESSION_MS. La troisieme est une preuve de contenu,
+        pas de minutage : aucune liste d'une autre session ne peut la
+        satisfaire, les idSite etant propres a chaque session.
+
+        Une session vide (ids_attendus vide) reste un resultat normal.
 
         La valeur du champ (input readonly) vit dans sa PROPRIETE `value`,
         jamais dans un attribut HTML : lue via input_value(), jamais dans
         page.content().
 
-        Leve SelecteurSessionsIndisponible si ce signal ne vient pas dans
-        DELAI_CHARGEMENT_SESSION_MS : une session reellement vide et un echec
-        de chargement sont sinon indiscernables, et lire le DOM dans cet etat
-        archiverait les cours d'une autre session sous le nom demande.
+        Leve SelecteurSessionsIndisponible si ces conditions ne sont pas
+        reunies dans DELAI_CHARGEMENT_SESSION_MS : lire la page dans cet
+        etat archiverait les cours d'une autre session sous le nom demande,
+        ou en omettrait en silence.
         """
         libelle_attendu = _normaliser_espaces(session.libelle)
         champ = self.session.page.locator(SELECTEUR_CHAMP_SESSION)
         squelettes = self.session.page.locator(SELECTEUR_SQUELETTES_CHARGEMENT)
 
+        ids_affiches: set[str] = set()
         temps_ecoule = 0
         while True:
             valeur = champ.input_value()
             if _normaliser_espaces(valeur) == libelle_attendu and squelettes.count() == 0:
-                return
+                cours = cours_depuis_html(self.session.page.content(), session)
+                ids_affiches = {c.id_site for c in cours if c.id_site}
+                if ids_affiches == ids_attendus:
+                    return cours
             if temps_ecoule >= DELAI_CHARGEMENT_SESSION_MS:
                 break
             self.session.page.wait_for_timeout(INTERVALLE_SONDAGE_CHARGEMENT_MS)
             temps_ecoule += INTERVALLE_SONDAGE_CHARGEMENT_MS
 
         raise SelecteurSessionsIndisponible(
-            f"le filtre de session n'a jamais confirme le passage a "
-            f"'{session.libelle}' (valeur du champ ET absence de squelette "
-            f"de chargement) dans le delai accorde "
-            f"({DELAI_CHARGEMENT_SESSION_MS} ms)."
+            f"la page n'a jamais affiche les cours de '{session.libelle}' "
+            f"annonces par le serveur dans le delai accorde "
+            f"({DELAI_CHARGEMENT_SESSION_MS} ms) : attendus "
+            f"{sorted(ids_attendus)}, derniers affiches {sorted(ids_affiches)}."
         )
 
     def sites_de_session(self, session: Session) -> list[Cours]:
@@ -448,9 +502,7 @@ class Ena:
         """
         self._visiter(URL.cours())
         self._assurer_authentifie()
-        self._selectionner_session(session)
-
-        return cours_depuis_html(self.session.page.content(), session)
+        return self._selectionner_session(session)
 
     def modules(self, cours) -> list:
         html = self._visiter(URL.modules(cours.id_site))

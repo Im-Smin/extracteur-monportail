@@ -452,6 +452,32 @@ def session_depuis_libelle(libelle: str) -> Session:
     return Session(code=CODE_SESSION_INCONNUE, libelle=libelle)
 
 
+def ids_cours_suivis_depuis_reponse(donnees: dict, code_session: str) -> set[str]:
+    """idSite des cours suivis, lus dans la reponse JSON du service qui
+    alimente la liste des cours du tableau de bord
+    (/services/listecours/cours/?codesession=...).
+
+    Seules les entrees typeSite == "COURS" sont retenues : la meme liste
+    porte les formations institutionnelles (typeSite "FORMATION"), identiques
+    d'une session a l'autre et jamais affichees parmi les cours suivis --
+    constate sur sept sessions en inspection reelle.
+
+    Leve ValueError si la reponse porte une autre session que celle
+    demandee : c'est precisement la preuve que l'on cherche, jamais un
+    detail a ignorer.
+    """
+    if donnees.get("codeSession") != code_session:
+        raise ValueError(
+            f"reponse de la liste des cours pour la session "
+            f"{donnees.get('codeSession')!r}, {code_session!r} attendue"
+        )
+    return {
+        site["idSite"]
+        for site in donnees.get("sitesSuivis") or []
+        if site.get("typeSite") == "COURS" and site.get("idSite")
+    }
+
+
 def _id_site_depuis_href(href: str, marqueur: str) -> str | None:
     """Id de site porte par un href contenant `marqueur` (ex. /ena/site/accueil)."""
     if marqueur not in href or "idSite=" not in href:
