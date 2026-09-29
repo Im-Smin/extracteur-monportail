@@ -583,6 +583,19 @@ class SessionNavigateur:
         prochain_statut = debut + INTERVALLE_STATUT_ATTENTE
         debut_sur_microsoft = None
         rappel_selecteur_affiche = False
+        # Le profil de navigateur est TOUJOURS neuf (voir ouvrir) : aucune
+        # session ne peut exister avant que l'utilisateur ne soit passe par
+        # la page de connexion Microsoft. Une page ulaval.ca vue AVANT ce
+        # passage n'est donc jamais une page connectee.
+        #
+        # Constate en usage reel : le portail refondu s'affiche d'abord sur
+        # monportail.ulaval.ca et ne redirige vers Microsoft qu'environ 3 s
+        # plus tard (redirection faite par l'application, plus par le
+        # serveur). Le tout premier sondage tombait dans cette fenetre : la
+        # page etait jugee connectee, l'outil partait sans attendre, et la
+        # fenetre de connexion se refermait avant que l'utilisateur ait pu
+        # taper quoi que ce soit.
+        vu_connexion_microsoft = False
 
         while True:
             if annulation is not None and annulation.is_set():
@@ -593,7 +606,7 @@ class SessionNavigateur:
                 break
 
             try:
-                if self.est_connecte():
+                if vu_connexion_microsoft and self.est_connecte():
                     return True
             except ErreurPlaywright:
                 # ErreurPlaywright est la classe d'erreur generale de
@@ -623,6 +636,7 @@ class SessionNavigateur:
 
             sur_microsoft = any(FRAGMENT_HOTE_MICROSOFT in nom for nom in domaines_connus)
             if sur_microsoft:
+                vu_connexion_microsoft = True
                 if debut_sur_microsoft is None:
                     debut_sur_microsoft = maintenant
             else:

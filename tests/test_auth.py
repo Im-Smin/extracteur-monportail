@@ -16,6 +16,9 @@ from extracteur.auth import (
 )
 
 
+URL_CONNEXION_MICROSOFT = "https://login.microsoftonline.com/tenant/oauth2/v2.0/authorize"
+
+
 class PageFactice:
     """Simule une page Playwright pour tester la detection de connexion.
 
@@ -239,7 +242,10 @@ def test_attendre_connexion_affiche_une_ligne_d_etat_a_intervalle_regulier():
 def test_attendre_connexion_ne_dit_rien_si_la_connexion_est_immediate():
     """Une connexion detectee des le premier sondage n'affiche aucun bruit :
     pas de ligne d'etat pour une attente qui n'a pas eu lieu."""
-    page = PageFactice(f"https://{HOTE_SITESCOURS}/portail/cours")
+    # Page de connexion Microsoft : avec un profil toujours neuf, c'est la
+    # que se trouve l'utilisateur avant que la doublure ne simule la fin
+    # de son authentification (voir attendre_connexion).
+    page = PageFactice(URL_CONNEXION_MICROSOFT)
     session = SessionAttenteTestable(page, connectee_au_nieme_appel=1)
     messages = []
 
@@ -280,7 +286,10 @@ def test_attendre_connexion_sans_annulation_posee_continue_normalement():
     comportement existant."""
     import threading
 
-    page = PageFactice(f"https://{HOTE_SITESCOURS}/portail/cours")
+    # Page de connexion Microsoft : avec un profil toujours neuf, c'est la
+    # que se trouve l'utilisateur avant que la doublure ne simule la fin
+    # de son authentification (voir attendre_connexion).
+    page = PageFactice(URL_CONNEXION_MICROSOFT)
     session = SessionAttenteTestable(page, connectee_au_nieme_appel=1)
     annulation = threading.Event()
 
@@ -392,7 +401,10 @@ def test_attendre_connexion_absorbe_une_erreur_transitoire_de_navigation():
     l'attente : la page n'est pas fermee, le sondage continue jusqu'a ce que
     la connexion soit detectee.
     """
-    page = PageFactice(f"https://{HOTE_SITESCOURS}/portail/cours")
+    # Page de connexion Microsoft : avec un profil toujours neuf, c'est la
+    # que se trouve l'utilisateur avant que la doublure ne simule la fin
+    # de son authentification (voir attendre_connexion).
+    page = PageFactice(URL_CONNEXION_MICROSOFT)
     session = SessionAttenteErreurTestable(page, echecs_avant_succes=3)
 
     resultat = session.attendre_connexion(
@@ -423,14 +435,17 @@ def test_attendre_connexion_se_termine_sur_fenetre_reellement_fermee():
     assert resultat is False
     # L'attente s'est arretee des le premier sondage, pas apres 1000
     # appels d'horloge simulant l'ecoulement complet du delai.
-    assert session._appels == 1
+    assert horloge() <= 5.0
 
 
 def test_attendre_connexion_erreur_transitoire_ne_pollue_pas_l_affichage():
     """Une erreur transitoire de navigation est normale pendant une
     authentification : elle ne doit produire aucun message a l'utilisateur,
     seules les lignes d'etat habituelles doivent apparaitre."""
-    page = PageFactice(f"https://{HOTE_SITESCOURS}/portail/cours")
+    # Page de connexion Microsoft : avec un profil toujours neuf, c'est la
+    # que se trouve l'utilisateur avant que la doublure ne simule la fin
+    # de son authentification (voir attendre_connexion).
+    page = PageFactice(URL_CONNEXION_MICROSOFT)
     session = SessionAttenteErreurTestable(page, echecs_avant_succes=3)
     messages = []
 
@@ -1090,3 +1105,51 @@ def test_reinitialiser_page_emet_une_trace_visible():
     session.reinitialiser_page(imprimer=messages.append)
 
     assert any("reinitialis" in message for message in messages)
+
+
+class SessionAvantRedirection(SessionNavigateur):
+    """Session a profil neuf, dont la page suit un parcours d'adresses
+    impose, un pas a chaque sommeil. est_connecte est la VRAIE : elle juge
+    sur le nom d'hote, comme en usage reel."""
+
+    def __init__(self, parcours):
+        super().__init__()
+        self._parcours = list(parcours)
+        self.page = PageFactice(self._parcours.pop(0))
+
+    def avancer(self, _secondes):
+        if self._parcours:
+            self.page.url = self._parcours.pop(0)
+
+
+def test_une_page_ulaval_vue_avant_microsoft_n_est_jamais_une_connexion():
+    # Incident reel : le portail refondu s'affiche d'abord sur
+    # monportail.ulaval.ca et ne redirige vers Microsoft qu'apres ~3 s. Le
+    # premier sondage tombait dans cette fenetre : page jugee connectee,
+    # l'outil partait sans attendre, et la fenetre de connexion se refermait
+    # avant que l'utilisateur ait pu taper quoi que ce soit.
+    session = SessionAvantRedirection(["https://monportail.ulaval.ca/portail/"] * 30)
+
+    resultat = session.attendre_connexion(
+        delai=20, imprimer=lambda _m: None, horloge=HorlogeFactice(pas=1.0), sommeil=session.avancer
+    )
+
+    assert resultat is False
+
+
+def test_la_connexion_est_reconnue_apres_le_passage_par_microsoft():
+    # Parcours reel : portail avant redirection, page de connexion Microsoft
+    # le temps de taper identifiants et MFA, puis retour sur le portail.
+    session = SessionAvantRedirection(
+        ["https://monportail.ulaval.ca/portail/"] * 3
+        + [URL_CONNEXION_MICROSOFT] * 5
+        + ["https://monportail.ulaval.ca/portail/"] * 5
+    )
+
+    resultat = session.attendre_connexion(
+        delai=60, imprimer=lambda _m: None, horloge=HorlogeFactice(pas=1.0), sommeil=session.avancer
+    )
+
+    assert resultat is True
+    assert session.page.url.startswith("https://monportail.ulaval.ca")
+
