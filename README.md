@@ -13,6 +13,16 @@ le tout dans un `.zip`.
 > vous-même dans la fenêtre du navigateur, exactement comme d'habitude, MFA
 > compris. Le programme ne lit que les témoins de session de cette fenêtre-là.
 
+## Deux interfaces, un même moteur
+
+| Interface | Lancer | Ce qu'elle fait |
+|---|---|---|
+| **Terminal** (menu, recommandé) | `Archiveur-monPortail-terminal.exe` (page [Releases](../../releases/latest), sans rien installer), ou `python -m monportail` | Tu choisis les cours **et** le type de contenu (vidéos, documents, pages, évaluations, travaux remis, notes, plan de cours), cours par cours si tu veux. Progression, temps restant, état de l'archive, reprise. **Archive aussi les vidéos.** Voir [GUIDE-ARCHIVEUR.md](GUIDE-ARCHIVEUR.md). |
+| **Fenêtre** (interface d'origine) | l'exécutable ci-dessous, ou `python -m extracteur` | Tout archiver en un clic, ou une session, ou un cours. Sans les vidéos. |
+
+Les deux utilisent le même moteur de navigation et écrivent la même archive
+(même dossier, même manifeste) : on peut passer de l'une à l'autre.
+
 ## Télécharger (Windows, sans rien installer)
 
 **[⬇ Télécharger Archiveur-monPortail.exe](https://github.com/Im-Smin/extracteur-monportail/releases/latest/download/Archiveur-monPortail.exe)**
@@ -65,7 +75,7 @@ n'existe sous forme d'aucun fichier téléchargeable.
 
 ## Ce qu'il ne récupère pas
 
-- les annonces, les forums de discussion et les vidéos ;
+- les annonces, les forums de discussion et les vidéos (l'interface terminal, elle, récupère les vidéos) ;
 - les « Autres activités » du tableau de bord (formations institutionnelles) :
   seuls les cours sont traités ;
 - les sections « Matériel didactique », « Médiagraphie et annexes » et
@@ -232,3 +242,8 @@ Projet indépendant, sans aucun lien avec l'Université Laval.
 ## Licence
 
 MIT — voir [LICENSE](LICENSE).
+
+## Crédits
+
+- Extracteur, moteur de navigation et interface fenêtre : [Im-Smin](https://github.com/Im-Smin).
+- Interface terminal (`monportail/`) et archivage des vidéos : contribution, voir l'historique des commits.

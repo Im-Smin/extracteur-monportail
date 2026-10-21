@@ -18,11 +18,16 @@ classifiers = [
 dependencies = [
     "playwright>=1.47",
     "beautifulsoup4>=4.12",
+    "rich>=13.7",
+    "questionary>=2.0",
 ]
 
 [project.urls]
 Source = "https://github.com/Im-Smin/extracteur-monportail"
 Issues = "https://github.com/Im-Smin/extracteur-monportail/issues"
+
+[project.scripts]
+monportail = "monportail.__main__:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
@@ -30,7 +35,7 @@ dev = ["pytest>=8.0"]
 [tool.setuptools]
 # Seul le paquet extracteur est installe : construction/ ne sert qu'a
 # fabriquer l'executable (voir construction/construire.py).
-packages = ["extracteur"]
+packages = ["extracteur", "monportail"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

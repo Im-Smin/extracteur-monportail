@@ -27,3 +27,15 @@ reconnaissance*.txt
 build/
 dist/
 *.exe
+
+# Terminal archiver
+.installe-archiveur
+
+# Archives and personal data never belong in the repository
+Archive*/
+_inventaire_videos.json
+_rapport_archiveur.html
+_videos.csv
+manifeste.csv
+notes-tous-cours.csv
+*.mp4

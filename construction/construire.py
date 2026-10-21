@@ -31,7 +31,10 @@ from extracteur.navigateur_embarque import _entete_archive_integree, integrer_ar
 
 ICI = Path(__file__).resolve().parent
 RACINE = ICI.parent
-NOM = "Archiveur monPortail"
+INTERFACES = {
+    "fenetre": ("archiveur.spec", "Archiveur monPortail"),
+    "terminal": ("terminal.spec", "Archiveur-monPortail-terminal"),
+}
 
 
 def navigateurs_installes() -> list[Path]:
@@ -104,21 +107,24 @@ def verifier(exe: Path, archive_navigateur: Path) -> None:
 def main() -> None:
     analyseur = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     analyseur.add_argument("--sortie", type=Path, required=True, help="dossier de sortie, hors OneDrive")
+    analyseur.add_argument("--interface", choices=sorted(INTERFACES), default="fenetre",
+                           help="interface a construire (defaut : fenetre)")
     arguments = analyseur.parse_args()
+    recette, nom = INTERFACES[arguments.interface]
     sortie = arguments.sortie.resolve()
     if RACINE in sortie.parents or sortie == RACINE:
         sys.exit("--sortie ne doit pas etre dans le depot.")
 
     archive = archiver_navigateurs(navigateurs_installes(), sortie / "travail")
     PyInstaller.__main__.run([
-        str(ICI / "archiveur.spec"),
+        str(ICI / recette),
         "--noconfirm",
         "--clean",
         "--distpath", str(sortie / "pyinstaller"),
         "--workpath", str(sortie / "travail"),
     ])
-    exe = sortie / f"{NOM}.exe"
-    integrer_archive(sortie / "pyinstaller" / f"{NOM}.exe", archive, exe)
+    exe = sortie / f"{nom}.exe"
+    integrer_archive(sortie / "pyinstaller" / f"{nom}.exe", archive, exe)
     verifier(exe, archive)
 
 

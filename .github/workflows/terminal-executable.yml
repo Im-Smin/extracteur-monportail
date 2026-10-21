@@ -1,0 +1,48 @@
+name: Terminal executable
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      EXE_NAME: Archiveur-monPortail-terminal.exe
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pick an output folder outside the repository
+        run: '"OUTPUT=$env:RUNNER_TEMP\build" >> $env:GITHUB_ENV'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the project, PyInstaller and Chromium
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: "0"
+        run: |
+          python -m pip install . pyinstaller
+          python -m playwright install chromium
+
+      - name: Build
+        run: python construction/construire.py --interface terminal --sortie "$env:OUTPUT"
+
+      - name: Smoke test
+        run: '& "$env:OUTPUT\$env:EXE_NAME" --help'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: archiveur-monportail-terminal
+          path: ${{ env.OUTPUT }}\${{ env.EXE_NAME }}
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.OUTPUT }}\${{ env.EXE_NAME }}
